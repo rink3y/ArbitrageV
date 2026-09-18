@@ -71,7 +71,7 @@ export class EventMonitor {
       this.buffered.clear();
       const byAdapter = new Map<ProtocolEventAdapter, any[]>();
       for (const entry of entries) {
-        if (this.isAtOrBelowHydrationFloor(entry.log)) continue;
+        if (!entry.adapter.managesOwnCursors && this.isAtOrBelowHydrationFloor(entry.log)) continue;
         const address = entry.log.address as Address | undefined;
         if (address) {
           this.updateCursorForAddress(entry.adapter, address, advanceCursor(undefined, entry.log));
@@ -118,7 +118,7 @@ export class EventMonitor {
       }
       return;
     }
-    const fresh = this.freshLogs(adapter, logs);
+    const fresh = adapter.managesOwnCursors ? logs : this.freshLogs(adapter, logs);
     if (fresh.length > 0) await adapter.apply(fresh);
   }
 

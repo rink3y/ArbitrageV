@@ -6,6 +6,11 @@ import "./interfaces/IUniswapV2Pair.sol";
 import "./interfaces/UniswapV2Factory.sol";
 
 interface IUniswapV3Pool {
+	function factory() external view returns (address);
+	function token0() external view returns (address);
+	function token1() external view returns (address);
+	function fee() external view returns (uint24);
+	function tickSpacing() external view returns (int24);
 	function liquidity() external view returns (uint128);
 	function slot0()
 		external
@@ -61,6 +66,56 @@ error InvalidRange();
 
 // In order to quickly load up data from Uniswap-like market, this contract allows easy iteration with a single eth_call
 contract FlashUniswapQueryV1 {
+	struct V3PoolMetadata {
+		address pool;
+		address factory;
+		address token0;
+		address token1;
+		uint24 fee;
+		int24 tickSpacing;
+	}
+
+	struct V3BitmapRequest { IUniswapV3Pool pool; int16 startWord; uint16 wordCount; }
+	struct V3TicksRequest { IUniswapV3Pool pool; int24[] ticks; }
+
+	function getV3PoolMetadata(IUniswapV3Pool[] calldata pools) external view returns (V3PoolMetadata[] memory result) {
+		if (pools.length > 128) revert InvalidRange();
+		result = new V3PoolMetadata[](pools.length);
+		for (uint256 i; i < pools.length; ++i) {
+			IUniswapV3Pool pool = pools[i];
+			result[i] = V3PoolMetadata(address(pool), pool.factory(), pool.token0(), pool.token1(), pool.fee(), pool.tickSpacing());
+		}
+	}
+
+	function getV3TickBitmapWords(V3BitmapRequest[] calldata requests) external view returns (V3BitmapData[][] memory result) {
+		result = new V3BitmapData[][](requests.length);
+		uint256 total;
+		for (uint256 i; i < requests.length; ++i) {
+			V3BitmapRequest calldata request = requests[i];
+			total += request.wordCount;
+			if (request.wordCount == 0 || request.wordCount > 256 || total > 1024) revert InvalidRange();
+			result[i] = new V3BitmapData[](request.wordCount);
+			for (uint256 j; j < request.wordCount; ++j) {
+				int256 word = int256(request.startWord) + int256(j);
+				if (word > type(int16).max) revert InvalidRange();
+				result[i][j] = V3BitmapData(int16(word), request.pool.tickBitmap(int16(word)));
+			}
+		}
+	}
+
+	function getV3Ticks(V3TicksRequest[] calldata requests) external view returns (V3TickData[][] memory result) {
+		result = new V3TickData[][](requests.length);
+		uint256 total;
+		for (uint256 i; i < requests.length; ++i) {
+			total += requests[i].ticks.length;
+			if (requests[i].ticks.length > 512 || total > 2048) revert InvalidRange();
+			result[i] = new V3TickData[](requests[i].ticks.length);
+			for (uint256 j; j < requests[i].ticks.length; ++j) {
+				result[i][j] = _getV3Tick(requests[i].pool, requests[i].ticks[j]);
+			}
+		}
+	}
+
 	uint8 private constant V3_STARTUP_BITMAP_WORD_RADIUS = 2;
 	uint16 private constant V3_STARTUP_MAX_INITIALIZED_TICKS_PER_POOL = 512;
 

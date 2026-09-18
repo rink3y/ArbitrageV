@@ -2,6 +2,7 @@ import { type Address, type PublicClient } from 'viem';
 
 export interface ProtocolEventAdapter {
   readonly id: string;
+  readonly managesOwnCursors?: boolean;
   addresses(): readonly Address[];
   owns(address: Address): boolean;
   watch(

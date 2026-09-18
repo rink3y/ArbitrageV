@@ -3,6 +3,8 @@ import { type Address } from "viem";
 import { ARBITRAGE_SEARCH_POLICY, TOKENS } from "../src/constants";
 import { type V3PoolConfig } from "../src/protocols/v3/types";
 import { MarketGraph } from "../src/market-graph/market-graph";
+import { tickWordBounds } from '../src/protocols/v3/coverage';
+import { type V3Snapshot } from '../src/protocols/v3/types';
 
 const [tokenA, tokenB, tokenC] = TOKENS.map(({ address }) => address);
 
@@ -29,6 +31,26 @@ function pool(
 }
 
 describe("MarketGraph V3 pools", () => {
+  test('snapshot replacement removes stale ticks and rejects partial publication', () => {
+    const selected = pool(1, tokenA, tokenB, 3000);
+    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, [selected]);
+    const snapshot: V3Snapshot = {
+      poolAddress: selected.address, sqrtPriceX96: 2n ** 96n, tick: 0, liquidity: 1000n,
+      blockNumber: 10n, blockHash: `0x${'0'.repeat(64)}`, complete: true,
+      ...tickWordBounds(selected.tickSpacing), bitmapWords: [],
+      ticks: [{ index: -60, liquidityGross: 1000n, liquidityNet: 1000n }],
+    };
+    graph.replaceV3Snapshot(selected, snapshot);
+    expect(graph.v3PoolNeedsRefresh(selected.address)).toBe(false);
+    expect(() => graph.replaceV3Snapshot(selected, { ...snapshot, complete: false })).toThrow('incomplete');
+    graph.replaceV3Snapshot(selected, { ...snapshot, ticks: [], liquidity: 0n });
+    expect(graph.getV3InitializedTicks(selected.address)).toEqual([]);
+    graph.replaceV3Snapshot(selected, snapshot);
+    graph.invalidateV3Pool(selected.address);
+    expect(graph.rankedEdges(tokenA, 10)).toEqual([]);
+    expect(graph.getV3Pool(selected.address)?.fullRange).toBe(false);
+  });
+
   test("loads only explicitly configured enabled pools", () => {
     const enabledPool = pool(1, tokenA, tokenB, 3000);
     const disabledPool = pool(2, tokenA, tokenC, 500, false);

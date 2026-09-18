@@ -59,6 +59,7 @@ export async function runArbitrageBot(): Promise<void> {
       client: network.client,
       catalog,
       engine: graph,
+      blockNumber: hydrationStartedAtBlock,
     })));
     const hydrationCompletedAtBlock = await network.client.getBlockNumber();
     console.log(`Initial live state fetched across blocks ${hydrationStartedAtBlock}-${hydrationCompletedAtBlock}`);

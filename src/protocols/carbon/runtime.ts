@@ -1,4 +1,5 @@
-import { parseAbi, type Address, type PublicClient } from 'viem';
+import { type Address, type PublicClient } from 'viem';
+import UniswapFlashQueryABI from '../../ABI/UniswapFlashQuery.json';
 import { CONTRACTS, RUNTIME, TOKENS } from '../../constants';
 import { CARBON_CONTROLLERS, CARBON_STARTUP_POLICY } from './config';
 import { graphToken } from '../../tokens';
@@ -7,10 +8,6 @@ import { CARBON_CONTROLLER_EVENT_ABI } from './events';
 import { type CarbonOrder, type CarbonPairMetadata, type CarbonStrategy } from './types';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address;
-
-const CARBON_BATCH_QUERY_ABI = parseAbi([
-  'function getCarbonStrategiesByPairs(address controller, (address token0, address token1, uint256 startIndex, uint256 endIndex)[] requests) view returns ((address token0, address token1, uint32 feePpm, (uint256 id, address owner, address[2] tokens, (uint128 y, uint128 z, uint64 A, uint64 B)[2] orders)[] strategies)[])',
-]);
 
 type CarbonClient = {
   readContract(parameters: any): Promise<unknown>;
@@ -131,7 +128,7 @@ export class CarbonStrategyStore {
 
     const results = await this.client.readContract({
       address: CONTRACTS.flashQuery as Address,
-      abi: CARBON_BATCH_QUERY_ABI,
+      abi: UniswapFlashQueryABI,
       functionName: 'getCarbonStrategiesByPairs',
       args: [
         controller,

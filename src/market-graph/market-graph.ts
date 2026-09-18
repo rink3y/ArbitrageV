@@ -1,6 +1,5 @@
 import { type Address } from 'viem';
 import { ARBITRAGE_SEARCH_POLICY, TOKENS } from '../constants';
-import { V3_POOLS } from '../protocols/v3/config';
 import { type CarbonStrategy } from '../protocols/carbon/types';
 import { graphToken } from '../tokens';
 import {
@@ -13,6 +12,7 @@ import {
   type V3BitmapWordUpdate,
   type V3PoolConfig,
   type V3PoolInfo,
+  type V3Snapshot,
   type V3PoolUpdate,
   type V3Tick,
   type V3TickUpdate,
@@ -110,7 +110,7 @@ export class MarketGraph {
 
   constructor(
     private readonly policy: ArbitrageSearchPolicy = ARBITRAGE_SEARCH_POLICY,
-    configuredV3Pools: readonly V3PoolConfig[] = V3_POOLS
+    configuredV3Pools: readonly V3PoolConfig[] = []
   ) {
     for (const pool of configuredV3Pools) this.addV3Pool(pool);
   }
@@ -146,10 +146,33 @@ export class MarketGraph {
       state: existing?.state ?? null,
       ticks: existing?.ticks ?? new Map(),
       bitmapWords: existing?.bitmapWords ?? new Map(),
+      fullRange: existing?.fullRange,
     };
 
     this.v3Pools[poolIndex] = poolInfo;
     this.upsertV3Edges(poolInfo, poolIndex);
+  }
+
+  replaceV3Snapshot(pool: V3PoolConfig, snapshot: V3Snapshot): void {
+    if (!snapshot.complete || snapshot.poolAddress.toLowerCase() !== pool.address.toLowerCase()) throw new Error('Cannot publish an incomplete or mismatched V3 snapshot');
+    if (!pool.enabled) return;
+    this.addV3Pool(pool);
+    const poolIndex = this.poolRegistry.get(pool.address);
+    if (poolIndex === undefined) return;
+    const stored = this.v3Pools[poolIndex]!;
+    stored.ticks = new Map(snapshot.ticks.map(tick => [tick.index, { ...tick }]));
+    stored.bitmapWords = new Map(snapshot.bitmapWords.map(word => [word.wordPosition, word.bitmap]));
+    stored.fullRange = snapshot.complete;
+    this.v3TicksCache[poolIndex] = undefined;
+    this.v3LoadedWordRanges[poolIndex] = { min: snapshot.minWord, max: snapshot.maxWord };
+    this.updateV3PoolStates([{ poolAddress: pool.address, sqrtPriceX96: snapshot.sqrtPriceX96, tick: snapshot.tick, liquidity: snapshot.liquidity }]);
+  }
+
+  invalidateV3Pool(poolAddress: Address): void {
+    const pool = this.getV3Pool(poolAddress);
+    if (!pool?.state) return;
+    this.updateV3PoolStates([{ poolAddress, ...pool.state, liquidity: 0n }]);
+    pool.fullRange = false;
   }
 
   updateV3PoolStates(updates: V3PoolUpdate[]): void {
@@ -412,7 +435,7 @@ export class MarketGraph {
     const pool = this.v3Pools[poolIndex];
     if (!pool) return [];
     return this.v3TicksCache[poolIndex] ??= Array.from(pool.ticks.values())
-      .filter(tick => tick.liquidityNet !== 0n)
+      .filter(tick => tick.liquidityGross > 0n)
       .sort((a, b) => a.index - b.index);
   }
 
@@ -431,6 +454,7 @@ export class MarketGraph {
     const pool = this.v3Pools[poolIndex];
     const range = this.v3LoadedWordRanges[poolIndex];
     if (!pool?.state || !range) return true;
+    if (pool.fullRange) return false;
     const word = Math.floor(Math.floor(pool.state.tick / pool.tickSpacing) / 256);
     return word <= range.min + 1 || word >= range.max - 1;
   }
@@ -513,6 +537,7 @@ export class MarketGraph {
         direction: edge.direction,
         ticks: this.getV3InitializedTicks(pool.address),
         normalizedTicks: true,
+        fullRange: pool.fullRange,
       });
     } catch {
       return { amountIn, amountOut: 0n, profit: -1n, complete: false };

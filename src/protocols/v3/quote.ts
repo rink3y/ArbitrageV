@@ -29,6 +29,7 @@ export type V3MultiRangeQuoteRequest = V3SingleRangeQuoteRequest & {
   tick: number;
   ticks: readonly V3Tick[] | Map<number, V3Tick>;
   normalizedTicks?: boolean;
+  fullRange?: boolean;
   sqrtPriceLimitX96?: bigint;
 };
 
@@ -268,11 +269,22 @@ export function quoteV3MultiRangeExactInput(request: V3MultiRangeQuoteRequest): 
   let initializedTicksCrossed = 0;
 
   while (amountRemaining > 0n) {
+    const nextTick = nextInitializedTick(initializedTicks, tick, zeroForOne);
     if (liquidity <= 0n) {
+      // A complete bitmap distinguishes an empty interval from missing data.
+      // Crossing that interval consumes no tokens; liquidity resumes at its end.
+      if (liquidity === 0n && request.fullRange && nextTick) {
+        sqrtPriceX96 = boundedTargetSqrtPrice(getSqrtRatioAtTick(nextTick.index), request.sqrtPriceLimitX96, zeroForOne);
+        if (sqrtPriceX96 !== request.sqrtPriceLimitX96) {
+          liquidity = applyLiquidityNet(0n, zeroForOne ? -nextTick.liquidityNet : nextTick.liquidityNet);
+          tick = zeroForOne ? nextTick.index - 1 : nextTick.index;
+          initializedTicksCrossed++;
+          continue;
+        }
+      }
       return finishMultiRangeQuote(request.amountIn, amountInAfterFee, amountOut, sqrtPriceX96, liquidity, tick, initializedTicksCrossed, true);
     }
 
-    const nextTick = nextInitializedTick(initializedTicks, tick, zeroForOne);
     const boundarySqrtPriceX96 = boundedTargetSqrtPrice(
       nextTick ? getSqrtRatioAtTick(nextTick.index) : null,
       request.sqrtPriceLimitX96,
@@ -337,7 +349,7 @@ function assertPriceAndLiquidity(sqrtPriceX96: bigint, liquidity: bigint): void 
 function normalizeTicks(ticks: readonly V3Tick[] | Map<number, V3Tick>): V3Tick[] {
   const list = ticks instanceof Map ? Array.from(ticks.values()) : [...ticks];
   return list
-    .filter(tick => tick.liquidityNet !== 0n)
+    .filter(tick => tick.liquidityGross > 0n)
     .sort((a, b) => a.index - b.index);
 }
 

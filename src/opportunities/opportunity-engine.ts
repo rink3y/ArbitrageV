@@ -1,6 +1,5 @@
 import { type Address } from 'viem';
 import { ARBITRAGE_SEARCH_POLICY, TOKENS } from '../constants';
-import { V3_POOLS } from '../protocols/v3/config';
 import { type CarbonStrategy } from '../protocols/carbon/types';
 import { encodeCarbonRouteData } from '../protocols/carbon/execution';
 import { flashLoanFee } from '../execution/execution-planner';
@@ -14,6 +13,7 @@ import {
   type V3BitmapWordUpdate,
   type V3PoolConfig,
   type V3PoolInfo,
+  type V3Snapshot,
   type V3PoolUpdate,
   type V3Tick,
   type V3TickUpdate,
@@ -34,7 +34,7 @@ export class OpportunityEngine {
 
   constructor(
     private readonly policy: ArbitrageSearchPolicy = ARBITRAGE_SEARCH_POLICY,
-    configuredV3Pools: readonly V3PoolConfig[] = V3_POOLS
+    configuredV3Pools: readonly V3PoolConfig[] = []
   ) {
     this.graph = new MarketGraph(policy, configuredV3Pools);
     this.strategy = new CircularArbitrageStrategy(this.graph, policy);
@@ -50,6 +50,14 @@ export class OpportunityEngine {
 
   addV3Pool(pool: V3PoolConfig): void {
     this.graph.addV3Pool(pool);
+  }
+
+  replaceV3Snapshot(pool: V3PoolConfig, snapshot: V3Snapshot): void {
+    this.graph.replaceV3Snapshot(pool, snapshot);
+  }
+
+  invalidateV3Pool(poolAddress: Address): void {
+    this.graph.invalidateV3Pool(poolAddress);
   }
 
   updateV3PoolStates(updates: V3PoolUpdate[]): void {

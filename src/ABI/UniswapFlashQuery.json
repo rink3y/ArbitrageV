@@ -1,372 +1,505 @@
 [
-    {
-        "inputs": [
-            {
-                "internalType": "contract ICarbonController",
-                "name": "_controller",
-                "type": "address"
-            },
-            {
-                "components": [
-                    {
-                        "internalType": "address",
-                        "name": "token0",
-                        "type": "address"
-                    },
-                    {
-                        "internalType": "address",
-                        "name": "token1",
-                        "type": "address"
-                    },
-                    {
-                        "internalType": "uint256",
-                        "name": "startIndex",
-                        "type": "uint256"
-                    },
-                    {
-                        "internalType": "uint256",
-                        "name": "endIndex",
-                        "type": "uint256"
-                    }
-                ],
-                "internalType": "struct FlashUniswapQueryV1.CarbonPairRequest[]",
-                "name": "_requests",
-                "type": "tuple[]"
-            }
-        ],
-        "name": "getCarbonStrategiesByPairs",
-        "outputs": [
-            {
-                "components": [
-                    {
-                        "internalType": "address",
-                        "name": "token0",
-                        "type": "address"
-                    },
-                    {
-                        "internalType": "address",
-                        "name": "token1",
-                        "type": "address"
-                    },
-                    {
-                        "internalType": "uint32",
-                        "name": "feePpm",
-                        "type": "uint32"
-                    },
-                    {
-                        "components": [
-                            {
-                                "internalType": "uint256",
-                                "name": "id",
-                                "type": "uint256"
-                            },
-                            {
-                                "internalType": "address",
-                                "name": "owner",
-                                "type": "address"
-                            },
-                            {
-                                "internalType": "address[2]",
-                                "name": "tokens",
-                                "type": "address[2]"
-                            },
-                            {
-                                "components": [
-                                    {
-                                        "internalType": "uint128",
-                                        "name": "y",
-                                        "type": "uint128"
-                                    },
-                                    {
-                                        "internalType": "uint128",
-                                        "name": "z",
-                                        "type": "uint128"
-                                    },
-                                    {
-                                        "internalType": "uint64",
-                                        "name": "A",
-                                        "type": "uint64"
-                                    },
-                                    {
-                                        "internalType": "uint64",
-                                        "name": "B",
-                                        "type": "uint64"
-                                    }
-                                ],
-                                "internalType": "struct ICarbonController.Order[2]",
-                                "name": "orders",
-                                "type": "tuple[2]"
-                            }
-                        ],
-                        "internalType": "struct ICarbonController.Strategy[]",
-                        "name": "strategies",
-                        "type": "tuple[]"
-                    }
-                ],
-                "internalType": "struct FlashUniswapQueryV1.CarbonPairStrategies[]",
-                "name": "",
-                "type": "tuple[]"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "contract IBaseV1Pair[]",
-                           "name":  "_pairs",
-                           "type":  "address[]"
-                       }
-                   ],
-        "name":  "filterVolatileHermesPairs",
-        "outputs":  [
-                        {
-                            "internalType":  "bool[]",
-                            "name":  "",
-                            "type":  "bool[]"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "uint256",
-                           "name":  "amountIn",
-                           "type":  "uint256"
-                       },
-                       {
-                           "internalType":  "uint256",
-                           "name":  "reserveIn",
-                           "type":  "uint256"
-                       },
-                       {
-                           "internalType":  "uint256",
-                           "name":  "reserveOut",
-                           "type":  "uint256"
-                       },
-                       {
-                           "internalType":  "uint256",
-                           "name":  "fee",
-                           "type":  "uint256"
-                       }
-                   ],
-        "name":  "getAmountOut",
-        "outputs":  [
-                        {
-                            "internalType":  "uint256",
-                            "name":  "",
-                            "type":  "uint256"
-                        }
-                    ],
-        "stateMutability":  "pure",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "contract UniswapV2Factory",
-                           "name":  "_uniswapFactory",
-                           "type":  "address"
-                       },
-                       {
-                           "internalType":  "uint256",
-                           "name":  "_start",
-                           "type":  "uint256"
-                       },
-                       {
-                           "internalType":  "uint256",
-                           "name":  "_stop",
-                           "type":  "uint256"
-                       }
-                   ],
-        "name":  "getPairsByIndexRange",
-        "outputs":  [
-                        {
-                            "internalType":  "address[3][]",
-                            "name":  "",
-                            "type":  "address[3][]"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "contract UniswapV2Factory[]",
-                           "name":  "_factories",
-                           "type":  "address[]"
-                       }
-                   ],
-        "name":  "getPairsLength",
-        "outputs":  [
-                        {
-                            "internalType":  "uint256[]",
-                            "name":  "",
-                            "type":  "uint256[]"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "contract IUniswapV2Pair[]",
-                           "name":  "_pairs",
-                           "type":  "address[]"
-                       }
-                   ],
-        "name":  "getReservesByPairs",
-        "outputs":  [
-                        {
-                            "internalType":  "uint256[3][]",
-                            "name":  "",
-                            "type":  "uint256[3][]"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "contract IUniswapV3Pool[]",
-                           "name":  "_pools",
-                           "type":  "address[]"
-                       }
-                   ],
-        "name":  "getV3LiveStates",
-        "outputs":  [
-                        {
-                            "components":  [
-                                               {
-                                                   "internalType":  "address",
-                                                   "name":  "pool",
-                                                   "type":  "address"
-                                               },
-                                               {
-                                                   "internalType":  "uint160",
-                                                   "name":  "sqrtPriceX96",
-                                                   "type":  "uint160"
-                                               },
-                                               {
-                                                   "internalType":  "int24",
-                                                   "name":  "tick",
-                                                   "type":  "int24"
-                                               },
-                                               {
-                                                   "internalType":  "uint128",
-                                                   "name":  "liquidity",
-                                                   "type":  "uint128"
-                                               }
-                                           ],
-                            "internalType":  "struct FlashUniswapQueryV1.V3LiveState[]",
-                            "name":  "",
-                            "type":  "tuple[]"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "contract IUniswapV3Pool[]",
-                           "name":  "_pools",
-                           "type":  "address[]"
-                       },
-                       {
-                           "internalType":  "int24[]",
-                           "name":  "_tickSpacings",
-                           "type":  "int24[]"
-                       }
-                   ],
-        "name":  "getV3StartupStatesAroundCurrentTick",
-        "outputs":  [
-                        {
-                            "components":  [
-                                               {
-                                                   "components":  [
-                                                                      {
-                                                                          "internalType":  "address",
-                                                                          "name":  "pool",
-                                                                          "type":  "address"
-                                                                      },
-                                                                      {
-                                                                          "internalType":  "uint160",
-                                                                          "name":  "sqrtPriceX96",
-                                                                          "type":  "uint160"
-                                                                      },
-                                                                      {
-                                                                          "internalType":  "int24",
-                                                                          "name":  "tick",
-                                                                          "type":  "int24"
-                                                                      },
-                                                                      {
-                                                                          "internalType":  "uint128",
-                                                                          "name":  "liquidity",
-                                                                          "type":  "uint128"
-                                                                      }
-                                                                  ],
-                                                   "internalType":  "struct FlashUniswapQueryV1.V3LiveState",
-                                                   "name":  "live",
-                                                   "type":  "tuple"
-                                               },
-                                               {
-                                                   "components":  [
-                                                                      {
-                                                                          "internalType":  "int16",
-                                                                          "name":  "wordPosition",
-                                                                          "type":  "int16"
-                                                                      },
-                                                                      {
-                                                                          "internalType":  "uint256",
-                                                                          "name":  "bitmap",
-                                                                          "type":  "uint256"
-                                                                      }
-                                                                  ],
-                                                   "internalType":  "struct FlashUniswapQueryV1.V3BitmapData[]",
-                                                   "name":  "bitmaps",
-                                                   "type":  "tuple[]"
-                                               },
-                                               {
-                                                   "components":  [
-                                                                      {
-                                                                          "internalType":  "int24",
-                                                                          "name":  "tick",
-                                                                          "type":  "int24"
-                                                                      },
-                                                                      {
-                                                                          "internalType":  "uint128",
-                                                                          "name":  "liquidityGross",
-                                                                          "type":  "uint128"
-                                                                      },
-                                                                      {
-                                                                          "internalType":  "int128",
-                                                                          "name":  "liquidityNet",
-                                                                          "type":  "int128"
-                                                                      },
-                                                                      {
-                                                                          "internalType":  "bool",
-                                                                          "name":  "initialized",
-                                                                          "type":  "bool"
-                                                                      }
-                                                                  ],
-                                                   "internalType":  "struct FlashUniswapQueryV1.V3TickData[]",
-                                                   "name":  "ticks",
-                                                   "type":  "tuple[]"
-                                               }
-                                           ],
-                            "internalType":  "struct FlashUniswapQueryV1.V3StartupState[]",
-                            "name":  "",
-                            "type":  "tuple[]"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    }
+	{
+		"inputs": [],
+		"name": "ArrayLengthMismatch",
+		"type": "error"
+	},
+	{
+		"inputs": [],
+		"name": "InvalidRange",
+		"type": "error"
+	},
+	{
+		"inputs": [],
+		"name": "InvalidTickSpacing",
+		"type": "error"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "contract IBaseV1Pair[]",
+				"name": "_pairs",
+				"type": "address[]"
+			}
+		],
+		"name": "filterVolatileHermesPairs",
+		"outputs": [
+			{
+				"internalType": "bool[]",
+				"name": "",
+				"type": "bool[]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "contract ICarbonController",
+				"name": "_controller",
+				"type": "address"
+			},
+			{
+				"components": [
+					{
+						"internalType": "address",
+						"name": "token0",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "token1",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "startIndex",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "endIndex",
+						"type": "uint256"
+					}
+				],
+				"internalType": "struct FlashUniswapQueryV1.CarbonPairRequest[]",
+				"name": "_requests",
+				"type": "tuple[]"
+			}
+		],
+		"name": "getCarbonStrategiesByPairs",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "address",
+						"name": "token0",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "token1",
+						"type": "address"
+					},
+					{
+						"internalType": "uint32",
+						"name": "feePpm",
+						"type": "uint32"
+					},
+					{
+						"components": [
+							{
+								"internalType": "uint256",
+								"name": "id",
+								"type": "uint256"
+							},
+							{
+								"internalType": "address",
+								"name": "owner",
+								"type": "address"
+							},
+							{
+								"internalType": "address[2]",
+								"name": "tokens",
+								"type": "address[2]"
+							},
+							{
+								"components": [
+									{
+										"internalType": "uint128",
+										"name": "y",
+										"type": "uint128"
+									},
+									{
+										"internalType": "uint128",
+										"name": "z",
+										"type": "uint128"
+									},
+									{
+										"internalType": "uint64",
+										"name": "A",
+										"type": "uint64"
+									},
+									{
+										"internalType": "uint64",
+										"name": "B",
+										"type": "uint64"
+									}
+								],
+								"internalType": "struct ICarbonController.Order[2]",
+								"name": "orders",
+								"type": "tuple[2]"
+							}
+						],
+						"internalType": "struct ICarbonController.Strategy[]",
+						"name": "strategies",
+						"type": "tuple[]"
+					}
+				],
+				"internalType": "struct FlashUniswapQueryV1.CarbonPairStrategies[]",
+				"name": "",
+				"type": "tuple[]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "contract UniswapV2Factory",
+				"name": "_uniswapFactory",
+				"type": "address"
+			},
+			{
+				"internalType": "uint256",
+				"name": "_start",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "_stop",
+				"type": "uint256"
+			}
+		],
+		"name": "getPairsByIndexRange",
+		"outputs": [
+			{
+				"internalType": "address[3][]",
+				"name": "",
+				"type": "address[3][]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "contract UniswapV2Factory[]",
+				"name": "_factories",
+				"type": "address[]"
+			}
+		],
+		"name": "getPairsLength",
+		"outputs": [
+			{
+				"internalType": "uint256[]",
+				"name": "",
+				"type": "uint256[]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "contract IUniswapV2Pair[]",
+				"name": "_pairs",
+				"type": "address[]"
+			}
+		],
+		"name": "getReservesByPairs",
+		"outputs": [
+			{
+				"internalType": "uint256[3][]",
+				"name": "",
+				"type": "uint256[3][]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "contract IUniswapV3Pool[]",
+				"name": "_pools",
+				"type": "address[]"
+			}
+		],
+		"name": "getV3LiveStates",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "address",
+						"name": "pool",
+						"type": "address"
+					},
+					{
+						"internalType": "uint160",
+						"name": "sqrtPriceX96",
+						"type": "uint160"
+					},
+					{
+						"internalType": "int24",
+						"name": "tick",
+						"type": "int24"
+					},
+					{
+						"internalType": "uint128",
+						"name": "liquidity",
+						"type": "uint128"
+					}
+				],
+				"internalType": "struct FlashUniswapQueryV1.V3LiveState[]",
+				"name": "",
+				"type": "tuple[]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "contract IUniswapV3Pool[]",
+				"name": "pools",
+				"type": "address[]"
+			}
+		],
+		"name": "getV3PoolMetadata",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "address",
+						"name": "pool",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "factory",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "token0",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "token1",
+						"type": "address"
+					},
+					{
+						"internalType": "uint24",
+						"name": "fee",
+						"type": "uint24"
+					},
+					{
+						"internalType": "int24",
+						"name": "tickSpacing",
+						"type": "int24"
+					}
+				],
+				"internalType": "struct FlashUniswapQueryV1.V3PoolMetadata[]",
+				"name": "result",
+				"type": "tuple[]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "contract IUniswapV3Pool[]",
+				"name": "_pools",
+				"type": "address[]"
+			},
+			{
+				"internalType": "int24[]",
+				"name": "_tickSpacings",
+				"type": "int24[]"
+			}
+		],
+		"name": "getV3StartupStatesAroundCurrentTick",
+		"outputs": [
+			{
+				"components": [
+					{
+						"components": [
+							{
+								"internalType": "address",
+								"name": "pool",
+								"type": "address"
+							},
+							{
+								"internalType": "uint160",
+								"name": "sqrtPriceX96",
+								"type": "uint160"
+							},
+							{
+								"internalType": "int24",
+								"name": "tick",
+								"type": "int24"
+							},
+							{
+								"internalType": "uint128",
+								"name": "liquidity",
+								"type": "uint128"
+							}
+						],
+						"internalType": "struct FlashUniswapQueryV1.V3LiveState",
+						"name": "live",
+						"type": "tuple"
+					},
+					{
+						"components": [
+							{
+								"internalType": "int16",
+								"name": "wordPosition",
+								"type": "int16"
+							},
+							{
+								"internalType": "uint256",
+								"name": "bitmap",
+								"type": "uint256"
+							}
+						],
+						"internalType": "struct FlashUniswapQueryV1.V3BitmapData[]",
+						"name": "bitmaps",
+						"type": "tuple[]"
+					},
+					{
+						"components": [
+							{
+								"internalType": "int24",
+								"name": "tick",
+								"type": "int24"
+							},
+							{
+								"internalType": "uint128",
+								"name": "liquidityGross",
+								"type": "uint128"
+							},
+							{
+								"internalType": "int128",
+								"name": "liquidityNet",
+								"type": "int128"
+							},
+							{
+								"internalType": "bool",
+								"name": "initialized",
+								"type": "bool"
+							}
+						],
+						"internalType": "struct FlashUniswapQueryV1.V3TickData[]",
+						"name": "ticks",
+						"type": "tuple[]"
+					}
+				],
+				"internalType": "struct FlashUniswapQueryV1.V3StartupState[]",
+				"name": "",
+				"type": "tuple[]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"components": [
+					{
+						"internalType": "contract IUniswapV3Pool",
+						"name": "pool",
+						"type": "address"
+					},
+					{
+						"internalType": "int16",
+						"name": "startWord",
+						"type": "int16"
+					},
+					{
+						"internalType": "uint16",
+						"name": "wordCount",
+						"type": "uint16"
+					}
+				],
+				"internalType": "struct FlashUniswapQueryV1.V3BitmapRequest[]",
+				"name": "requests",
+				"type": "tuple[]"
+			}
+		],
+		"name": "getV3TickBitmapWords",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "int16",
+						"name": "wordPosition",
+						"type": "int16"
+					},
+					{
+						"internalType": "uint256",
+						"name": "bitmap",
+						"type": "uint256"
+					}
+				],
+				"internalType": "struct FlashUniswapQueryV1.V3BitmapData[][]",
+				"name": "result",
+				"type": "tuple[][]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"components": [
+					{
+						"internalType": "contract IUniswapV3Pool",
+						"name": "pool",
+						"type": "address"
+					},
+					{
+						"internalType": "int24[]",
+						"name": "ticks",
+						"type": "int24[]"
+					}
+				],
+				"internalType": "struct FlashUniswapQueryV1.V3TicksRequest[]",
+				"name": "requests",
+				"type": "tuple[]"
+			}
+		],
+		"name": "getV3Ticks",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "int24",
+						"name": "tick",
+						"type": "int24"
+					},
+					{
+						"internalType": "uint128",
+						"name": "liquidityGross",
+						"type": "uint128"
+					},
+					{
+						"internalType": "int128",
+						"name": "liquidityNet",
+						"type": "int128"
+					},
+					{
+						"internalType": "bool",
+						"name": "initialized",
+						"type": "bool"
+					}
+				],
+				"internalType": "struct FlashUniswapQueryV1.V3TickData[][]",
+				"name": "result",
+				"type": "tuple[][]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	}
 ]

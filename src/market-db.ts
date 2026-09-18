@@ -88,7 +88,7 @@ function openMarketDb(path = marketDbPath()): Database {
 }
 
 function initMarketDb(db: Database): void {
-  const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
+  const version = db.query('PRAGMA user_version').get() as { user_version: number };
   if (version.user_version < 2) {
     db.exec('DROP TABLE IF EXISTS pools; DROP TABLE IF EXISTS carbon_pairs; PRAGMA user_version = 2');
   }
@@ -121,7 +121,7 @@ function initMarketDb(db: Database): void {
 }
 
 function replaceStoredPools(db: Database, pools: readonly StoredPool[]): void {
-  const insert = db.prepare(`
+  const insert = db.query(`
     INSERT INTO pools (address, protocol, factory, token0, token1, fee, tick_spacing, variant, scale0, scale1)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
@@ -147,7 +147,7 @@ function replaceStoredPools(db: Database, pools: readonly StoredPool[]): void {
 }
 
 function loadStoredPools(db: Database): StoredPool[] {
-  const rows = db.prepare('SELECT address, protocol, factory, token0, token1, fee, tick_spacing, variant, scale0, scale1 FROM pools').all() as PoolRow[];
+  const rows = db.query('SELECT address, protocol, factory, token0, token1, fee, tick_spacing, variant, scale0, scale1 FROM pools').all() as PoolRow[];
   return rows.map(row => ({
     address: row.address as Address,
     protocol: row.protocol,
@@ -163,7 +163,7 @@ function loadStoredPools(db: Database): StoredPool[] {
 }
 
 function replaceStoredCarbonPairs(db: Database, pairs: readonly CarbonPairMetadata[]): void {
-  const insert = db.prepare(`
+  const insert = db.query(`
     INSERT INTO carbon_pairs (controller, token0, token1, strategy_count, fee_ppm)
     VALUES (?, ?, ?, ?, ?)
   `);
@@ -184,7 +184,7 @@ function replaceStoredCarbonPairs(db: Database, pairs: readonly CarbonPairMetada
 }
 
 function loadStoredCarbonPairs(db: Database): CarbonPairMetadata[] {
-  const rows = db.prepare(`
+  const rows = db.query(`
     SELECT controller, token0, token1, strategy_count, fee_ppm
     FROM carbon_pairs
   `).all() as CarbonPairRow[];

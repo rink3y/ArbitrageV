@@ -2,28 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { encodeAbiParameters, encodeEventTopics, type Address } from "viem";
 import { ARBITRAGE_SEARCH_POLICY, CONTRACTS, TOKENS } from "../src/constants";
 import { EventMonitor } from "../src/runtime/event-monitor";
-import { type V3PoolConfig } from "../src/protocols/v3/types";
 import { OpportunityEngine } from "../src/opportunities/opportunity-engine";
-import { Q96 } from "../src/protocols/v3/quote";
 import { V2_SYNC_EVENT_ABI } from "../src/protocols/v2/events";
-import { V3_POOL_EVENT_ABI } from "../src/protocols/v3/events";
 import { V2EventAdapter } from "../src/protocols/v2/runtime";
 import { V3EventAdapter } from "../src/protocols/v3/runtime";
+import { V3Store } from "../src/protocols/v3/store";
+import { pool, policy, v3Fixture, liquidityLog, swapLog, factory } from "./helpers/v3-fixture";
 
 const [token0, token1] = TOKENS.map(token => token.address);
-const poolAddress = "0x0000000000000000000000000000000000000a11" as Address;
-const owner = "0x0000000000000000000000000000000000000b01" as Address;
-
-const pool: V3PoolConfig = {
-  name: "test-v3",
-  address: poolAddress,
-  token0,
-  token1,
-  fee: 3000,
-  tickSpacing: 60,
-  enabled: true,
-};
-
 describe("EventMonitor V3 pool events", () => {
   test("uses one feed for startup buffering and rejects stale live logs", async () => {
     const graph = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY, []);
@@ -134,74 +120,65 @@ describe("EventMonitor V3 pool events", () => {
     await monitor.stop();
   });
 
-  test("applies mixed V3 logs in chain order before checking arbitrage", async () => {
-    const graph = new OpportunityEngine(
-      ARBITRAGE_SEARCH_POLICY,
-      [pool]
-    );
-    graph.updateV3PoolStates([{
-      poolAddress,
-      sqrtPriceX96: Q96,
-      liquidity: 1_000n,
-      tick: 120,
-    }]);
-
-    const feed = fakeEventClient([[
-      [poolAddress, Q96 + 1n, 120, 1_600n],
-      [[0, 1n]],
-      [[60, 500n, 500n, true], [180, 500n, -500n, true]],
-    ]]);
-    const monitor = new EventMonitor({ client: feed.client }, [
-      new V3EventAdapter(feed.client, graph, [pool], async () => {}),
-    ]);
-    await monitor.start();
-
-    await feed.emit([
-      swapLog(2, 1_600n),
-      mintLog(1, 60, 180, 500n),
-    ]);
-
-    const live = graph.getV3Pools()[0].state;
-    const ticks = graph.getV3InitializedTicks(poolAddress);
-
-    expect(live?.liquidity).toBe(1_600n);
-    expect(ticks).toEqual([
-      { index: 60, liquidityGross: 500n, liquidityNet: 500n },
-      { index: 180, liquidityGross: 500n, liquidityNet: -500n },
-    ]);
-    await monitor.stop();
-  });
-
-  test("refreshes a V3 pool touched by startup liquidity instead of replaying its delta", async () => {
-    const previousFlashQuery = CONTRACTS.flashQuery;
-    (CONTRACTS as any).flashQuery = "0x0000000000000000000000000000000000000999";
-    const graph = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY, [pool]);
-    const feed = fakeEventClient([[
-      [poolAddress, Q96 + 2n, 120, 2_000n],
-      [[0, 1n]],
-      [[60, 700n, 700n, true], [180, 700n, -700n, true]],
-    ]]);
-    const monitor = new EventMonitor({ client: feed.client }, [
-      new V3EventAdapter(feed.client, graph, [pool], async () => {}),
-    ]);
-
+  test("refreshes mixed V3 events once and tolerates duplicate delivery", async () => {
+    const previous = CONTRACTS.flashQuery;
+    (CONTRACTS as any).flashQuery = factory;
+    const selected = pool();
+    const feed = v3Fixture([selected]);
+    const store = new V3Store(':memory:');
+    const graph = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY, []);
+    let scans = 0;
+    const adapter = new V3EventAdapter(feed.client, graph, [selected], async () => { scans++; }, store, policy);
+    const monitor = new EventMonitor({ client: feed.client }, [adapter]);
     try {
-      await monitor.startBuffering();
-      await feed.emit([mintLog(1, 60, 180, 500n)]);
-      await monitor.activate();
-
-      expect(graph.getV3Pools()[0].state).toEqual({
-        sqrtPriceX96: Q96 + 2n,
-        liquidity: 2_000n,
-        tick: 120,
-      });
-      expect(graph.getV3InitializedTicks(poolAddress)).toEqual([
-        { index: 60, liquidityGross: 700n, liquidityNet: 700n },
-        { index: 180, liquidityGross: 700n, liquidityNet: -700n },
+      await adapter.hydrate(10n);
+      await monitor.start();
+      feed.head = 11n;
+      feed.liquidity = 1600n;
+      feed.ticks.set(selected.address, [
+        { index: -selected.tickSpacing, liquidityGross: 1600n, liquidityNet: 1600n },
+        { index: selected.tickSpacing, liquidityGross: 1600n, liquidityNet: -1600n },
       ]);
+      feed.logs.push(liquidityLog(selected, 'Mint', 11n), swapLog(selected, 11n));
+      await feed.callbacks[0]([...feed.logs].reverse());
+      expect(graph.getV3Pools()[0].state?.liquidity).toBe(1600n);
+      expect(graph.getV3InitializedTicks(selected.address)[0].liquidityGross).toBe(1600n);
+      const reads = feed.calls.filter(call => call.functionName === 'getV3Ticks').length;
+      await feed.callbacks[0](feed.logs);
+      expect(feed.calls.filter(call => call.functionName === 'getV3Ticks')).toHaveLength(reads);
+      expect(scans).toBe(2);
     } finally {
       await monitor.stop();
-      (CONTRACTS as any).flashQuery = previousFlashQuery;
+      store.close();
+      (CONTRACTS as any).flashQuery = previous;
+    }
+  });
+
+  test("startup catch-up removes liquidity burned while the bot was offline", async () => {
+    const previous = CONTRACTS.flashQuery;
+    (CONTRACTS as any).flashQuery = factory;
+    const selected = pool();
+    const feed = v3Fixture([selected]);
+    const store = new V3Store(':memory:');
+    const graph = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY, []);
+    const adapter = new V3EventAdapter(feed.client, graph, [selected], async () => {}, store, policy);
+    const monitor = new EventMonitor({ client: feed.client }, [adapter]);
+    try {
+      await monitor.startBuffering();
+      await adapter.hydrate(10n);
+      feed.head = 11n;
+      feed.liquidity = 0n;
+      feed.ticks.set(selected.address, []);
+      feed.logs.push(liquidityLog(selected, 'Burn', 11n));
+      await feed.callbacks[0](feed.logs);
+      await monitor.activate(10n);
+      expect(graph.getV3Pools()[0].state?.liquidity).toBe(0n);
+      expect(graph.getV3InitializedTicks(selected.address)).toEqual([]);
+      expect(store.snapshot(selected.address)?.blockNumber).toBe(11n);
+    } finally {
+      await monitor.stop();
+      store.close();
+      (CONTRACTS as any).flashQuery = previous;
     }
   });
 });
@@ -246,53 +223,6 @@ function syncLog(
         { type: "uint256" },
       ],
       [reserve0, reserve1]
-    ),
-  };
-}
-
-function mintLog(logIndex: number, tickLower: number, tickUpper: number, amount: bigint): any {
-  return {
-    address: poolAddress,
-    blockNumber: 1n,
-    transactionIndex: 0,
-    logIndex,
-    topics: encodeEventTopics({
-      abi: V3_POOL_EVENT_ABI,
-      eventName: "Mint",
-      args: { owner, tickLower, tickUpper },
-    }),
-    data: encodeAbiParameters(
-      [
-        { type: "address" },
-        { type: "uint128" },
-        { type: "uint256" },
-        { type: "uint256" },
-      ],
-      [owner, amount, 0n, 0n]
-    ),
-  };
-}
-
-function swapLog(logIndex: number, liquidity: bigint): any {
-  return {
-    address: poolAddress,
-    blockNumber: 1n,
-    transactionIndex: 0,
-    logIndex,
-    topics: encodeEventTopics({
-      abi: V3_POOL_EVENT_ABI,
-      eventName: "Swap",
-      args: { sender: owner, recipient: owner },
-    }),
-    data: encodeAbiParameters(
-      [
-        { type: "int256" },
-        { type: "int256" },
-        { type: "uint160" },
-        { type: "uint128" },
-        { type: "int24" },
-      ],
-      [1n, -1n, Q96 + 1n, liquidity, 120]
     ),
   };
 }

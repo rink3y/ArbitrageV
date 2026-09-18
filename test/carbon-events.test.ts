@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { type Address } from "viem";
+import { decodeFunctionResult, encodeFunctionData, encodeFunctionResult, type Address } from "viem";
+import UniswapFlashQueryABI from '../src/ABI/UniswapFlashQuery.json';
+import { CONTRACTS } from '../src/constants';
 import { EventMonitor } from "../src/runtime/event-monitor";
 import { CarbonStrategyStore } from "../src/protocols/carbon/runtime";
 import { type CarbonPairMetadata } from "../src/protocols/carbon/types";
@@ -19,6 +21,34 @@ const pair: CarbonPairMetadata = {
 };
 
 describe("CarbonStrategyStore events", () => {
+  test('loads Carbon batches through the shared JSON query ABI', async () => {
+    const previousAddress = CONTRACTS.flashQuery;
+    Object.assign(CONTRACTS, { flashQuery: controller });
+    let reads = 0;
+    const store = new CarbonStrategyStore({
+      readContract: async request => {
+        reads++;
+        expect(request.abi).toBe(UniswapFlashQueryABI);
+        expect(request.functionName).toBe('getCarbonStrategiesByPairs');
+        expect(encodeFunctionData(request)).toMatch(/^0x[0-9a-f]+$/);
+        const data = encodeFunctionResult({
+          abi: UniswapFlashQueryABI, functionName: request.functionName,
+          result: [{ token0, token1, feePpm: 4000, strategies: [{
+            id: 12n, owner: token0, tokens: [token0, token1], orders: [order(1000n), order(2000n)],
+          }] }],
+        });
+        return decodeFunctionResult({ abi: UniswapFlashQueryABI, functionName: request.functionName, data });
+      },
+    }, [pair]);
+    try {
+      await store.loadAll();
+      expect(reads).toBe(1);
+      expect(store.stats()).toEqual({ strategyCount: 1, pairCount: 1 });
+    } finally {
+      Object.assign(CONTRACTS, { flashQuery: previousAddress });
+    }
+  });
+
   test("buffers Carbon with the same feed used after startup", async () => {
     const carbonController = CARBON_CONTROLLERS[0].address;
     const carbonPair = { ...pair, controller: carbonController };

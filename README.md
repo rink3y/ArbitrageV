@@ -2,7 +2,7 @@
 
 An arbitrage bot for Sei EVM, written in TypeScript and run with Bun. It looks for circular trades across V2 pools, V3 pools, and Carbon strategies, and can execute them using a flash loan from a V2 or V3 pool.
 
-V2 pools are discovered from factories. V3 pools are listed manually. Carbon pairs come from the configured controllers. You choose which protocols to use in `src/constants.ts`.
+V2 and V3 pools are discovered from factories. Carbon pairs come from the configured controllers. You choose which protocols to use in `src/constants.ts`.
 
 ## Getting started
 
@@ -75,9 +75,29 @@ The fee uses basis points: `30` means 0.30%. For Solidly pools, discovery reads 
 
 ### V3
 
-Edit `V3_POOLS` in [src/protocols/v3/config.ts](src/protocols/v3/config.ts). Each entry needs the pool address, `token0`, `token1`, `fee`, `tickSpacing`, and `enabled` flag. There is no V3 factory discovery yet, so each pool must be added here.
+Edit `V3_FACTORIES` in [src/protocols/v3/config.ts](src/protocols/v3/config.ts). Each entry needs a name, factory address, inclusive `fromBlock`, and `enabled` flag. There is no manual pool list. Sync reads every `PoolCreated` event from each enabled factory through the confirmation cutoff, including every fee tier.
 
-V3 fees use parts per million: `3000` means 0.30%. Set an entry to `enabled: false` to leave it out of the next sync.
+The defaults cover [Dragon's concentrated-liquidity factory](https://docs.dragonswap.app/dragonswap/faq/contract-addresses/dragonswapv2), [Uniswap on Sei, available through Oku](https://gov.uniswap.org/t/official-uniswap-v3-deployments-list/24323), and [Sailor's factory](https://seiscan.io/accounts/label/sailor). The adapter supports standard Uniswap V3 reads and events plus [Sailor's extended Swap event](https://seiscan.io/address/0xa77386b7CB41a5693a0A5Ad34b6bDEB9237F35eE). It does not support Algebra or dynamically changing fees.
+
+`fromBlock` defaults to `0n` so an unknown deployment date cannot hide older pools. The first scan can take a while. Set a verified factory deployment block to skip earlier history; do not use a recent block if you want every pool. Later syncs resume from saved checkpoints. `V3_DISCOVERY_POLICY` controls the block span, confirmation depth, and metadata batch size. V3 fees use parts per million: `3000` means 0.30%.
+
+### V3's two phases
+
+`bun run sync:markets` runs phase 1. It saves each pool's factory, creation block, token addresses, fee, tick spacing, and full bitmap bounds. Factory events find the addresses; the query contract checks their immutable fields in batches. The complete V3 catalog stays in SQLite even when a pool fails the trading filters.
+
+`bun start` runs phase 2 for the selected trading pools. It reads price, current tick, active liquidity, every bitmap word in the pool's legal tick range, and every initialized tick. All reads for a snapshot use the same block. Tick liquidity and actual occupied ranges are mutable, so they belong here, not in phase 1. This loads pool liquidity, not individual LP wallets or NFT positions.
+
+The range is no longer a few words around the current price, and there is no 512-tick total cap. Reads are paginated. `V3_STARTUP_POLICY` sets page sizes, batch sizes, concurrency, and catch-up spans. Lower these if the RPC rejects large calls. Failed multi-item reads and log ranges are split into smaller requests.
+
+Completed snapshots store their block number, block hash, and full-range coverage. Interrupted downloads save a separate cursor and resume at their original block; they are never admitted to the trading graph. On restart, the bot checks the saved block hash and catches up missed events. Swaps refresh live state; mints and burns refresh their affected tick boundaries. Burned-out ticks are removed. A reorg or unavailable history triggers a fresh snapshot. Failed pools stay out of the graph until a refresh succeeds.
+
+Your RPC must serve historical factory logs and block-pinned contract reads. Recent historical state is enough for a fresh download, but an archive endpoint helps resume older downloads. A provider that silently truncates logs can produce an incomplete catalog; use one that returns complete results or an explicit range-limit error.
+
+### Updating the query contract
+
+An existing deployment cannot gain the new methods from a local file edit. Compile and deploy `FlashUniswapQueryV1` from [UniswapFlashQuery.sol](Contract/UniswapFlashQuery.sol), then put its address in `UNISWAP_FLASH_QUERY_CONTRACT_ADDRESS`. V3 uses `getV3PoolMetadata`, `getV3LiveStates`, `getV3TickBitmapWords`, and `getV3Ticks`. The V2 and Carbon read methods remain available. This change does not require redeploying `NArb`.
+
+With Foundry installed, `forge build` compiles the contracts. Deployment is a separate, paid transaction; it is not performed by sync or startup. After deployment, run `bun run sync:markets`, then restart the bot. A deployment missing the V3 read methods will fail those calls. V2-only startup does not require them.
 
 ### Carbon
 
@@ -85,7 +105,7 @@ Edit `CARBON_CONTROLLERS` in [src/protocols/carbon/config.ts](src/protocols/carb
 
 Carbon discovery uses tokens from `TOKENS` and the enabled V2/V3 markets. It reads each pair's trading fee from the controller. Changing the config's `feePpm` field does not override that fee.
 
-After editing any of these market definitions, run `bun run sync:markets` and restart. This also applies when disabling an individual V3 pool or Carbon controller, since their old entries can remain in the database until the next sync.
+After editing any of these market definitions, run `bun run sync:markets` and restart. Set a V3 factory or Carbon controller to `enabled: false` to exclude it. To disable V3 entirely, use the protocol switch in `src/constants.ts`; no factory edits are needed.
 
 ## Tokens, search, and execution
 
@@ -102,9 +122,11 @@ Execution sends a transaction through `ARB_CONTRACT_ADDRESS`. Submission logs an
 
 ## What sync keeps
 
-The SQLite database stores market definitions. Live reserves, ticks, and orders are fetched when the bot starts and then updated in memory.
+The SQLite database stores the filtered trading list. V3 also has separate, chain-scoped tables for the complete discovered catalog, factory checkpoints, completed snapshots, and unfinished downloads. Replacing the trading list or disabling V3 does not erase these tables. Existing databases gain the tables automatically; there is no manual migration or database deletion step. Old manually listed V3 pools need one factory sync before startup.
 
-Sync excludes addresses in [src/bannedtax.json](src/bannedtax.json). It also removes markets unless both tokens appear in more than one discovered market. V2 and Carbon apply additional liquidity filters when loading live state, so a discovered market may still be excluded from the graph.
+V2 reserves and Carbon orders are fetched when the bot starts and updated in memory. V3 state is also checkpointed to SQLite so a restart can catch up rather than download every tick again.
+
+The trading list excludes addresses in [src/bannedtax.json](src/bannedtax.json). It also removes markets unless both tokens appear in more than one discovered market. These filters do not delete V3's complete discovery catalog. V2 and Carbon apply additional liquidity filters when loading live state, so a discovered market may still be excluded from the graph.
 
 New pools and changes to token or market configuration need another sync and restart. Startup buffers market events while loading state, reconciles those events, then starts searching. Later searches run when tracked markets change.
 
@@ -112,7 +134,7 @@ New pools and changes to token or market configuration need another sync and res
 
 If startup reports `No markets for enabled protocols`, run sync with the protocol list you intend to use. Check that sync and startup point to the same `MARKET_DB_PATH`.
 
-For a missing pool, check its config entry, the enabled protocols, and the filters described above. Set `DEBUG=true` in `.env` for loading details.
+For a missing pool, check its factory or controller, the enabled protocols, and the filters described above. For V3, also check `fromBlock`, the confirmation cutoff, the deployed query contract's methods, and whether the RPC can read the required history. `V3 snapshot unavailable` means the pool was excluded, not loaded with a partial range. Set `DEBUG=true` in `.env` for loading details.
 
 If opportunities appear but no transaction is sent, check `executeTrades` and the arbitrage contract address. A route also needs a separate pool that can lend the starting token. Finding a profitable swap route alone isn't enough to execute it.
 
@@ -121,9 +143,10 @@ If opportunities appear but no transaction is sent, check `executeTrades` and th
 ```sh
 bunx tsc --noEmit
 bun test
+forge test
 ```
 
-Tests use fixtures and mocked clients; they don't submit trades or require a live chain. The full suite includes the stress tests. You can also run the V2 stress tests and the local benchmark separately:
+The Bun tests use fixtures and mocked clients. Foundry tests run the query contract against local mock pools. Neither submits trades or requires a live chain. The Bun suite includes the stress tests. You can also run the V2 stress tests and the local benchmark separately:
 
 ```sh
 bun run test:stress

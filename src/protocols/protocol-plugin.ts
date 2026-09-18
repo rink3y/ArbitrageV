@@ -6,6 +6,9 @@ import { type ProtocolEventAdapter } from '../runtime/protocol-event-adapter';
 
 export type MarketReadClient = {
   readContract(parameters: any): Promise<unknown>;
+  getBlockNumber(): Promise<bigint>;
+  getBlock(parameters: any): Promise<{ number: bigint | null; hash: `0x${string}` | null }>;
+  getLogs(parameters: any): Promise<any[]>;
 };
 
 export type MarketDiscoveryContext = {
@@ -15,6 +18,7 @@ export type MarketDiscoveryContext = {
 
 export type MarketHydrationContext = MarketDiscoveryContext & {
   engine: OpportunityEngine;
+  blockNumber?: bigint;
 };
 
 export type MarketEventContext = {
