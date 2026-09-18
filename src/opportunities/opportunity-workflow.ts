@@ -18,39 +18,11 @@ export type OpportunityWorkflowRequest = {
 
 export function createOpportunityScanner(
   engine: OpportunityEngine,
-  networkConfig: NetworkConfig,
-  reconcileMarkets?: (addresses: readonly Address[]) => Promise<unknown>
+  networkConfig: NetworkConfig
 ): (request?: OpportunityWorkflowRequest) => Promise<ArbitrageSearchResult> {
-  const manager = EXECUTION_POLICY.executeTrades
-    ? new OpportunityManager(
-        networkConfig,
-        undefined,
-        reconcileMarkets ? opportunity => refreshOpportunity(engine, opportunity, reconcileMarkets) : undefined
-      )
-    : null;
+  const manager = EXECUTION_POLICY.executeTrades ? new OpportunityManager(networkConfig) : null;
   if (manager) void manager.warmNonce();
   return request => scanAndExecuteOpportunities(engine, manager, request);
-}
-
-async function refreshOpportunity(
-  engine: OpportunityEngine,
-  opportunity: ExecutableOpportunity,
-  reconcileMarkets: (addresses: readonly Address[]) => Promise<unknown>
-): Promise<ExecutableOpportunity | null> {
-  await reconcileMarkets(opportunity.pairs);
-  const refreshed = engine.findOpportunities({
-    startTokens: [opportunity.path[0]],
-    changedPairs: opportunity.pairs,
-  });
-  return refreshed.find(candidate => sameRoute(candidate, opportunity)) ?? null;
-}
-
-function sameRoute(left: ExecutableOpportunity, right: ExecutableOpportunity): boolean {
-  return left.pairs.length === right.pairs.length
-    && left.path.length === right.path.length
-    && left.pairs.every((pair, index) => pair.toLowerCase() === right.pairs[index].toLowerCase())
-    && left.path.every((token, index) => token.toLowerCase() === right.path[index].toLowerCase())
-    && left.protocols.every((protocol, index) => protocol === right.protocols[index]);
 }
 
 async function scanAndExecuteOpportunities(

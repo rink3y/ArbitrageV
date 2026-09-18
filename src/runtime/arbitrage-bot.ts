@@ -29,12 +29,7 @@ export async function runArbitrageBot(): Promise<void> {
     ARBITRAGE_SEARCH_POLICY,
     []
   );
-  let monitor!: EventMonitor;
-  const scanOpportunities = createOpportunityScanner(
-    graph,
-    network,
-    addresses => monitor.reconcileMarkets(addresses)
-  );
+  const scanOpportunities = createOpportunityScanner(graph, network);
   const scanScheduler = new LatestUpdateScheduler<ScanUpdate>(
     async updates => {
       const releasedPairs = new Map<string, Address>();
@@ -54,7 +49,7 @@ export async function runArbitrageBot(): Promise<void> {
   const eventAdapters = runtimePlugins
     .map(plugin => plugin.events({ client: network.client, catalog, engine: graph, scan: scheduleScan }))
     .filter(adapter => adapter !== null);
-  monitor = new EventMonitor(network, eventAdapters);
+  const monitor = new EventMonitor(network, eventAdapters);
 
   console.log('Starting market event feed in buffering mode...');
   await monitor.startBuffering();

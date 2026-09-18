@@ -100,10 +100,7 @@ export class OpportunityManager {
         private readonly submitOpportunity?: (
             graph: FlashPoolLookup,
             opportunity: ExecutableOpportunity
-        ) => Promise<boolean>,
-        private readonly refreshOpportunity?: (
-            opportunity: ExecutableOpportunity
-        ) => Promise<ExecutableOpportunity | null>
+        ) => Promise<boolean>
     ) {
         this.nonceTracker = new NonceTracker(networkConfig);
     }
@@ -163,18 +160,10 @@ export class OpportunityManager {
             }
 
             try {
-                const current = this.refreshOpportunity
-                    ? await this.refreshOpportunity(opp)
-                    : opp;
-                if (!current) {
-                    this.releasePairs(opp.pairs);
-                    continue;
-                }
-
                 // Execute the opportunity
                 const executed = await (this.submitOpportunity
-                    ? this.submitOpportunity(graph, current)
-                    : this.executeArbitrageOpportunity(graph, current));
+                    ? this.submitOpportunity(graph, opp)
+                    : this.executeArbitrageOpportunity(graph, opp));
                 if (!executed) {
                     this.releasePairs(opp.pairs);
                     continue;
@@ -182,8 +171,8 @@ export class OpportunityManager {
 
                 if (RUNTIME.debug) {
                     console.log('Submitted opportunity:', {
-                        profit: current.profit.toString(),
-                        pairs: current.pairs
+                        profit: opp.profit.toString(),
+                        pairs: opp.pairs
                     });
                 }
             } catch (error) {
@@ -238,8 +227,16 @@ export class OpportunityManager {
             account: this.networkConfig.account,
             nonce,
             gas: EXECUTION_POLICY.gasLimit,
-            gasPrice: EXECUTION_POLICY.baseFee,
-            type: 'legacy',
+            ...(EXECUTION_POLICY.legacy
+                ? {
+                    gasPrice: EXECUTION_POLICY.legacyGasPrice,
+                    type: 'legacy' as const,
+                }
+                : {
+                    maxFeePerGas: EXECUTION_POLICY.maxFeePerGas,
+                    maxPriorityFeePerGas: EXECUTION_POLICY.maxPriorityFeePerGas,
+                    type: 'eip1559' as const,
+                }),
         });
         
         if (RUNTIME.debug) {

@@ -36,7 +36,10 @@ export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
 export const EXECUTION_POLICY = {
     executeTrades: true,
     gasLimit: 2500000n,
-    baseFee: gasPrice('50.9'),
+    legacy: false,
+    legacyGasPrice: gasPrice('50.9'),
+    maxFeePerGas: gasPrice('60'),
+    maxPriorityFeePerGas: gasPrice('3'),
 } as const;
 
 export const RUNTIME = {

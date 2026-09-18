@@ -32,19 +32,3 @@ test("locks pools before an overlapping fire-and-forget submission", async () =>
   releaseFirst();
   await first;
 });
-
-test("submits the refreshed opportunity", async () => {
-  let submittedProfit = 0n;
-  const manager = new OpportunityManager(
-    {} as never,
-    async (_graph, refreshed) => {
-      submittedProfit = refreshed.profit;
-      return true;
-    },
-    async stale => ({ ...stale, profit: 2n })
-  );
-
-  await manager.processOpportunities({} as never, [opportunity]);
-
-  expect(submittedProfit).toBe(2n);
-});
