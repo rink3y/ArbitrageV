@@ -5,24 +5,23 @@ import { loadMarketSnapshot } from '../market-db';
 import { initializeNetwork } from '../network';
 import { OpportunityEngine } from '../opportunities/opportunity-engine';
 import { createOpportunityScanner } from '../opportunities/opportunity-workflow';
-import { PROTOCOL_PLUGINS } from '../protocols/registry';
+import { enabledProtocolPlugins } from '../protocols/registry';
 import { LatestUpdateScheduler } from './event-scheduler';
 
 type ScanUpdate = { key: string; releasedPairs: readonly Address[] };
 
 export async function runArbitrageBot(): Promise<void> {
+  const runtimePlugins = enabledProtocolPlugins();
   console.log('Initializing network...');
   const network = await initializeNetwork();
 
   console.log('Loading market metadata...');
   const catalog = loadMarketSnapshot();
-  const { v2Pools, v3Pools } = catalog;
-
-  if (v2Pools.length + v3Pools.length === 0) {
-    throw new Error('Market database is empty. Run `bun run sync:markets` first.');
+  if (runtimePlugins.every(plugin => plugin.count(catalog) === 0)) {
+    throw new Error('No markets for enabled protocols. Run `bun run sync:markets` first.');
   }
 
-  console.log(`Loaded ${PROTOCOL_PLUGINS.map(plugin => `${plugin.count(catalog)} ${plugin.id}`).join(', ')} markets from SQLite`);
+  console.log(`Loaded ${runtimePlugins.map(plugin => `${plugin.count(catalog)} ${plugin.id}`).join(', ')} markets from SQLite`);
 
   console.log('Building arbitrage graph...');
   const graph = new OpportunityEngine(
@@ -45,7 +44,6 @@ export async function runArbitrageBot(): Promise<void> {
   );
   const scheduleScan = (changedPairs: readonly string[], releasedPairs: readonly Address[] = []) =>
     scanScheduler.submit(changedPairs.map(key => ({ key, releasedPairs })));
-  const runtimePlugins = PROTOCOL_PLUGINS;
   const eventAdapters = runtimePlugins
     .map(plugin => plugin.events({ client: network.client, catalog, engine: graph, scan: scheduleScan }))
     .filter(adapter => adapter !== null);
@@ -55,7 +53,7 @@ export async function runArbitrageBot(): Promise<void> {
   await monitor.startBuffering();
 
   try {
-    console.log('Fetching live V2 reserves, V3 startup state, and Carbon strategies...');
+    console.log(`Fetching live state for ${runtimePlugins.map(plugin => plugin.id).join(', ')}...`);
     const hydrationStartedAtBlock = await network.client.getBlockNumber();
     await Promise.all(runtimePlugins.map(plugin => plugin.hydrate({
       client: network.client,

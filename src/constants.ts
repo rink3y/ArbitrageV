@@ -24,6 +24,7 @@ export const CONTRACTS = {
 
 export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
     topTokens: 10,
+    // Controls discovery, live loading, event monitoring, and route searches. Use ['v2'] for V2 only.
     allowedProtocols: ['v2', 'v3', 'carbon'],
     allowProtocolMixing: true,
     maxRouteEdges: 5,

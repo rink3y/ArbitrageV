@@ -1,0 +1,116 @@
+import { afterEach, expect, mock, spyOn, test } from 'bun:test';
+import { ARBITRAGE_SEARCH_POLICY, CONTRACTS, NETWORK } from '../src/constants';
+import * as marketDb from '../src/market-db';
+import * as network from '../src/network';
+import * as workflow from '../src/opportunities/opportunity-workflow';
+import { protocolPlugin } from '../src/protocols/registry';
+import { runArbitrageBot } from '../src/runtime/arbitrage-bot';
+import { syncMarkets } from '../src/sync-markets';
+
+const previousProtocols = ARBITRAGE_SEARCH_POLICY.allowedProtocols;
+const previousSigintListeners = new Set(process.listeners('SIGINT'));
+const token0 = '0x0000000000000000000000000000000000000001';
+const token1 = '0x0000000000000000000000000000000000000002';
+const v2Address = '0x0000000000000000000000000000000000000003';
+
+afterEach(() => {
+  ARBITRAGE_SEARCH_POLICY.allowedProtocols = previousProtocols;
+  mock.restore();
+  for (const listener of process.listeners('SIGINT')) {
+    if (!previousSigintListeners.has(listener)) process.removeListener('SIGINT', listener);
+  }
+});
+
+function prepareRuntime() {
+  ARBITRAGE_SEARCH_POLICY.allowedProtocols = ['v2'];
+  const catalog: marketDb.MarketSnapshot = {
+    v2Pools: [{
+      pairAddress: v2Address, token0, token1, factory: 'test', fee: 30,
+      variant: 'uniswap-v2', scale0: 1n, scale1: 1n,
+    }],
+    v3Pools: [{
+      name: 'cached-v3', address: '0x0000000000000000000000000000000000000004',
+      token0, token1, fee: 3000, tickSpacing: 60, enabled: true,
+    }],
+    carbonPairs: [{
+      controller: '0x0000000000000000000000000000000000000005',
+      token0, token1, strategyCount: 1, feePpm: 4000,
+    }],
+  };
+  const watch = mock((_parameters: unknown) => () => {});
+  const initialize = spyOn(network, 'initializeNetwork').mockResolvedValue({
+    client: { watchContractEvent: watch, getBlockNumber: async () => 10n },
+  } as unknown as network.NetworkConfig);
+  spyOn(marketDb, 'loadMarketSnapshot').mockReturnValue(catalog);
+  const scan = mock(async () => []);
+  const scanner = spyOn(workflow, 'createOpportunityScanner').mockReturnValue(scan);
+  const v2Hydrate = spyOn(protocolPlugin('v2'), 'hydrate').mockResolvedValue();
+  const disabled = ['v3', 'carbon'].map(id => {
+    const plugin = protocolPlugin(id as 'v3' | 'carbon');
+    return {
+      hydrate: spyOn(plugin, 'hydrate').mockResolvedValue(),
+      events: spyOn(plugin, 'events').mockReturnValue(null),
+    };
+  });
+  spyOn(console, 'log').mockImplementation(() => {});
+  return { catalog, watch, initialize, scan, scanner, v2Hydrate, disabled };
+}
+
+test('V2-only startup skips cached V3 and Carbon hydration and event subscriptions', async () => {
+  const { watch, scan, scanner, v2Hydrate, disabled } = prepareRuntime();
+  await runArbitrageBot();
+
+  expect(v2Hydrate).toHaveBeenCalledTimes(1);
+  for (const plugin of disabled) {
+    expect(plugin.hydrate).not.toHaveBeenCalled();
+    expect(plugin.events).not.toHaveBeenCalled();
+  }
+  expect(watch).toHaveBeenCalledTimes(1);
+  expect(watch.mock.calls[0]).toEqual([expect.objectContaining({ address: [v2Address] })]);
+  expect(scanner.mock.calls[0][0].getV3PoolAddresses()).toEqual([]);
+  expect(scan).toHaveBeenCalledTimes(1);
+});
+
+test('cached disabled markets do not satisfy the startup market check', async () => {
+  const { catalog, watch, v2Hydrate } = prepareRuntime();
+  catalog.v2Pools = [];
+  await expect(runArbitrageBot()).rejects.toThrow('No markets for enabled protocols');
+  expect(watch).not.toHaveBeenCalled();
+  expect(v2Hydrate).not.toHaveBeenCalled();
+});
+
+test('empty protocol configuration fails before network initialization', async () => {
+  const { initialize } = prepareRuntime();
+  ARBITRAGE_SEARCH_POLICY.allowedProtocols = [];
+  await expect(runArbitrageBot()).rejects.toThrow('ARBITRAGE_SEARCH_POLICY.allowedProtocols');
+  expect(initialize).not.toHaveBeenCalled();
+});
+
+test('V2-only market sync discovers and stores only enabled protocols', async () => {
+  const { catalog } = prepareRuntime();
+  const previousRpc = NETWORK.rpcUrl;
+  const previousFlashQuery = CONTRACTS.flashQuery;
+  // Discovery is stubbed, so no RPC calls or database writes occur.
+  Object.assign(NETWORK, { rpcUrl: 'http://127.0.0.1:1' });
+  Object.assign(CONTRACTS, { flashQuery: v2Address });
+  const pools = [catalog.v2Pools[0], {
+    ...catalog.v2Pools[0],
+    pairAddress: '0x0000000000000000000000000000000000000006' as const,
+  }];
+  const v2Discover = spyOn(protocolPlugin('v2'), 'discover').mockImplementation(async context => {
+    context.catalog.v2Pools = pools;
+  });
+  const v3Discover = spyOn(protocolPlugin('v3'), 'discover').mockResolvedValue();
+  const carbonDiscover = spyOn(protocolPlugin('carbon'), 'discover').mockResolvedValue();
+  const save = spyOn(marketDb, 'replaceMarketSnapshot').mockImplementation(() => {});
+  try {
+    await syncMarkets();
+    expect(v2Discover).toHaveBeenCalledTimes(1);
+    expect(v3Discover).not.toHaveBeenCalled();
+    expect(carbonDiscover).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalledWith({ v2Pools: pools, v3Pools: [], carbonPairs: [] });
+  } finally {
+    Object.assign(NETWORK, { rpcUrl: previousRpc });
+    Object.assign(CONTRACTS, { flashQuery: previousFlashQuery });
+  }
+});

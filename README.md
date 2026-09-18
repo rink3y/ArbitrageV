@@ -48,7 +48,7 @@ Then wire the boring bits:
 
 1. Implement `ProtocolPlugin` from `src/protocols/protocol-plugin.ts`. Give it an `id`, unique `contractId`, `discover`, `hydrate`, `events`, and `count`.
 2. Add any new catalog/graph types to the shared market model. Reuse existing shapes when they are genuinely compatible; fake compatibility gets expensive fast.
-3. Register the plugin in `src/protocols/registry.ts`. Order matters when one plugin's discovery depends on another, like Carbon using the V2/V3 token universe.
+3. Register the plugin in `src/protocols/registry.ts` and include its ID in `ARBITRAGE_SEARCH_POLICY.allowedProtocols` in `src/constants.ts`. Order matters when one plugin's discovery depends on another, like Carbon using the V2/V3 token universe.
 4. Add matching route execution support in `Contract/NArb.sol`. The TypeScript `contractId` and Solidity protocol ID must agree or the bot will confidently encode nonsense.
 5. Run `bun run sync:markets`, then typecheck and test. A plugin is done when discovery, startup hydration, event updates, quotes, and execution all describe the same market.
 
@@ -70,6 +70,16 @@ Fill in `.env`, then review:
 - `src/network` to change network
 
 `EXECUTION_POLICY.executeTrades` is currently `true`. That is intentionally loud here.
+
+To enable or disable protocols, edit only `ARBITRAGE_SEARCH_POLICY.allowedProtocols` in `src/constants.ts`:
+
+```ts
+allowedProtocols: ['v2'], // V2 only. Add 'v3' or 'carbon' to enable them.
+```
+
+This list controls market discovery, live-state loading, event monitoring, and arbitrage routes. At least one protocol must be enabled. The registry preserves discovery order automatically.
+
+Restart the bot after changing the list. Disabling a protocol takes effect even if its markets remain in SQLite. When enabling a protocol, run `bun run sync:markets` first to populate its markets. Sync replaces the catalog with markets from the enabled protocols only.
 
 ## Run
 
