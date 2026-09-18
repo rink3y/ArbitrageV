@@ -1,6 +1,6 @@
 import { type Address, type PublicClient } from 'viem';
 import { RUNTIME } from '../../constants';
-import { type OpportunityEngine } from '../../opportunities/opportunity-engine';
+import { type MarketGraph } from '../../market-graph/market-graph';
 import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter';
 import { V3_STARTUP_POLICY } from './config';
 import { decodeV3PoolEvent, V3_POOL_EVENT_ABI } from './events';
@@ -21,7 +21,7 @@ export class V3EventAdapter implements ProtocolEventAdapter {
 
   constructor(
     private readonly client: PublicClient<any, any, any>,
-    private readonly engine: OpportunityEngine,
+    private readonly graph: MarketGraph,
     pools: readonly V3PoolConfig[],
     private readonly scan: (changedPairs: readonly string[], releasedPairs?: readonly Address[]) => Promise<void>,
     store = new V3Store(),
@@ -82,7 +82,7 @@ export class V3EventAdapter implements ProtocolEventAdapter {
     const requested = [...this.pools].filter(([key]) => keys.has(key)).map(([, pool]) => pool);
     for (const pool of requested) {
       this.requestedRevision.set(pool.address.toLowerCase(), revision);
-      this.engine.invalidateV3Pool(pool.address);
+      this.graph.invalidateV3Pool(pool.address);
     }
     const work = async () => {
       const pools = requested.filter(pool => this.requestedRevision.get(pool.address.toLowerCase()) === revision);
@@ -92,7 +92,7 @@ export class V3EventAdapter implements ProtocolEventAdapter {
       for (const snapshot of result.snapshots) {
         if (this.requestedRevision.get(snapshot.poolAddress.toLowerCase()) !== revision) continue;
         const pool = this.pools.get(snapshot.poolAddress.toLowerCase())!;
-        this.engine.replaceV3Snapshot(pool, snapshot);
+        this.graph.replaceV3Snapshot(pool, snapshot);
       }
       for (const address of result.failed) console.warn(`V3 snapshot unavailable for ${address}; pool excluded until a successful refresh`);
       if (RUNTIME.debug) console.log(`V3 ready: ${result.snapshots.length}/${pools.length} pools at block ${target}`);

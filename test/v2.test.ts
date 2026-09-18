@@ -42,7 +42,7 @@ function pair(
 function buildGraph(pairs: PairInfo[]): OpportunityEngine {
   const graph = new OpportunityEngine();
   for (const pool of pairs) {
-    graph.addPair(pool);
+    graph.graph.addPair(pool);
   }
   return graph;
 }
@@ -83,7 +83,7 @@ describe("V2 arbitrage graph", () => {
 
     const opportunity = graph.findOpportunities({ startTokens: [tokenA] })[0];
     expect(opportunity.routeData).toEqual(['0x01', '0x', '0x']);
-    expect(graph.findBestFlashPoolForToken(tokenA, 1n, [pairAddress(2), pairAddress(3)])).toBeNull();
+    expect(graph.graph.findBestFlashPoolForToken(tokenA, 1n, [pairAddress(2), pairAddress(3)])).toBeNull();
   });
 
   test("finds a profitable three-pool circular arbitrage route", () => {
@@ -269,7 +269,7 @@ describe("V2 arbitrage graph", () => {
       pair(11, tokenB, tokenC, tokenAmount("1000"), tokenAmount("3000")),
       pair(12, tokenC, tokenD, tokenAmount("1000"), tokenAmount("2000")),
       pair(13, tokenD, tokenA, tokenAmount("1000"), tokenAmount("2000")),
-    ]) graph.addPair(pool);
+    ]) graph.graph.addPair(pool);
 
     const opportunities = graph.findOpportunities({ startTokens: [tokenA, tokenB] });
 

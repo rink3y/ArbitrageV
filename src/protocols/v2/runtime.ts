@@ -1,6 +1,6 @@
 import { type Address } from 'viem';
 import { type PublicClient } from 'viem';
-import { type OpportunityEngine } from '../../opportunities/opportunity-engine';
+import { type MarketGraph } from '../../market-graph/market-graph';
 import { LatestUpdateScheduler } from '../../runtime/event-scheduler';
 import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter';
 import { decodeV2SyncEvent, V2_SYNC_EVENT_ABI } from './events';
@@ -202,7 +202,7 @@ export class V2EventAdapter implements ProtocolEventAdapter {
 
   constructor(
     private readonly client: PublicClient<any, any, any>,
-    private readonly engine: OpportunityEngine,
+    private readonly graph: MarketGraph,
     pools: readonly V2PoolMetadata[],
     private readonly scan: (changedPairs: readonly string[], releasedPairs?: readonly Address[]) => Promise<void>
   ) {
@@ -254,7 +254,7 @@ export class V2EventAdapter implements ProtocolEventAdapter {
       if (pool) touched.set(key, pool);
     }
     const pairs = await refreshKnownPairsInfo(this.client, [...touched.values()]);
-    for (const pair of pairs) this.engine.addPair(pair);
+    for (const pair of pairs) this.graph.addPair(pair);
   }
 
   async apply(logs: any[]): Promise<void> {
@@ -278,7 +278,7 @@ export class V2EventAdapter implements ProtocolEventAdapter {
     for (const update of updates) {
       const pool = this.pools.get(update.pairAddress.toLowerCase());
       if (!pool) continue;
-      this.engine.addPair({ ...pool, reserve0: update.reserve0, reserve1: update.reserve1 });
+      this.graph.addPair({ ...pool, reserve0: update.reserve0, reserve1: update.reserve1 });
     }
     await this.scan(updates.map(update => update.pairAddress), updates.map(update => update.pairAddress));
   }

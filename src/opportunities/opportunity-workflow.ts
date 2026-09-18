@@ -16,13 +16,24 @@ export type OpportunityWorkflowRequest = {
   releasedPairs?: readonly Address[];
 };
 
-export function createOpportunityScanner(
+export async function createOpportunityScanner(
   engine: OpportunityEngine,
   networkConfig: NetworkConfig
-): (request?: OpportunityWorkflowRequest) => Promise<ArbitrageSearchResult> {
+): Promise<{
+  scan: (request?: OpportunityWorkflowRequest) => Promise<ArbitrageSearchResult>;
+  stop: () => void;
+}> {
   const manager = EXECUTION_POLICY.executeTrades ? new OpportunityManager(networkConfig) : null;
-  if (manager) void manager.warmNonce();
-  return request => scanAndExecuteOpportunities(engine, manager, request);
+  try {
+    await manager?.start();
+  } catch (error) {
+    manager?.stop();
+    throw error;
+  }
+  return {
+    scan: request => scanAndExecuteOpportunities(engine, manager, request),
+    stop: () => manager?.stop(),
+  };
 }
 
 async function scanAndExecuteOpportunities(
@@ -44,7 +55,7 @@ async function scanAndExecuteOpportunities(
 
     if (executableOpportunities.length === 0) return opportunities;
 
-    manager.processOpportunities(engine, executableOpportunities).catch(error => {
+    manager.processOpportunities(engine.graph, executableOpportunities).catch(error => {
       if (RUNTIME.debug) {
         console.error('Error processing opportunities:', error);
       }

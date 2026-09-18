@@ -50,8 +50,8 @@ function pool(id: number, token0: Address, token1: Address): V3PoolConfig {
 }
 
 function addLivePool(engine: OpportunityEngine, config: V3PoolConfig, sqrtPriceX96 = Q96): void {
-  engine.addV3Pool(config);
-  engine.updateV3PoolStates([{
+  engine.graph.addV3Pool(config);
+  engine.graph.updateV3PoolStates([{
     poolAddress: config.address,
     sqrtPriceX96,
     liquidity: 10n ** 24n,
@@ -63,7 +63,7 @@ function createUnifiedMarket(): { engine: OpportunityEngine; changedPair: PairIn
   const engine = new OpportunityEngine(policy, []);
 
   for (let i = 0; i < 15_000; i++) {
-    engine.addPair(pair(10_000 + i, tokenA, tokenAddress(i), tokenAmount('1000000'), tokenAmount('999000')));
+    engine.graph.addPair(pair(10_000 + i, tokenA, tokenAddress(i), tokenAmount('1000000'), tokenAmount('999000')));
   }
 
   for (let i = 0; i < 5_000; i++) {
@@ -71,8 +71,8 @@ function createUnifiedMarket(): { engine: OpportunityEngine; changedPair: PairIn
   }
 
   const changedPair = pair(1, tokenA, tokenB, tokenAmount('1000'), tokenAmount('2200'));
-  engine.addPair(changedPair);
-  engine.addPair(pair(2, tokenC, tokenA, tokenAmount('1000'), tokenAmount('2200')));
+  engine.graph.addPair(changedPair);
+  engine.graph.addPair(pair(2, tokenC, tokenA, tokenAmount('1000'), tokenAmount('2200')));
   addLivePool(engine, pool(1, tokenB, tokenC), Q96 * 2n);
   return { engine, changedPair };
 }
@@ -81,13 +81,13 @@ function createV2Market(): { engine: OpportunityEngine; changedPair: PairInfo } 
   const engine = new OpportunityEngine(policy, []);
 
   for (let i = 0; i < 25_000; i++) {
-    engine.addPair(pair(10_000 + i, tokenA, tokenAddress(i), tokenAmount('1000000'), tokenAmount('999000')));
+    engine.graph.addPair(pair(10_000 + i, tokenA, tokenAddress(i), tokenAmount('1000000'), tokenAmount('999000')));
   }
 
   const changedPair = pair(1, tokenA, tokenB, tokenAmount('1000'), tokenAmount('1100'));
-  engine.addPair(changedPair);
-  engine.addPair(pair(2, tokenB, tokenC, tokenAmount('1000'), tokenAmount('2200')));
-  engine.addPair(pair(3, tokenC, tokenA, tokenAmount('1000'), tokenAmount('2200')));
+  engine.graph.addPair(changedPair);
+  engine.graph.addPair(pair(2, tokenB, tokenC, tokenAmount('1000'), tokenAmount('2200')));
+  engine.graph.addPair(pair(3, tokenC, tokenA, tokenAmount('1000'), tokenAmount('2200')));
   return { engine, changedPair };
 }
 

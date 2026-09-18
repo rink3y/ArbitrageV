@@ -24,41 +24,39 @@ export async function runArbitrageBot(): Promise<void> {
   console.log(`Loaded ${runtimePlugins.map(plugin => `${plugin.count(catalog)} ${plugin.id}`).join(', ')} markets from SQLite`);
 
   console.log('Building arbitrage graph...');
-  const graph = new OpportunityEngine(
-    ARBITRAGE_SEARCH_POLICY,
-    []
-  );
-  const scanOpportunities = createOpportunityScanner(graph, network);
-  const scanScheduler = new LatestUpdateScheduler<ScanUpdate>(
-    async updates => {
-      const releasedPairs = new Map<string, Address>();
-      for (const update of updates) {
-        for (const pair of update.releasedPairs) releasedPairs.set(pair.toLowerCase(), pair);
-      }
-      await scanOpportunities({
-        changedPairs: updates.map(update => update.key),
-        releasedPairs: [...releasedPairs.values()],
-      });
-    },
-    update => update.key.toLowerCase()
-  );
-  const scheduleScan = (changedPairs: readonly string[], releasedPairs: readonly Address[] = []) =>
-    scanScheduler.submit(changedPairs.map(key => ({ key, releasedPairs })));
-  const eventAdapters = runtimePlugins
-    .map(plugin => plugin.events({ client: network.client, catalog, engine: graph, scan: scheduleScan }))
-    .filter(adapter => adapter !== null);
-  const monitor = new EventMonitor(network, eventAdapters);
-
-  console.log('Starting market event feed in buffering mode...');
-  await monitor.startBuffering();
-
+  const engine = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY);
+  const { scan: scanOpportunities, stop: stopExecution } = await createOpportunityScanner(engine, network);
+  let monitor: EventMonitor | undefined;
   try {
+    const scanScheduler = new LatestUpdateScheduler<ScanUpdate>(
+      async updates => {
+        const releasedPairs = new Map<string, Address>();
+        for (const update of updates) {
+          for (const pair of update.releasedPairs) releasedPairs.set(pair.toLowerCase(), pair);
+        }
+        await scanOpportunities({
+          changedPairs: updates.map(update => update.key),
+          releasedPairs: [...releasedPairs.values()],
+        });
+      },
+      update => update.key.toLowerCase()
+    );
+    const scheduleScan = (changedPairs: readonly string[], releasedPairs: readonly Address[] = []) =>
+      scanScheduler.submit(changedPairs.map(key => ({ key, releasedPairs })));
+    const eventAdapters = runtimePlugins
+      .map(plugin => plugin.events({ client: network.client, catalog, graph: engine.graph, scan: scheduleScan }))
+      .filter(adapter => adapter !== null);
+    monitor = new EventMonitor(network, eventAdapters);
+
+    console.log('Starting market event feed in buffering mode...');
+    await monitor.startBuffering();
+
     console.log(`Fetching live state for ${runtimePlugins.map(plugin => plugin.id).join(', ')}...`);
     const hydrationStartedAtBlock = await network.client.getBlockNumber();
     await Promise.all(runtimePlugins.map(plugin => plugin.hydrate({
       client: network.client,
       catalog,
-      engine: graph,
+      graph: engine.graph,
       blockNumber: hydrationStartedAtBlock,
     })));
     const hydrationCompletedAtBlock = await network.client.getBlockNumber();
@@ -67,17 +65,18 @@ export async function runArbitrageBot(): Promise<void> {
     if (RUNTIME.debug) console.log(`Loaded live state for ${runtimePlugins.map(plugin => plugin.id).join(', ')}`);
     console.log('Reconciling events received during startup...');
     await monitor.activate(hydrationStartedAtBlock);
+    console.log('Searching for initial arbitrage opportunities...');
+    await scanOpportunities();
+
+    process.on('SIGINT', async () => {
+      console.log('\nStopping event monitor...');
+      stopExecution();
+      await monitor?.stop();
+      process.exit();
+    });
   } catch (error) {
-    await monitor.stop();
+    stopExecution();
+    await monitor?.stop();
     throw error;
   }
-
-  console.log('Searching for initial arbitrage opportunities...');
-  await scanOpportunities();
-
-  process.on('SIGINT', async () => {
-    console.log('\nStopping event monitor...');
-    await monitor.stop();
-    process.exit();
-  });
 }

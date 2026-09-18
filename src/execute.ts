@@ -13,40 +13,10 @@ import {
     type FlashPoolLookup,
 } from './execution/execution-planner';
 import { type NetworkConfig } from './network';
+import { LocalNonces } from './execution/local-nonces';
 import { formatTokenAmountWithSymbol } from './values';
 
 const TOKEN_PROFIT_SCALE = new Map(TOKENS.map(token => [token.address.toLowerCase(), token.minProfit]));
-
-class NonceTracker {
-    private currentNonce: number | null = null;
-    private initialization: Promise<void> | null = null;
-
-    constructor(private readonly networkConfig: NetworkConfig) {}
-
-    async initialize(): Promise<void> {
-        if (this.currentNonce !== null) return;
-
-        this.initialization ??= (async () => {
-            this.currentNonce = Number(await this.networkConfig.client.getTransactionCount({
-                address: this.networkConfig.account.address,
-            }));
-
-            if (RUNTIME.debug) {
-                console.log(`Initialized nonce tracker with nonce: ${this.currentNonce}`);
-            }
-        })();
-
-        await this.initialization;
-    }
-
-    async next(): Promise<number> {
-        await this.initialize();
-
-        const nonce = this.currentNonce!;
-        this.currentNonce = nonce + 1;
-        return nonce;
-    }
-}
 
 async function sendTransactionNotification(
     hash: string,
@@ -93,7 +63,7 @@ const PAIR_LOCK_TIMEOUT_MS = 30_000;
 // Keeps route pools unavailable until their next local market update.
 export class OpportunityManager {
     private lockedPairs: Map<string, number> = new Map();
-    private nonceTracker: NonceTracker;
+    private readonly nonces: LocalNonces;
 
     constructor(
         private readonly networkConfig: NetworkConfig,
@@ -102,11 +72,19 @@ export class OpportunityManager {
             opportunity: ExecutableOpportunity
         ) => Promise<boolean>
     ) {
-        this.nonceTracker = new NonceTracker(networkConfig);
+        this.nonces = new LocalNonces(
+            () => networkConfig.client.getTransactionCount({ address: networkConfig.account.address, blockTag: 'pending' }),
+            EXECUTION_POLICY.nonceRefreshIntervalMs,
+            EXECUTION_POLICY.nonceRetryIntervalMs,
+        );
     }
 
-    warmNonce(): Promise<void> {
-        return this.nonceTracker.initialize();
+    async start(): Promise<void> {
+        await this.nonces.start();
+    }
+
+    stop(): void {
+        this.nonces.stop();
     }
 
     // Unlock only pools whose new state has already been applied locally.
@@ -216,28 +194,33 @@ export class OpportunityManager {
             });
         }
 
-        const nonce = await this.nonceTracker.next();
-
-        const hash = await this.networkConfig.walletClient.writeContract({
-            address: CONTRACTS.arbitrage as Address,
-            abi: ArbABI,
-            functionName: 'executeArbitrage',
-            args: [plan.params],
-            chain: this.networkConfig.walletClient.chain,
-            account: this.networkConfig.account,
-            nonce,
-            gas: EXECUTION_POLICY.gasLimit,
-            ...(EXECUTION_POLICY.legacy
-                ? {
-                    gasPrice: EXECUTION_POLICY.legacyGasPrice,
-                    type: 'legacy' as const,
-                }
-                : {
-                    maxFeePerGas: EXECUTION_POLICY.maxFeePerGas,
-                    maxPriorityFeePerGas: EXECUTION_POLICY.maxPriorityFeePerGas,
-                    type: 'eip1559' as const,
-                }),
-        });
+        const nonce = this.nonces.reserve();
+        let hash: `0x${string}`;
+        try {
+            hash = await this.networkConfig.walletClient.writeContract({
+                address: CONTRACTS.arbitrage as Address,
+                abi: ArbABI,
+                functionName: 'executeArbitrage',
+                args: [plan.params],
+                chain: this.networkConfig.walletClient.chain,
+                account: this.networkConfig.account,
+                nonce,
+                gas: EXECUTION_POLICY.gasLimit,
+                ...(EXECUTION_POLICY.legacy
+                    ? {
+                        gasPrice: EXECUTION_POLICY.legacyGasPrice,
+                        type: 'legacy' as const,
+                    }
+                    : {
+                        maxFeePerGas: EXECUTION_POLICY.maxFeePerGas,
+                        maxPriorityFeePerGas: EXECUTION_POLICY.maxPriorityFeePerGas,
+                        type: 'eip1559' as const,
+                    }),
+            });
+        } catch (error) {
+            this.nonces.submissionFailed(nonce);
+            throw error;
+        }
         
         if (RUNTIME.debug) {
             console.log('Transaction sent:', {

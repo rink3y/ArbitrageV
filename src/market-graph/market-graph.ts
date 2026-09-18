@@ -8,8 +8,6 @@ import {
   type SwapDirection,
 } from '../protocols/v2/types';
 import {
-  type V3BitmapWord,
-  type V3BitmapWordUpdate,
   type V3PoolConfig,
   type V3PoolInfo,
   type V3Snapshot,
@@ -104,7 +102,6 @@ export class MarketGraph {
   private readonly pairs: Array<PairInfo | undefined> = [];
   private readonly v3Pools: Array<V3PoolInfo | undefined> = [];
   private readonly v3TicksCache: Array<V3Tick[] | undefined> = [];
-  private readonly v3LoadedWordRanges: Array<{ min: number; max: number } | undefined> = [];
   private readonly carbonEdgeIds = new Set<MarketEdgeId>();
   private readonly carbonGroupQuoter = new CarbonGroupQuoter();
 
@@ -164,7 +161,6 @@ export class MarketGraph {
     stored.bitmapWords = new Map(snapshot.bitmapWords.map(word => [word.wordPosition, word.bitmap]));
     stored.fullRange = snapshot.complete;
     this.v3TicksCache[poolIndex] = undefined;
-    this.v3LoadedWordRanges[poolIndex] = { min: snapshot.minWord, max: snapshot.maxWord };
     this.updateV3PoolStates([{ poolAddress: pool.address, sqrtPriceX96: snapshot.sqrtPriceX96, tick: snapshot.tick, liquidity: snapshot.liquidity }]);
   }
 
@@ -207,28 +203,6 @@ export class MarketGraph {
         }
       }
       this.v3TicksCache[poolIndex] = undefined;
-    }
-  }
-
-  updateV3BitmapWords(updates: V3BitmapWordUpdate[]): void {
-    for (const update of updates) {
-      const poolIndex = this.poolRegistry.get(update.poolAddress);
-      if (poolIndex === undefined) continue;
-      const pool = this.v3Pools[poolIndex];
-      if (!pool) continue;
-
-      if (update.words.length > 0) {
-        const positions = update.words.map(word => word.wordPosition);
-        this.v3LoadedWordRanges[poolIndex] = { min: Math.min(...positions), max: Math.max(...positions) };
-      }
-
-      for (const word of update.words) {
-        if (word.bitmap === 0n) {
-          pool.bitmapWords.delete(word.wordPosition);
-        } else {
-          pool.bitmapWords.set(word.wordPosition, word.bitmap);
-        }
-      }
     }
   }
 
@@ -437,26 +411,6 @@ export class MarketGraph {
     return this.v3TicksCache[poolIndex] ??= Array.from(pool.ticks.values())
       .filter(tick => tick.liquidityGross > 0n)
       .sort((a, b) => a.index - b.index);
-  }
-
-  getV3BitmapWords(poolAddress: Address): V3BitmapWord[] {
-    const poolIndex = this.poolRegistry.get(poolAddress);
-    const pool = poolIndex === undefined ? undefined : this.v3Pools[poolIndex];
-    if (!pool) return [];
-    return Array.from(pool.bitmapWords.entries())
-      .map(([wordPosition, bitmap]) => ({ wordPosition, bitmap }))
-      .sort((a, b) => a.wordPosition - b.wordPosition);
-  }
-
-  v3PoolNeedsRefresh(poolAddress: Address): boolean {
-    const poolIndex = this.poolRegistry.get(poolAddress);
-    if (poolIndex === undefined) return false;
-    const pool = this.v3Pools[poolIndex];
-    const range = this.v3LoadedWordRanges[poolIndex];
-    if (!pool?.state || !range) return true;
-    if (pool.fullRange) return false;
-    const word = Math.floor(Math.floor(pool.state.tick / pool.tickSpacing) / 256);
-    return word <= range.min + 1 || word >= range.max - 1;
   }
 
   findBestFlashPoolForToken(

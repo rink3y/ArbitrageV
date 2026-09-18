@@ -29,7 +29,7 @@ export const v3Plugin: ProtocolPlugin = {
       store.close();
       throw new Error('V3 factory metadata is missing. Run bun run sync:markets first.');
     }
-    runtime = new V3EventAdapter(context.client, context.engine, pools, context.scan, store);
+    runtime = new V3EventAdapter(context.client, context.graph, pools, context.scan, store);
     return runtime;
   },
 };

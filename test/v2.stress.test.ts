@@ -68,7 +68,7 @@ function createLargeMarket(pairCount: number): {
   const engine = new OpportunityEngine(stressPolicy);
 
   for (let i = 0; i < pairCount; i++) {
-    engine.addPair(pair(
+    engine.graph.addPair(pair(
       10_000 + i,
       tokenA,
       tokenAddress(i),
@@ -78,9 +78,9 @@ function createLargeMarket(pairCount: number): {
   }
 
   const changedPair = pair(1, tokenA, tokenB, tokenAmount("1000"), tokenAmount("1100"));
-  engine.addPair(changedPair);
-  engine.addPair(pair(2, tokenB, tokenC, tokenAmount("1000"), tokenAmount("2200")));
-  engine.addPair(pair(3, tokenC, tokenA, tokenAmount("1000"), tokenAmount("2200")));
+  engine.graph.addPair(changedPair);
+  engine.graph.addPair(pair(2, tokenB, tokenC, tokenAmount("1000"), tokenAmount("2200")));
+  engine.graph.addPair(pair(3, tokenC, tokenA, tokenAmount("1000"), tokenAmount("2200")));
 
   return { engine, changedPair };
 }
@@ -105,7 +105,7 @@ describe("V2 arbitrage stress", () => {
     const { engine, changedPair } = createLargeMarket(STRESS_PAIR_COUNT);
 
     const startedAt = performance.now();
-    engine.updateReserves([
+    engine.graph.updateReserves([
       reserveUpdate(changedPair, tokenAmount("1000"), tokenAmount("1200")),
     ]);
     const opportunities = engine.findOpportunities({

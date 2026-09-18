@@ -28,19 +28,6 @@ export type MarketSnapshot = {
   carbonPairs: CarbonPairMetadata[];
 };
 
-type PoolRow = {
-  address: string;
-  protocol: StoredPoolProtocol;
-  factory: string | null;
-  token0: string;
-  token1: string;
-  fee: number;
-  tick_spacing: number | null;
-  variant: V2Variant | null;
-  scale0: string | null;
-  scale1: string | null;
-};
-
 type CarbonPairRow = {
   controller: string;
   token0: string;
@@ -147,19 +134,11 @@ function replaceStoredPools(db: Database, pools: readonly StoredPool[]): void {
 }
 
 function loadStoredPools(db: Database): StoredPool[] {
-  const rows = db.query('SELECT address, protocol, factory, token0, token1, fee, tick_spacing, variant, scale0, scale1 FROM pools').all() as PoolRow[];
-  return rows.map(row => ({
-    address: row.address as Address,
-    protocol: row.protocol,
-    factory: row.factory,
-    token0: row.token0 as Address,
-    token1: row.token1 as Address,
-    fee: row.fee,
-    tickSpacing: row.tick_spacing,
-    variant: row.variant,
-    scale0: row.scale0,
-    scale1: row.scale1,
-  }));
+  return db.query(`
+    SELECT address, protocol, factory, token0, token1, fee,
+      tick_spacing AS tickSpacing, variant, scale0, scale1
+    FROM pools
+  `).all() as StoredPool[];
 }
 
 function replaceStoredCarbonPairs(db: Database, pairs: readonly CarbonPairMetadata[]): void {

@@ -1,23 +1,11 @@
-import { type Address } from 'viem';
 import { ARBITRAGE_SEARCH_POLICY, TOKENS } from '../constants';
-import { type CarbonStrategy } from '../protocols/carbon/types';
 import { encodeCarbonRouteData } from '../protocols/carbon/execution';
 import { flashLoanFee } from '../execution/execution-planner';
 import { MarketGraph } from '../market-graph/market-graph';
 import { sizeRoute } from '../market-graph/route-sizer';
-import { type ArbitrageSearchPolicy, type FlashPoolCandidate } from '../market-graph/types';
-import { type PairInfo, type ReserveUpdate } from '../protocols/v2/types';
+import { type ArbitrageSearchPolicy } from '../market-graph/types';
 import { encodeV2RouteData } from '../protocols/v2/execution';
-import {
-  type V3BitmapWord,
-  type V3BitmapWordUpdate,
-  type V3PoolConfig,
-  type V3PoolInfo,
-  type V3Snapshot,
-  type V3PoolUpdate,
-  type V3Tick,
-  type V3TickUpdate,
-} from '../protocols/v3/types';
+import { type V3PoolConfig } from '../protocols/v3/types';
 import { CircularArbitrageStrategy } from '../strategies/circular-arbitrage';
 import {
   type ArbitrageOpportunity,
@@ -29,7 +17,7 @@ import {
 const TOKEN_BY_ADDRESS = new Map(TOKENS.map(token => [token.address.toLowerCase(), token]));
 
 export class OpportunityEngine {
-  private readonly graph: MarketGraph;
+  readonly graph: MarketGraph;
   private readonly strategy: CircularArbitrageStrategy;
 
   constructor(
@@ -38,66 +26,6 @@ export class OpportunityEngine {
   ) {
     this.graph = new MarketGraph(policy, configuredV3Pools);
     this.strategy = new CircularArbitrageStrategy(this.graph, policy);
-  }
-
-  addPair(pair: PairInfo): void {
-    this.graph.addPair(pair);
-  }
-
-  updateReserves(updates: ReserveUpdate[]): void {
-    this.graph.updateReserves(updates);
-  }
-
-  addV3Pool(pool: V3PoolConfig): void {
-    this.graph.addV3Pool(pool);
-  }
-
-  replaceV3Snapshot(pool: V3PoolConfig, snapshot: V3Snapshot): void {
-    this.graph.replaceV3Snapshot(pool, snapshot);
-  }
-
-  invalidateV3Pool(poolAddress: Address): void {
-    this.graph.invalidateV3Pool(poolAddress);
-  }
-
-  updateV3PoolStates(updates: V3PoolUpdate[]): void {
-    this.graph.updateV3PoolStates(updates);
-  }
-
-  updateV3Ticks(updates: V3TickUpdate[]): void {
-    this.graph.updateV3Ticks(updates);
-  }
-
-  updateV3BitmapWords(updates: V3BitmapWordUpdate[]): void {
-    this.graph.updateV3BitmapWords(updates);
-  }
-
-  setCarbonStrategies(strategies: readonly CarbonStrategy[]): void {
-    this.graph.setCarbonStrategies(strategies);
-  }
-
-  getV3PoolAddresses(): Address[] {
-    return this.graph.getV3PoolAddresses();
-  }
-
-  getV3Pools(): V3PoolInfo[] {
-    return this.graph.getV3Pools();
-  }
-
-  getV3Pool(poolAddress: Address): V3PoolInfo | null {
-    return this.graph.getV3Pool(poolAddress);
-  }
-
-  getV3InitializedTicks(poolAddress: Address): V3Tick[] {
-    return this.graph.getV3InitializedTicks(poolAddress);
-  }
-
-  getV3BitmapWords(poolAddress: Address): V3BitmapWord[] {
-    return this.graph.getV3BitmapWords(poolAddress);
-  }
-
-  v3PoolNeedsRefresh(poolAddress: Address): boolean {
-    return this.graph.v3PoolNeedsRefresh(poolAddress);
   }
 
   findOpportunities(request: FindOpportunitiesRequest): ArbitrageSearchResult {
@@ -117,22 +45,6 @@ export class OpportunityEngine {
     });
 
     return opportunities;
-  }
-
-  findBestFlashPoolForToken(
-    token: Address,
-    amountIn: bigint,
-    excludePools: Address[] = []
-  ): FlashPoolCandidate | null {
-    return this.graph.findBestFlashPoolForToken(token, amountIn, excludePools);
-  }
-
-  getPairAddresses(): Address[] {
-    return this.graph.getPairAddresses();
-  }
-
-  getAllPairs(): PairInfo[] {
-    return this.graph.getAllPairs();
   }
 
   private sizeCandidate(candidate: CandidateRoute): ArbitrageOpportunity {

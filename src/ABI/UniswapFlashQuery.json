@@ -1,17 +1,7 @@
 [
 	{
 		"inputs": [],
-		"name": "ArrayLengthMismatch",
-		"type": "error"
-	},
-	{
-		"inputs": [],
 		"name": "InvalidRange",
-		"type": "error"
-	},
-	{
-		"inputs": [],
-		"name": "InvalidTickSpacing",
 		"type": "error"
 	},
 	{
@@ -298,103 +288,6 @@
 				],
 				"internalType": "struct FlashUniswapQueryV1.V3PoolMetadata[]",
 				"name": "result",
-				"type": "tuple[]"
-			}
-		],
-		"stateMutability": "view",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "contract IUniswapV3Pool[]",
-				"name": "_pools",
-				"type": "address[]"
-			},
-			{
-				"internalType": "int24[]",
-				"name": "_tickSpacings",
-				"type": "int24[]"
-			}
-		],
-		"name": "getV3StartupStatesAroundCurrentTick",
-		"outputs": [
-			{
-				"components": [
-					{
-						"components": [
-							{
-								"internalType": "address",
-								"name": "pool",
-								"type": "address"
-							},
-							{
-								"internalType": "uint160",
-								"name": "sqrtPriceX96",
-								"type": "uint160"
-							},
-							{
-								"internalType": "int24",
-								"name": "tick",
-								"type": "int24"
-							},
-							{
-								"internalType": "uint128",
-								"name": "liquidity",
-								"type": "uint128"
-							}
-						],
-						"internalType": "struct FlashUniswapQueryV1.V3LiveState",
-						"name": "live",
-						"type": "tuple"
-					},
-					{
-						"components": [
-							{
-								"internalType": "int16",
-								"name": "wordPosition",
-								"type": "int16"
-							},
-							{
-								"internalType": "uint256",
-								"name": "bitmap",
-								"type": "uint256"
-							}
-						],
-						"internalType": "struct FlashUniswapQueryV1.V3BitmapData[]",
-						"name": "bitmaps",
-						"type": "tuple[]"
-					},
-					{
-						"components": [
-							{
-								"internalType": "int24",
-								"name": "tick",
-								"type": "int24"
-							},
-							{
-								"internalType": "uint128",
-								"name": "liquidityGross",
-								"type": "uint128"
-							},
-							{
-								"internalType": "int128",
-								"name": "liquidityNet",
-								"type": "int128"
-							},
-							{
-								"internalType": "bool",
-								"name": "initialized",
-								"type": "bool"
-							}
-						],
-						"internalType": "struct FlashUniswapQueryV1.V3TickData[]",
-						"name": "ticks",
-						"type": "tuple[]"
-					}
-				],
-				"internalType": "struct FlashUniswapQueryV1.V3StartupState[]",
-				"name": "",
 				"type": "tuple[]"
 			}
 		],

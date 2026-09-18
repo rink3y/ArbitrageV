@@ -29,7 +29,7 @@ function policy(maxRouteEdges: number): ArbitrageSearchPolicy {
 test("finds a profitable mixed Carbon and V2 route", () => {
   const searchPolicy = policy(2);
   const engine = new OpportunityEngine(searchPolicy, []);
-  engine.addPair({
+  engine.graph.addPair({
     pairAddress: v2Pair,
     token0: tokenA,
     token1: tokenB,
@@ -40,7 +40,7 @@ test("finds a profitable mixed Carbon and V2 route", () => {
     scale0: 1n,
     scale1: 1n,
   } satisfies PairInfo);
-  engine.setCarbonStrategies([carbonStrategy()]);
+  engine.graph.setCarbonStrategies([carbonStrategy()]);
 
   const opportunities = engine.findOpportunities({ startTokens: [tokenA] });
 
@@ -53,7 +53,7 @@ test("finds a profitable mixed Carbon and V3 route", () => {
   const searchPolicy = policy(2);
   const engine = new OpportunityEngine(searchPolicy, []);
   addV3Pool(engine, address(4), tokenA, tokenB);
-  engine.setCarbonStrategies([carbonStrategy()]);
+  engine.graph.setCarbonStrategies([carbonStrategy()]);
 
   const opportunities = engine.findOpportunities({ startTokens: [tokenA] });
 
@@ -64,7 +64,7 @@ test("finds a profitable mixed Carbon and V3 route", () => {
 test("finds a profitable mixed Carbon, V2, and V3 route", () => {
   const searchPolicy = policy(3);
   const engine = new OpportunityEngine(searchPolicy, []);
-  engine.addPair({
+  engine.graph.addPair({
     pairAddress: v2Pair,
     token0: tokenB,
     token1: TOKENS[2].address,
@@ -76,7 +76,7 @@ test("finds a profitable mixed Carbon, V2, and V3 route", () => {
     scale1: 1n,
   } satisfies PairInfo);
   addV3Pool(engine, address(5), TOKENS[2].address, tokenA);
-  engine.setCarbonStrategies([carbonStrategy()]);
+  engine.graph.setCarbonStrategies([carbonStrategy()]);
 
   const opportunities = engine.findOpportunities({ startTokens: [tokenA] });
 
@@ -109,8 +109,8 @@ function addV3Pool(engine: OpportunityEngine, poolAddress: Address, token0: Addr
     tickSpacing: 10,
     enabled: true,
   };
-  engine.addV3Pool(pool);
-  engine.updateV3PoolStates([{
+  engine.graph.addV3Pool(pool);
+  engine.graph.updateV3PoolStates([{
     poolAddress,
     sqrtPriceX96: Q96 / 2n,
     liquidity: 10n ** 30n,

@@ -73,9 +73,4 @@ export type V3TickUpdate = {
   ticks: V3Tick[];
 };
 
-export type V3BitmapWordUpdate = {
-  poolAddress: Address;
-  words: V3BitmapWord[];
-};
-
 export type V3SwapDirection = 'token0ToToken1' | 'token1ToToken0';

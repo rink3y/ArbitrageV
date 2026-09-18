@@ -95,7 +95,7 @@ Your RPC must serve historical factory logs and block-pinned contract reads. Rec
 
 ### Updating the query contract
 
-An existing deployment cannot gain the new methods from a local file edit. Compile and deploy `FlashUniswapQueryV1` from [UniswapFlashQuery.sol](Contract/UniswapFlashQuery.sol), then put its address in `UNISWAP_FLASH_QUERY_CONTRACT_ADDRESS`. V3 uses `getV3PoolMetadata`, `getV3LiveStates`, `getV3TickBitmapWords`, and `getV3Ticks`. The V2 and Carbon read methods remain available. This change does not require redeploying `NArb`.
+An existing deployment cannot gain the new methods from a local file edit. Compile and deploy `FlashUniswapQueryV1` from [UniswapFlashQuery.sol](Contract/UniswapFlashQuery.sol), then put its address in `UNISWAP_FLASH_QUERY_CONTRACT_ADDRESS`. V3 uses `getV3PoolMetadata`, `getV3LiveStates`, `getV3TickBitmapWords`, and `getV3Ticks`. The old `getV3StartupStatesAroundCurrentTick` endpoint has been removed from the source and ABI. External callers of that endpoint must migrate to the full-range reads before using a new deployment. The V2 and Carbon read methods remain available. This change does not require redeploying `NArb`.
 
 With Foundry installed, `forge build` compiles the contracts. Deployment is a separate, paid transaction; it is not performed by sync or startup. After deployment, run `bun run sync:markets`, then restart the bot. A deployment missing the V3 read methods will fail those calls. V2-only startup does not require them.
 
@@ -103,7 +103,7 @@ With Foundry installed, `forge build` compiles the contracts. Deployment is a se
 
 Edit `CARBON_CONTROLLERS` in [src/protocols/carbon/config.ts](src/protocols/carbon/config.ts). Each controller has an address and an `enabled` flag.
 
-Carbon discovery uses tokens from `TOKENS` and the enabled V2/V3 markets. It reads each pair's trading fee from the controller. Changing the config's `feePpm` field does not override that fee.
+Carbon discovery uses tokens from `TOKENS` and the enabled V2/V3 markets. It reads each pair's trading fee from the controller.
 
 After editing any of these market definitions, run `bun run sync:markets` and restart. Set a V3 factory or Carbon controller to `enabled: false` to exclude it. To disable V3 entirely, use the protocol switch in `src/constants.ts`; no factory edits are needed.
 
@@ -119,6 +119,12 @@ These settings are in [src/constants.ts](src/constants.ts):
 Reported profit includes swap fees and deducts the selected flash-loan fee when a funding pool is available. Gas is not deducted from that figure. Set token profit thresholds with that in mind.
 
 Execution sends a transaction through `ARB_CONTRACT_ADDRESS`. Submission logs and Telegram messages mean the transaction was sent; they don't confirm that it succeeded or earned the quoted profit.
+
+When execution is enabled, startup fetches the wallet's pending nonce before enabling submissions. Each trade then reserves its nonce locally, without a nonce RPC read. `EXECUTION_POLICY.nonceRefreshIntervalMs` defaults to 12 hours; background checks can advance the counter but never move it backward. Failed refreshes retry after `nonceRetryIntervalMs`, which defaults to 5 seconds.
+
+A failed or uncertain submission pauses new submissions and triggers an immediate nonce check, followed by the shorter retry interval. Trading resumes only after the RPC's pending nonce has advanced past every uncertain nonce. A rejected or dropped transaction can therefore require operator intervention. Inspect the wallet's pending transactions before restarting; the bot does not reuse uncertain nonces, send cancellation transactions, or replay stale arbitrage trades automatically.
+
+Use a dedicated wallet with one bot process. This in-memory allocator does not coordinate independent processes or other applications using the wallet. The periodic check is not a distributed wallet lock. Watch-only mode does not fetch nonces or start a refresh timer.
 
 ## What sync keeps
 

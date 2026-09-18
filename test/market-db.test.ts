@@ -47,8 +47,12 @@ describe('market catalog', () => {
       expect(snapshot.v3Pools).toHaveLength(1);
       expect(snapshot.carbonPairs).toHaveLength(1);
       expect(snapshot.v2Pools[0].factory).toBe('test-v2');
+      expect(snapshot.v2Pools[0].variant).toBe('solidly-stable');
+      expect(snapshot.v2Pools[0].scale0).toBe(1_000_000n);
+      expect(snapshot.v2Pools[0].scale1).toBe(1_000_000n);
       expect(snapshot.v3Pools[0].tickSpacing).toBe(10);
       expect(snapshot.carbonPairs[0].strategyCount).toBe(2);
+      expect(snapshot.carbonPairs[0].feePpm).toBe(4_000);
     } finally {
       Bun.gc(true);
       rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

@@ -12,9 +12,9 @@ export const v2Plugin: ProtocolPlugin = {
   async discover({ client, catalog }) {
     catalog.v2Pools = await discoverV2PoolMetadata(client);
   },
-  async hydrate({ client, catalog, engine }) {
+  async hydrate({ client, catalog, graph }) {
     const pairs = await getKnownPairsInfo(client, catalog.v2Pools);
-    for (const pair of pairs) engine.addPair(pair);
+    for (const pair of pairs) graph.addPair(pair);
   },
-  events: context => new V2EventAdapter(context.client, context.engine, context.catalog.v2Pools, context.scan),
+  events: context => new V2EventAdapter(context.client, context.graph, context.catalog.v2Pools, context.scan),
 };

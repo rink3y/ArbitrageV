@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { encodeAbiParameters, encodeEventTopics, type Address } from "viem";
 import { ARBITRAGE_SEARCH_POLICY, CONTRACTS, TOKENS } from "../src/constants";
 import { EventMonitor } from "../src/runtime/event-monitor";
-import { OpportunityEngine } from "../src/opportunities/opportunity-engine";
+import { MarketGraph } from "../src/market-graph/market-graph";
 import { V2_SYNC_EVENT_ABI } from "../src/protocols/v2/events";
 import { V2EventAdapter } from "../src/protocols/v2/runtime";
 import { V3EventAdapter } from "../src/protocols/v3/runtime";
@@ -12,7 +12,7 @@ import { pool, policy, v3Fixture, liquidityLog, swapLog, factory } from "./helpe
 const [token0, token1] = TOKENS.map(token => token.address);
 describe("EventMonitor V3 pool events", () => {
   test("uses one feed for startup buffering and rejects stale live logs", async () => {
-    const graph = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY, []);
+    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, []);
     const pairAddress = "0x0000000000000000000000000000000000000a22" as Address;
     const feed = fakeEventClient([[200n, 201n, BigInt(Math.floor(Date.now() / 1000))]]);
     const monitor = new EventMonitor({ client: feed.client }, [
@@ -38,7 +38,7 @@ describe("EventMonitor V3 pool events", () => {
   });
 
   test("keeps the latest V2 Sync by chain log order", async () => {
-    const graph = new OpportunityEngine(
+    const graph = new MarketGraph(
       ARBITRAGE_SEARCH_POLICY,
       []
     );
@@ -72,7 +72,7 @@ describe("EventMonitor V3 pool events", () => {
   });
 
   test("rejects logs older than the hydration floor", async () => {
-    const graph = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY, []);
+    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, []);
     const pairAddress = "0x0000000000000000000000000000000000000a22" as Address;
     const feed = fakeEventClient();
     graph.addPair({
@@ -97,7 +97,7 @@ describe("EventMonitor V3 pool events", () => {
   });
 
   test("reconciles selected markets and versions them at the current head", async () => {
-    const graph = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY, []);
+    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, []);
     const pairAddress = "0x0000000000000000000000000000000000000a22" as Address;
     const feed = fakeEventClient([[300n, 301n, 1n]], 10n);
     graph.addPair({
@@ -126,7 +126,7 @@ describe("EventMonitor V3 pool events", () => {
     const selected = pool();
     const feed = v3Fixture([selected]);
     const store = new V3Store(':memory:');
-    const graph = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY, []);
+    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, []);
     let scans = 0;
     const adapter = new V3EventAdapter(feed.client, graph, [selected], async () => { scans++; }, store, policy);
     const monitor = new EventMonitor({ client: feed.client }, [adapter]);
@@ -160,7 +160,7 @@ describe("EventMonitor V3 pool events", () => {
     const selected = pool();
     const feed = v3Fixture([selected]);
     const store = new V3Store(':memory:');
-    const graph = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY, []);
+    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, []);
     const adapter = new V3EventAdapter(feed.client, graph, [selected], async () => {}, store, policy);
     const monitor = new EventMonitor({ client: feed.client }, [adapter]);
     try {

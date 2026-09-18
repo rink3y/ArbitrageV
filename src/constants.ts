@@ -36,6 +36,8 @@ export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
 
 export const EXECUTION_POLICY = {
     executeTrades: true,
+    nonceRefreshIntervalMs: 12 * 60 * 60 * 1000,
+    nonceRetryIntervalMs: 5_000,
     gasLimit: 2500000n,
     legacy: false,
     legacyGasPrice: gasPrice('50.9'),

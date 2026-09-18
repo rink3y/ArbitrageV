@@ -76,8 +76,8 @@ function addLivePool(
   sqrtPriceX96 = Q96,
   liquidity = 10n ** 24n,
 ): void {
-  engine.addV3Pool(config);
-  engine.updateV3PoolStates([{
+  engine.graph.addV3Pool(config);
+  engine.graph.updateV3PoolStates([{
     poolAddress: config.address,
     sqrtPriceX96,
     liquidity,
@@ -93,7 +93,7 @@ function createUnifiedStressMarket(): {
   const engine = new OpportunityEngine(stressPolicy, []);
 
   for (let i = 0; i < UNIFIED_V2_DISTRACTORS; i++) {
-    engine.addPair(pair(
+    engine.graph.addPair(pair(
       10_000 + i,
       tokenA,
       tokenAddress(i),
@@ -114,8 +114,8 @@ function createUnifiedStressMarket(): {
   const closingPair = pair(2, tokenC, tokenA, tokenAmount("1000"), tokenAmount("2200"));
   const mixedPool = pool(1, tokenB, tokenC);
 
-  engine.addPair(changedPair);
-  engine.addPair(closingPair);
+  engine.graph.addPair(changedPair);
+  engine.graph.addPair(closingPair);
   addLivePool(engine, mixedPool, Q96 * 2n, 10n ** 24n);
 
   return {
@@ -149,7 +149,7 @@ describe("Unified graph stress", () => {
     const { engine, changedPair } = createUnifiedStressMarket();
 
     const startedAt = performance.now();
-    engine.updateReserves([{
+    engine.graph.updateReserves([{
       pairAddress: changedPair.pairAddress,
       reserve0: tokenAmount("1000"),
       reserve1: tokenAmount("2500"),
@@ -173,8 +173,8 @@ describe("Unified graph stress", () => {
       ...stressPolicy,
       allowProtocolMixing: false,
     }, []);
-    engine.addPair(changedPair);
-    engine.addPair(pair(2, tokenC, tokenA, tokenAmount("1000"), tokenAmount("2200")));
+    engine.graph.addPair(changedPair);
+    engine.graph.addPair(pair(2, tokenC, tokenA, tokenAmount("1000"), tokenAmount("2200")));
     addLivePool(engine, mixedPool, Q96 * 2n, 10n ** 24n);
 
     const opportunities = engine.findOpportunities({

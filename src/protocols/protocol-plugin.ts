@@ -1,7 +1,7 @@
 import { type Address, type PublicClient } from 'viem';
 import { type MarketSnapshot } from '../market-db';
 import { type MarketProtocol } from '../market-graph/types';
-import { type OpportunityEngine } from '../opportunities/opportunity-engine';
+import { type MarketGraph } from '../market-graph/market-graph';
 import { type ProtocolEventAdapter } from '../runtime/protocol-event-adapter';
 
 export type MarketReadClient = {
@@ -17,14 +17,14 @@ export type MarketDiscoveryContext = {
 };
 
 export type MarketHydrationContext = MarketDiscoveryContext & {
-  engine: OpportunityEngine;
+  graph: MarketGraph;
   blockNumber?: bigint;
 };
 
 export type MarketEventContext = {
   client: PublicClient<any, any, any>;
   catalog: MarketSnapshot;
-  engine: OpportunityEngine;
+  graph: MarketGraph;
   scan: (changedPairs: readonly string[], releasedPairs?: readonly Address[]) => Promise<void>;
 };
 

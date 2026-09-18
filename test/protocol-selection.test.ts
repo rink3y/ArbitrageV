@@ -43,7 +43,8 @@ function prepareRuntime() {
   } as unknown as network.NetworkConfig);
   spyOn(marketDb, 'loadMarketSnapshot').mockReturnValue(catalog);
   const scan = mock(async () => []);
-  const scanner = spyOn(workflow, 'createOpportunityScanner').mockReturnValue(scan);
+  const stop = mock(() => {});
+  const scanner = spyOn(workflow, 'createOpportunityScanner').mockResolvedValue({ scan, stop });
   const v2Hydrate = spyOn(protocolPlugin('v2'), 'hydrate').mockResolvedValue();
   const disabled = ['v3', 'carbon'].map(id => {
     const plugin = protocolPlugin(id as 'v3' | 'carbon');
@@ -53,8 +54,22 @@ function prepareRuntime() {
     };
   });
   spyOn(console, 'log').mockImplementation(() => {});
-  return { catalog, watch, initialize, scan, scanner, v2Hydrate, disabled };
+  return { catalog, watch, initialize, scan, scanner, stop, v2Hydrate, disabled };
 }
+
+test('startup stops nonce refresh when event adapter creation fails', async () => {
+  const { stop } = prepareRuntime();
+  spyOn(protocolPlugin('v2'), 'events').mockImplementation(() => { throw new Error('adapter failed'); });
+  await expect(runArbitrageBot()).rejects.toThrow('adapter failed');
+  expect(stop).toHaveBeenCalledTimes(1);
+});
+
+test('startup stops nonce refresh when market hydration fails', async () => {
+  const { stop, v2Hydrate } = prepareRuntime();
+  v2Hydrate.mockRejectedValue(new Error('hydration failed'));
+  await expect(runArbitrageBot()).rejects.toThrow('hydration failed');
+  expect(stop).toHaveBeenCalledTimes(1);
+});
 
 test('V2-only startup skips cached V3 and Carbon hydration and event subscriptions', async () => {
   const { watch, scan, scanner, v2Hydrate, disabled } = prepareRuntime();
@@ -67,7 +82,7 @@ test('V2-only startup skips cached V3 and Carbon hydration and event subscriptio
   }
   expect(watch).toHaveBeenCalledTimes(1);
   expect(watch.mock.calls[0]).toEqual([expect.objectContaining({ address: [v2Address] })]);
-  expect(scanner.mock.calls[0][0].getV3PoolAddresses()).toEqual([]);
+  expect(scanner.mock.calls[0][0].graph.getV3PoolAddresses()).toEqual([]);
   expect(scan).toHaveBeenCalledTimes(1);
 });
 

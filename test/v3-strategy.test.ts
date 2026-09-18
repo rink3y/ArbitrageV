@@ -64,7 +64,7 @@ function pool(id: number, token0: Address, token1: Address, fee = 500): V3PoolCo
 }
 
 function addLivePool(
-  target: Pick<MarketGraph | OpportunityEngine, "addV3Pool" | "updateV3PoolStates">,
+  target: MarketGraph,
   config: V3PoolConfig,
   sqrtPriceX96 = Q96 * 2n,
   liquidity = 10n ** 24n,
@@ -101,9 +101,9 @@ describe("V3 arbitrage strategy", () => {
     const poolBC = pool(2, tokenB, tokenC);
     const poolCA = pool(3, tokenC, tokenA);
 
-    addLivePool(engine, poolAB);
-    addLivePool(engine, poolBC);
-    addLivePool(engine, poolCA);
+    addLivePool(engine.graph, poolAB);
+    addLivePool(engine.graph, poolBC);
+    addLivePool(engine.graph, poolCA);
 
     const opportunities = engine.findOpportunities({
       startTokens: [tokenA],
@@ -121,11 +121,11 @@ describe("V3 arbitrage strategy", () => {
     const engine = new OpportunityEngine(policy, []);
     const pairAB = pair(1, tokenA, tokenB, tokenAmount("1000"), tokenAmount("2200"));
     const pairCA = pair(2, tokenC, tokenA, tokenAmount("1000"), tokenAmount("2200"));
-    engine.addPair(pairAB);
-    engine.addPair(pairCA);
+    engine.graph.addPair(pairAB);
+    engine.graph.addPair(pairCA);
 
     const poolBC = pool(1, tokenB, tokenC);
-    addLivePool(engine, poolBC);
+    addLivePool(engine.graph, poolBC);
 
     const opportunities = engine.findOpportunities({
       startTokens: [tokenA],
@@ -144,9 +144,9 @@ describe("V3 arbitrage strategy", () => {
       ...policy,
       allowProtocolMixing: false,
     }, []);
-    engine.addPair(pair(1, tokenA, tokenB, tokenAmount("1000"), tokenAmount("2200")));
-    engine.addPair(pair(2, tokenC, tokenA, tokenAmount("1000"), tokenAmount("2200")));
-    addLivePool(engine, pool(1, tokenB, tokenC));
+    engine.graph.addPair(pair(1, tokenA, tokenB, tokenAmount("1000"), tokenAmount("2200")));
+    engine.graph.addPair(pair(2, tokenC, tokenA, tokenAmount("1000"), tokenAmount("2200")));
+    addLivePool(engine.graph, pool(1, tokenB, tokenC));
 
     const opportunities = engine.findOpportunities({
       startTokens: [tokenA],
@@ -159,13 +159,13 @@ describe("V3 arbitrage strategy", () => {
     const engine = new OpportunityEngine(policy, []);
     const routePair = pair(1, tokenA, tokenB, tokenAmount("1000"), tokenAmount("2200"));
     const fallbackPair = pair(2, tokenA, tokenC, tokenAmount("10000"), tokenAmount("10000"));
-    engine.addPair(routePair);
-    engine.addPair(fallbackPair);
+    engine.graph.addPair(routePair);
+    engine.graph.addPair(fallbackPair);
 
     const v3FlashPool = pool(3, tokenA, tokenC);
-    addLivePool(engine, v3FlashPool, Q96, 10n ** 24n);
+    addLivePool(engine.graph, v3FlashPool, Q96, 10n ** 24n);
 
-    const flashPool = engine.findBestFlashPoolForToken(tokenA, 1_000n, [routePair.pairAddress]);
+    const flashPool = engine.graph.findBestFlashPoolForToken(tokenA, 1_000n, [routePair.pairAddress]);
 
     expect(flashPool?.protocol).toBe("v3");
     expect(flashPool?.poolAddress).toBe(v3FlashPool.address);

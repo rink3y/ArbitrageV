@@ -99,7 +99,7 @@ export class CircularArbitrageStrategy {
           for (const poolIndex of changedPoolIndexes) {
             const affectedEdgeIndexes = this.graph.edgeIndexesForTokenPool(currentTokenIndex, poolIndex);
             for (const edgeIndex of affectedEdgeIndexes) {
-              if (this.edgeAlreadyIncluded(consideredEdgeIndexes, edgeIndex)) continue;
+              if (consideredEdgeIndexes.includes(edgeIndex)) continue;
 
               expanded = this.expandEdge(
                 states,
@@ -171,13 +171,6 @@ export class CircularArbitrageStrategy {
 
     return changedPoolIndexes.has(this.graph.edgePoolIndex(edgeIndex)) ||
       this.hasChangedPool(states, entryIndex, changedPoolIndexes);
-  }
-
-  private edgeAlreadyIncluded(edgeIndexes: number[], edgeIndex: number): boolean {
-    for (const included of edgeIndexes) {
-      if (included === edgeIndex) return true;
-    }
-    return false;
   }
 
   private keepBestState(

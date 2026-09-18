@@ -37,13 +37,15 @@ describe("MarketGraph V3 pools", () => {
     const snapshot: V3Snapshot = {
       poolAddress: selected.address, sqrtPriceX96: 2n ** 96n, tick: 0, liquidity: 1000n,
       blockNumber: 10n, blockHash: `0x${'0'.repeat(64)}`, complete: true,
-      ...tickWordBounds(selected.tickSpacing), bitmapWords: [],
+      ...tickWordBounds(selected.tickSpacing), bitmapWords: [{ wordPosition: -1, bitmap: 1n << 255n }],
       ticks: [{ index: -60, liquidityGross: 1000n, liquidityNet: 1000n }],
     };
     graph.replaceV3Snapshot(selected, snapshot);
-    expect(graph.v3PoolNeedsRefresh(selected.address)).toBe(false);
+    expect(graph.getV3Pool(selected.address)?.fullRange).toBe(true);
+    expect(graph.getV3Pool(selected.address)?.bitmapWords.get(-1)).toBe(1n << 255n);
     expect(() => graph.replaceV3Snapshot(selected, { ...snapshot, complete: false })).toThrow('incomplete');
-    graph.replaceV3Snapshot(selected, { ...snapshot, ticks: [], liquidity: 0n });
+    graph.replaceV3Snapshot(selected, { ...snapshot, bitmapWords: [], ticks: [], liquidity: 0n });
+    expect(graph.getV3Pool(selected.address)?.bitmapWords.size).toBe(0);
     expect(graph.getV3InitializedTicks(selected.address)).toEqual([]);
     graph.replaceV3Snapshot(selected, snapshot);
     graph.invalidateV3Pool(selected.address);
@@ -139,27 +141,4 @@ describe("MarketGraph V3 pools", () => {
     expect(graph.getV3InitializedTicks(configuredPool.address).map(tick => tick.index)).toEqual([120]);
   });
 
-  test("refreshes the loaded tick window near its outer bitmap word", () => {
-    const configuredPool = pool(20, tokenA, tokenB, 500);
-    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, [configuredPool]);
-    graph.updateV3PoolStates([{
-      poolAddress: configuredPool.address,
-      sqrtPriceX96: 2n ** 96n,
-      liquidity: 1_000_000n,
-      tick: 0,
-    }]);
-    graph.updateV3BitmapWords([{
-      poolAddress: configuredPool.address,
-      words: [-2, -1, 0, 1, 2].map(wordPosition => ({ wordPosition, bitmap: 0n })),
-    }]);
-
-    expect(graph.v3PoolNeedsRefresh(configuredPool.address)).toBe(false);
-    graph.updateV3PoolStates([{
-      poolAddress: configuredPool.address,
-      sqrtPriceX96: 2n ** 96n,
-      liquidity: 1_000_000n,
-      tick: 2_560,
-    }]);
-    expect(graph.v3PoolNeedsRefresh(configuredPool.address)).toBe(true);
-  });
 });

@@ -60,8 +60,6 @@ interface ICarbonController {
 	function pairTradingFeePPM(address token0, address token1) external view returns (uint32);
 }
 
-error ArrayLengthMismatch();
-error InvalidTickSpacing();
 error InvalidRange();
 
 // In order to quickly load up data from Uniswap-like market, this contract allows easy iteration with a single eth_call
@@ -116,9 +114,6 @@ contract FlashUniswapQueryV1 {
 		}
 	}
 
-	uint8 private constant V3_STARTUP_BITMAP_WORD_RADIUS = 2;
-	uint16 private constant V3_STARTUP_MAX_INITIALIZED_TICKS_PER_POOL = 512;
-
 	struct V3LiveState {
 		address pool;
 		uint160 sqrtPriceX96;
@@ -136,12 +131,6 @@ contract FlashUniswapQueryV1 {
 		uint128 liquidityGross;
 		int128 liquidityNet;
 		bool initialized;
-	}
-
-	struct V3StartupState {
-		V3LiveState live;
-		V3BitmapData[] bitmaps;
-		V3TickData[] ticks;
 	}
 
 	struct CarbonPairRequest {
@@ -171,27 +160,6 @@ contract FlashUniswapQueryV1 {
 		V3LiveState[] memory result = new V3LiveState[](_pools.length);
 		for (uint256 i; i < _pools.length; ) {
 			result[i] = _getV3LiveState(_pools[i]);
-			unchecked { ++i; }
-		}
-		return result;
-	}
-
-	function getV3StartupStatesAroundCurrentTick(
-		IUniswapV3Pool[] calldata _pools,
-		int24[] calldata _tickSpacings
-	) external view returns (V3StartupState[] memory) {
-		if (_pools.length != _tickSpacings.length) revert ArrayLengthMismatch();
-
-		V3StartupState[] memory result = new V3StartupState[](_pools.length);
-		for (uint256 i; i < _pools.length; ) {
-			V3LiveState memory live = _getV3LiveState(_pools[i]);
-			V3BitmapData[] memory bitmaps = _getV3TickBitmaps(_pools[i], live.tick, _tickSpacings[i]);
-
-			result[i] = V3StartupState({
-				live: live,
-				bitmaps: bitmaps,
-				ticks: _getV3InitializedTicksFromBitmaps(_pools[i], _tickSpacings[i], bitmaps)
-			});
 			unchecked { ++i; }
 		}
 		return result;
@@ -228,85 +196,6 @@ contract FlashUniswapQueryV1 {
 			tick: tick,
 			liquidity: _pool.liquidity()
 		});
-	}
-
-	function _getV3TickBitmaps(
-		IUniswapV3Pool _pool,
-		int24 _tick,
-		int24 _tickSpacing
-	) internal view returns (V3BitmapData[] memory) {
-		if (_tickSpacing <= 0) revert InvalidTickSpacing();
-
-		int24 compressed = _tick / _tickSpacing;
-		if (_tick < 0 && _tick % _tickSpacing != 0) compressed--;
-
-		uint256 wordCount = uint256(V3_STARTUP_BITMAP_WORD_RADIUS) * 2 + 1;
-		int16 startWord = int16(compressed >> 8) - int16(uint16(V3_STARTUP_BITMAP_WORD_RADIUS));
-		V3BitmapData[] memory result = new V3BitmapData[](wordCount);
-		for (uint256 i; i < wordCount; ) {
-			int16 wordPosition = startWord + int16(uint16(i));
-			result[i] = V3BitmapData({
-				wordPosition: wordPosition,
-				bitmap: _pool.tickBitmap(wordPosition)
-			});
-			unchecked { ++i; }
-		}
-		return result;
-	}
-
-	function _getV3InitializedTicksFromBitmaps(
-		IUniswapV3Pool _pool,
-		int24 _tickSpacing,
-		V3BitmapData[] memory _bitmaps
-	) internal view returns (V3TickData[] memory) {
-		if (_tickSpacing <= 0) revert InvalidTickSpacing();
-
-		V3TickData[] memory result = new V3TickData[](_initializedTickCapacity(_bitmaps));
-		uint256 tickCount = 0;
-
-		for (uint256 wordIndex; wordIndex < _bitmaps.length; ) {
-			uint256 bitmap = _bitmaps[wordIndex].bitmap;
-			if (bitmap != 0) {
-				for (uint16 byteIndex; byteIndex < 32 && tickCount < result.length; ) {
-					uint8 chunk = uint8(bitmap >> (byteIndex * 8));
-					if (chunk != 0) {
-						for (uint8 bitInByte; bitInByte < 8 && tickCount < result.length; ) {
-							if ((chunk & (uint8(1) << bitInByte)) != 0) {
-								uint256 bit = uint256(byteIndex) * 8 + bitInByte;
-								int24 tick = int24(
-									(int256(_bitmaps[wordIndex].wordPosition) * 256 + int256(bit)) *
-										int256(_tickSpacing)
-								);
-
-								result[tickCount] = _getV3Tick(_pool, tick);
-								unchecked { ++tickCount; }
-							}
-							unchecked { ++bitInByte; }
-						}
-					}
-					unchecked { ++byteIndex; }
-				}
-			}
-
-			if (tickCount == result.length) {
-				break;
-			}
-			unchecked { ++wordIndex; }
-		}
-
-		return result;
-	}
-
-	function _initializedTickCapacity(V3BitmapData[] memory _bitmaps) private pure returns (uint256 count) {
-		for (uint256 i; i < _bitmaps.length; ) {
-			uint256 bitmap = _bitmaps[i].bitmap;
-			while (bitmap != 0 && count < V3_STARTUP_MAX_INITIALIZED_TICKS_PER_POOL) {
-				bitmap &= bitmap - 1;
-				unchecked { ++count; }
-			}
-			if (count == V3_STARTUP_MAX_INITIALIZED_TICKS_PER_POOL) return count;
-			unchecked { ++i; }
-		}
 	}
 
 	function _getV3Tick(
