@@ -1,6 +1,6 @@
 import { type Address } from 'viem';
 import { ARBITRAGE_SEARCH_POLICY, TOKENS } from '../constants';
-import { type CarbonStrategy } from '../protocols/carbon/types';
+import { carbonStrategyKey, type CarbonStrategy, type CarbonStrategyId, type CarbonDelta } from '../protocols/carbon/types';
 import { graphToken } from '../tokens';
 import {
   type PairInfo,
@@ -96,8 +96,10 @@ export class MarketGraph {
   private readonly versions = new Map<string, number>();
   private readonly dirtyPairs = new Set<string>();
   private readonly dirtyV3 = new Map<string, Set<number> | null>();
-  private carbonStrategies: readonly CarbonStrategy[] = [];
-  private carbonDirty = false;
+  private readonly carbonStrategies = new Map<string, CarbonStrategy>();
+  private readonly carbonPairs = new Map<string, Map<string, CarbonStrategy>>();
+  private readonly dirtyCarbon = new Map<string, CarbonStrategyId>();
+  private carbonSnapshotDirty = false;
   private feedReady = true;
 
   setFeedReady(ready: boolean): void {
@@ -115,7 +117,7 @@ export class MarketGraph {
   }
 
   // One full transfer at startup. Thereafter send absolute pool states and only
-  // changed ticks, coalesced by pool/tick while the search worker is occupied.
+  // changed ticks/Carbon strategies, coalesced while the search worker is occupied.
   takeChanges(full = false): GraphChanges {
     const pairs = (full ? this.getAllPairs() : [...this.dirtyPairs].map(key => this.pairs[this.poolRegistry.get(key)!]!)).map(pair => ({ ...pair }));
     const v3 = (full ? this.getV3Pools() : [...this.dirtyV3.keys()].map(key => this.getV3Pool(key as Address)!)).map(pool => {
@@ -126,11 +128,22 @@ export class MarketGraph {
         ticks: replaceTicks ? [...ticks.values()] : [...indexes ?? []].map(index => ticks.get(index) ?? { index, liquidityGross: 0n, liquidityNet: 0n }) };
     });
     const keys = [...pairs.map(pair => pair.pairAddress), ...v3.map(item => item.pool.address)];
-    const changes: GraphChanges = { pairs, v3, versions: this.marketVersions(keys, full || this.carbonDirty) };
-    if (full || this.carbonDirty) changes.carbon = this.carbonStrategies;
+    const changes: GraphChanges = { pairs, v3, versions: this.marketVersions(keys, full || this.carbonSnapshotDirty || this.dirtyCarbon.size > 0) };
+    if (full || this.carbonSnapshotDirty) {
+      changes.carbon = { kind: 'snapshot', strategies: [...this.carbonStrategies.values()] };
+    } else if (this.dirtyCarbon.size > 0) {
+      const upserts: CarbonStrategy[] = [];
+      const removed: CarbonStrategyId[] = [];
+      for (const [key, ref] of this.dirtyCarbon) {
+        const strategy = this.carbonStrategies.get(key);
+        if (strategy) upserts.push(strategy);
+        else removed.push(ref);
+      }
+      changes.carbon = { kind: 'delta', upserts, removed };
+    }
     this.dirtyPairs.clear();
     this.dirtyV3.clear();
-    this.carbonDirty = false;
+    this.dirtyCarbon.clear(); this.carbonSnapshotDirty = false;
     return changes;
   }
 
@@ -148,8 +161,10 @@ export class MarketGraph {
       pool.fullRange = change.fullRange;
       if (change.state) this.updateV3PoolStates([{ poolAddress: pool.address, ...change.state }]);
     }
-    if (changes.carbon) this.setCarbonStrategies(changes.carbon);
-    this.dirtyPairs.clear(); this.dirtyV3.clear(); this.carbonDirty = false;
+    if (changes.carbon?.kind === 'snapshot') this.setCarbonStrategies(changes.carbon.strategies);
+    else if (changes.carbon) this.updateCarbonStrategies(changes.carbon);
+    this.dirtyPairs.clear(); this.dirtyV3.clear();
+    this.dirtyCarbon.clear(); this.carbonSnapshotDirty = false;
     for (const [key, version] of Object.entries(changes.versions)) this.versions.set(key, version);
   }
 
@@ -177,7 +192,6 @@ export class MarketGraph {
   private readonly pairs: Array<PairInfo | undefined> = [];
   private readonly v3Pools: Array<V3PoolInfo | undefined> = [];
   private readonly v3TicksCache: Array<V3Tick[] | undefined> = [];
-  private readonly carbonEdgeIds = new Set<MarketEdgeId>();
   private readonly carbonGroupQuoter = new CarbonGroupQuoter();
 
   constructor(
@@ -305,24 +319,64 @@ export class MarketGraph {
   }
 
   setCarbonStrategies(strategies: readonly CarbonStrategy[]): void {
-    this.carbonStrategies = strategies;
-    this.carbonDirty = true;
-    this.touch('$carbon');
-    for (const edgeId of this.carbonEdgeIds) {
-      const edge = this.edge(edgeId);
-      if (edge?.protocol !== 'carbon') continue;
-      edge.liquidity = 0n;
-      edge.rateNumerator = 0n;
-      edge.rateDenominator = 0n;
-      if (edge.carbonKind === 'group') edge.orders = [];
-    }
+    this.updateCarbonStrategies({ removed: [...this.carbonStrategies.values()], upserts: strategies });
+    this.carbonSnapshotDirty = true;
+  }
 
-    for (const strategy of strategies) {
+  updateCarbonStrategies(delta: CarbonDelta): void {
+    if (delta.removed.length === 0 && delta.upserts.length === 0) return;
+    const affectedPairs = new Map<string, CarbonStrategy>();
+    const remove = (ref: CarbonStrategyId) => {
+      const key = carbonStrategyKey(ref);
+      this.dirtyCarbon.set(key, { controller: ref.controller, id: ref.id });
+      const previous = this.carbonStrategies.get(key);
+      if (!previous) return;
+      const pairKey = this.carbonPairKey(previous);
+      const members = this.carbonPairs.get(pairKey)!;
+      members.delete(key);
+      if (members.size === 0) this.carbonPairs.delete(pairKey);
+      affectedPairs.set(pairKey, previous);
+      this.carbonStrategies.delete(key);
+      this.disableCarbonEdge(this.carbonEdgeId(previous, 0));
+      this.disableCarbonEdge(this.carbonEdgeId(previous, 1));
+    };
+    for (const ref of delta.removed) remove(ref);
+    for (const strategy of delta.upserts) {
+      remove(strategy);
+      const key = carbonStrategyKey(strategy);
+      const pairKey = this.carbonPairKey(strategy);
+      const members = this.carbonPairs.get(pairKey) ?? new Map<string, CarbonStrategy>();
+      members.set(key, strategy);
+      this.carbonPairs.set(pairKey, members);
+      this.carbonStrategies.set(key, strategy);
+      affectedPairs.set(pairKey, strategy);
       this.upsertCarbonEdges(strategy);
     }
-    this.upsertGroupedCarbonEdges(strategies);
+    // Clear both directions first: an update can leave too few live orders to
+    // recreate a group, or promote an order that was outside its top eight.
+    for (const [key, pair] of affectedPairs) {
+      this.disableCarbonEdge(this.carbonGroupEdgeId(pair.controller, pair.token0, pair.token1));
+      this.disableCarbonEdge(this.carbonGroupEdgeId(pair.controller, pair.token1, pair.token0));
+      this.upsertGroupedCarbonEdges(this.carbonPairs.get(key)?.values() ?? []);
+    }
+    this.touch('$carbon');
+  }
 
-    this.rankedEdgesCache.clear();
+  private carbonPairKey(strategy: CarbonStrategy): string {
+    const tokens = [strategy.token0.toLowerCase(), strategy.token1.toLowerCase()].sort();
+    return `${strategy.controller.toLowerCase()}:${tokens[0]}:${tokens[1]}`;
+  }
+
+  private disableCarbonEdge(id: MarketEdgeId): void {
+    const index = this.edgeIndexes.get(id);
+    if (index === undefined) return;
+    const { edge, tokenIndex } = this.edges[index];
+    if (edge.protocol !== 'carbon') return;
+    edge.liquidity = 0n;
+    edge.rateNumerator = 0n;
+    edge.rateDenominator = 0n;
+    if (edge.carbonKind === 'group') edge.orders = [];
+    this.rankedEdgesCache.delete(tokenIndex);
   }
 
   edgesForTokenPool(token: Address, poolAddress: Address): AnyMarketEdge[] {
@@ -404,7 +458,7 @@ export class MarketGraph {
     amountIn: bigint
   ): { rawFrom: Address; rawTo: Address; strategyIds: bigint[]; amounts: bigint[] } | null {
     const edge = this.edgeAt(edgeIndex);
-    if (!edge || edge.protocol !== 'carbon') return null;
+    if (!edge || edge.protocol !== 'carbon' || edge.liquidity <= 0n) return null;
 
     if (edge.carbonKind === 'single') {
       return {
@@ -550,6 +604,9 @@ export class MarketGraph {
   }
 
   private quoteEdge(edge: AnyMarketEdge, amountIn: bigint): MarketRouteQuote {
+    if (edge.protocol === 'carbon' && edge.liquidity <= 0n) {
+      return { amountIn, amountOut: 0n, profit: -1n, complete: false };
+    }
     return edge.protocol === 'v2'
       ? this.quoteV2Edge(edge, amountIn)
       : edge.protocol === 'v3'
@@ -709,7 +766,7 @@ export class MarketGraph {
     this.upsertCarbonOrder(strategy, 1, strategy.token0, strategy.token1);
   }
 
-  private upsertGroupedCarbonEdges(strategies: readonly CarbonStrategy[]): void {
+  private upsertGroupedCarbonEdges(strategies: Iterable<CarbonStrategy>): void {
     if (!protocolAllowed(this.policy, 'carbon')) return;
 
     const groups = new Map<string, {
@@ -723,7 +780,7 @@ export class MarketGraph {
       orders: Array<CarbonGroupOrder & { rateNumerator: bigint; rateDenominator: bigint; liquidity: bigint }>;
     }>();
 
-    for (const strategy of strategies) {
+    for (const strategy of [...strategies].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
       this.collectGroupedCarbonOrder(groups, strategy, 0, strategy.token1, strategy.token0);
       this.collectGroupedCarbonOrder(groups, strategy, 1, strategy.token0, strategy.token1);
     }
@@ -736,7 +793,7 @@ export class MarketGraph {
         b.rateDenominator,
         a.rateNumerator,
         a.rateDenominator
-      ));
+      ) || (a.strategyId < b.strategyId ? -1 : a.strategyId > b.strategyId ? 1 : a.orderIndex - b.orderIndex));
       const orders = group.orders.slice(0, MAX_GROUPED_CARBON_ORDERS);
       const liquidity = orders.reduce((sum, order) => sum + order.liquidity, 0n);
       if (liquidity <= 0n) continue;
@@ -747,7 +804,6 @@ export class MarketGraph {
       const edgeId = this.carbonGroupEdgeId(group.controller, group.rawFrom, group.rawTo);
       const best = orders[0];
 
-      this.carbonEdgeIds.add(edgeId);
       this.upsertEdge({
         id: edgeId,
         protocol: 'carbon',
@@ -828,13 +884,12 @@ export class MarketGraph {
 
     const graphFrom = graphToken(from);
     const graphTo = graphToken(to);
-    const poolIndex = this.poolIndex(`carbon:${strategy.controller.toLowerCase()}:${strategy.id.toString()}`);
+    const poolIndex = this.poolIndex(carbonStrategyKey(strategy));
     const tokenIndex = this.tokenIndex(graphFrom);
     const toTokenIndex = this.tokenIndex(graphTo);
     const rate = carbonMarginalRate(order, strategy.feePpm);
     const edgeId = this.carbonEdgeId(strategy, orderIndex);
 
-    this.carbonEdgeIds.add(edgeId);
     this.upsertEdge({
       id: edgeId,
       protocol: 'carbon',
@@ -867,6 +922,12 @@ export class MarketGraph {
       const previousTokenIndex = this.edges[existingIndex].tokenIndex;
       const previousToTokenIndex = this.edges[existingIndex].toTokenIndex;
       const previousPoolIndex = this.edges[existingIndex].poolIndex;
+      if (previousTokenIndex !== tokenIndex) {
+        const outgoing = this.tokens[previousTokenIndex].edgeIndexes;
+        outgoing.splice(outgoing.indexOf(existingIndex), 1);
+        this.tokens[tokenIndex].edgeIndexes.push(existingIndex);
+        this.hopDistancesCache.clear();
+      }
       if (previousTokenIndex !== tokenIndex || previousPoolIndex !== poolIndex) {
         const old = this.tokens[previousTokenIndex].pools.get(previousPoolIndex)!;
         old.splice(old.indexOf(existingIndex), 1);
@@ -952,6 +1013,9 @@ export class MarketGraph {
     if (a.liquidity < b.liquidity) return -1;
     if (a.fee < b.fee) return 1;
     if (a.fee > b.fee) return -1;
+    // Carbon patches and recovery snapshots may insert equal-rate edges in a
+    // different order. Keep the search beam independent of that history.
+    if (a.protocol === 'carbon' && b.protocol === 'carbon') return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
     return 0;
   }
 
@@ -1022,7 +1086,7 @@ export class MarketGraph {
   }
 
   private carbonEdgeId(strategy: CarbonStrategy, orderIndex: 0 | 1): MarketEdgeId {
-    return `carbon:${strategy.controller.toLowerCase()}:${strategy.id.toString()}:${orderIndex}`;
+    return `${carbonStrategyKey(strategy)}:${orderIndex}`;
   }
 
   private carbonGroupEdgeId(controller: Address, from: Address, to: Address): MarketEdgeId {

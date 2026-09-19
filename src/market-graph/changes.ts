@@ -1,6 +1,6 @@
 import { type PairInfo } from '../protocols/v2/types';
 import { type V3PoolConfig, type V3PoolState, type V3Tick } from '../protocols/v3/types';
-import { type CarbonStrategy } from '../protocols/carbon/types';
+import { type CarbonUpdate } from '../protocols/carbon/types';
 
 export type MarketVersions = Record<string, number>;
 export type GraphChanges = {
@@ -12,6 +12,6 @@ export type GraphChanges = {
     replaceTicks: boolean;
     ticks: V3Tick[];
   }>;
-  carbon?: readonly CarbonStrategy[];
+  carbon?: CarbonUpdate;
   versions: MarketVersions;
 };

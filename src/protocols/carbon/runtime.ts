@@ -5,7 +5,7 @@ import { CARBON_CONTROLLERS, CARBON_STARTUP_POLICY } from './config';
 import { graphToken } from '../../tokens';
 import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter';
 import { CARBON_CONTROLLER_EVENT_ABI } from './events';
-import { type CarbonOrder, type CarbonPairMetadata, type CarbonStrategy } from './types';
+import { carbonStrategyKey, type CarbonOrder, type CarbonPairMetadata, type CarbonStrategy, type CarbonStrategyId, type CarbonUpdate } from './types';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address;
 
@@ -52,7 +52,7 @@ export class CarbonStrategyStore {
     private readonly client: CarbonClient,
     private readonly pairs: readonly CarbonPairMetadata[],
     private readonly onChange?: (
-      strategies: readonly CarbonStrategy[],
+      update: CarbonUpdate,
       changedPoolKeys: readonly string[],
       changedController?: Address
     ) => void | Promise<void>
@@ -72,10 +72,6 @@ export class CarbonStrategyStore {
     };
   }
 
-  private strategies(): CarbonStrategy[] {
-    return Array.from(this.strategiesById.values());
-  }
-
   async loadAll(): Promise<void> {
     this.strategiesById.clear();
     this.activePairKeys.clear();
@@ -88,21 +84,30 @@ export class CarbonStrategyStore {
     await this.refetchPairsInBatches();
 
     if (RUNTIME.debug) console.log(`Carbon loaded ${this.strategiesById.size} live strategies`);
-    await this.notifyChanged();
+    await this.onChange?.({ kind: 'snapshot', strategies: [...this.strategiesById.values()] }, []);
   }
 
   async handleEvents(controller: Address, logs: any[]): Promise<void> {
     const changedPoolKeys = new Set<string>();
-    let changed = false;
+    const changed = new Map<string, CarbonStrategyId>();
 
     for (const log of logs) {
       const poolKeys = this.applyEvent(controller, log as any);
       if (!poolKeys) continue;
-      changed = true;
+      const ref = { controller, id: BigInt(log.args.id) };
+      changed.set(carbonStrategyKey(ref), ref);
       for (const key of poolKeys) changedPoolKeys.add(key);
     }
 
-    if (changed) await this.notifyChanged([...changedPoolKeys], controller);
+    if (changed.size === 0) return;
+    const upserts: CarbonStrategy[] = [];
+    const removed: CarbonStrategyId[] = [];
+    for (const [key, ref] of changed) {
+      const strategy = this.strategiesById.get(key);
+      if (strategy) upserts.push(strategy);
+      else removed.push(ref);
+    }
+    await this.onChange?.({ kind: 'delta', upserts, removed }, [...changedPoolKeys], controller);
   }
 
   private async refetchPairsInBatches(): Promise<void> {
@@ -173,7 +178,7 @@ export class CarbonStrategyStore {
         filtered++;
         continue;
       }
-      const id = strategy.id.toString();
+      const id = carbonStrategyKey(strategy);
       this.strategiesById.set(id, strategy);
       ids.add(id);
     }
@@ -213,12 +218,13 @@ export class CarbonStrategyStore {
     ];
 
     if (log.eventName === 'StrategyDeleted') {
-      this.deleteStrategy(args.id);
+      this.deleteStrategy({ controller, id: BigInt(args.id) });
       return poolKeys;
     }
 
     if (log.eventName === 'StrategyCreated' || log.eventName === 'StrategyUpdated') {
-      const existing = this.strategiesById.get(args.id.toString());
+      const key = carbonStrategyKey({ controller, id: BigInt(args.id) });
+      const existing = this.strategiesById.get(key);
       const strategy: CarbonStrategy = {
         id: BigInt(args.id),
         owner: args.owner ?? existing?.owner ?? ZERO_ADDRESS,
@@ -231,10 +237,10 @@ export class CarbonStrategyStore {
 
       this.applyOrderFilters(strategy);
       if (this.isLiveStrategy(strategy)) {
-        this.strategiesById.set(strategy.id.toString(), strategy);
+        this.strategiesById.set(key, strategy);
         this.addStrategyToPair(strategy);
       } else {
-        this.deleteStrategy(strategy.id);
+        this.deleteStrategy(strategy);
       }
       return poolKeys;
     }
@@ -249,17 +255,19 @@ export class CarbonStrategyStore {
       ids = new Set();
       this.strategyIdsByPair.set(key, ids);
     }
-    ids.add(strategy.id.toString());
+    ids.add(carbonStrategyKey(strategy));
     this.setPairActive(key, true);
   }
 
-  private deleteStrategy(id: bigint): void {
-    const key = id.toString();
+  private deleteStrategy(ref: CarbonStrategyId): void {
+    const key = carbonStrategyKey(ref);
+    const strategy = this.strategiesById.get(key);
+    if (!strategy) return;
     this.strategiesById.delete(key);
-    for (const [pairKey, ids] of this.strategyIdsByPair.entries()) {
-      ids.delete(key);
-      if (ids.size === 0) this.setPairActive(pairKey, false);
-    }
+    const pairKey = this.canonicalPairKey(this.pairKey(strategy.controller, strategy.token0, strategy.token1));
+    const ids = this.strategyIdsByPair.get(pairKey)!;
+    ids.delete(key);
+    if (ids.size === 0) this.setPairActive(pairKey, false);
   }
 
   private normalizeStrategy(controller: Address, raw: RawCarbonStrategy): CarbonStrategy {
@@ -323,10 +331,6 @@ export class CarbonStrategyStore {
 
   private feePpmForPair(controller: Address, token0: Address, token1: Address): number {
     return this.pairByTokenKey.get(this.pairKey(controller, token0, token1))?.feePpm ?? 0;
-  }
-
-  private async notifyChanged(changedPoolKeys: readonly string[] = [], changedController?: Address): Promise<void> {
-    await this.onChange?.(this.strategies(), changedPoolKeys, changedController);
   }
 }
 

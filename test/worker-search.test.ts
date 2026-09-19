@@ -5,6 +5,7 @@ import { WorkerSearch } from '../src/opportunities/worker-search';
 import { MarketGraph } from '../src/market-graph/market-graph';
 import { address, hash, pool } from './helpers/v3-fixture';
 import { tickWordBounds } from '../src/protocols/v3/coverage';
+import { type CarbonStrategy } from '../src/protocols/carbon/types';
 
 const policy = { ...ARBITRAGE_SEARCH_POLICY, beamWidth: 8, maxRouteEdges: 3, maxCandidatesToSize: 4 };
 const [a, b, c] = TOKENS.map(token => token.address);
@@ -116,3 +117,38 @@ test('Carbon replacement and deletion are mirrored and invalidate Carbon candida
   target.graph.applyChanges(source.graph.takeChanges());
   expect(target.findOpportunities(request)).toEqual(source.findOpportunities(request));
 });
+
+test('Carbon worker deltas preserve quotes and execution data, including restart and updates during search', async () => {
+  const carbonPolicy = { ...policy, maxCandidatesToSize: 16, maxRouteEdges: 2 };
+  const engine = new OpportunityEngine(carbonPolicy);
+  engine.graph.addPair({ pairAddress: address(80), token0: a, token1: b, fee: 30,
+    reserve0: 10n ** 30n, reserve1: 10n ** 24n, variant: 'uniswap-v2', scale0: 1n, scale1: 1n });
+  const strategies: CarbonStrategy[] = [1n, 2n, 3n].map(id => ({
+    id, controller: address(90), owner: address(99), token0: a, token1: b, feePpm: 0,
+    orders: [{ y: 0n, z: 0n, A: 0n, B: 0n }, { y: 10n ** 27n, z: 10n ** 27n, A: 0n, B: (1n << 47n) | (2n << 48n) }],
+  }));
+  engine.graph.setCarbonStrategies(strategies);
+  const search = new WorkerSearch(engine.graph, carbonPolicy);
+  const request = { startTokens: [a], observedAt: Date.now() };
+  // Edge slots belong to each graph, not to the transaction encoding.
+  const comparable = (results: ReturnType<OpportunityEngine['findOpportunities']>) =>
+    results.map(({ edgeIndexes: _, ...result }) => result);
+  try {
+    const initial = await search.search(request);
+    expect(initial.some(result => result.protocols.includes('carbon'))).toBe(true);
+    expect(comparable(initial)).toEqual(comparable(engine.findOpportunities(request)));
+    engine.graph.updateCarbonStrategies({ upserts: [{ ...strategies[0], orders: [strategies[0].orders[0], { ...strategies[0].orders[1], y: 5n * 10n ** 26n }] }], removed: [] });
+    const pending = search.search(request);
+    engine.graph.updateCarbonStrategies({ upserts: [], removed: [strategies[1]] });
+    const stale = await pending;
+    expect(stale.some(result => result.protocols.includes('carbon'))).toBe(true);
+    expect(stale.filter(result => result.protocols.includes('carbon')).every(result => !engine.graph.matchesVersions(result.marketVersions!))).toBe(true);
+    expect(comparable(await search.search(request))).toEqual(comparable(engine.findOpportunities(request)));
+    engine.graph.updateCarbonStrategies({ upserts: [], removed: [strategies[2]] });
+    expect(comparable(await search.search(request))).toEqual(comparable(engine.findOpportunities(request)));
+    const restarted = new WorkerSearch(engine.graph, carbonPolicy);
+    try {
+      expect(comparable(await restarted.search(request))).toEqual(comparable(engine.findOpportunities(request)));
+    } finally { restarted.stop(); }
+  } finally { search.stop(); }
+}, 20_000);

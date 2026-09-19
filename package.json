@@ -7,7 +7,8 @@
     "sync:markets": "bun run src/sync-markets.ts",
     "test": "bun test",
     "test:stress": "bun test test/v2.stress.test.ts",
-    "bench:stress": "bun run scripts/bench-stress.ts"
+    "bench:stress": "bun run scripts/bench-stress.ts",
+    "bench:carbon": "bun run scripts/bench-carbon.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

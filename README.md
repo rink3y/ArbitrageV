@@ -129,7 +129,9 @@ Execution sends a transaction through `ARB_CONTRACT_ADDRESS`. Submission logs an
 
 ### The live path
 
-Market events update the main graph before scheduling a search. Search and sizing run in a Bun worker, warmed while startup is still buffering events. V2 reserve updates and V3 state/tick changes are coalesced into compact worker patches. Carbon currently transfers its strategy list when it changes. Only one search runs at a time; queued requests retain the latest update per market. Liquidity deltas are applied before this queue, never discarded as superseded search work.
+Market events update the main graph before scheduling a search. Search and sizing run in a Bun worker, warmed while startup is still buffering events. V2 reserve updates and V3 state/tick changes are coalesced into compact worker patches. Carbon sends a full strategy snapshot at startup or recovery, then sends only changed strategies and deletion IDs. Only one search runs at a time; queued requests retain the latest update per market. Liquidity deltas are applied before this queue, never discarded as superseded search work.
+
+A Carbon update rebuilds the changed strategy's edges and the two trading directions for its pair, on both the main graph and the worker. Other pairs keep their edges and ranking caches. Strategies are keyed by controller and ID; native SEI and wrapped SEI remain separate execution groups. Repeated changes to a strategy are folded into its latest state before transfer. Groups still select at most eight orders, with strategy ID breaking equal-rate ties. Updating a busy pair still requires inspecting that pair's strategies, but no longer the whole Carbon catalog. A restarted worker receives a fresh full snapshot, including changes drained by a failed search.
 
 Candidates carry revisions for their route pools and funding pool, plus the feed revision. Execution checks these after search, before signing, and again immediately before broadcasting. Carbon changes currently invalidate all Carbon candidates. `RUNTIME.candidateMaxAgeMs` also rejects candidates older than 500 ms from the triggering event receipt. A disconnected feed pauses acceptance until reconciliation finishes.
 
@@ -178,9 +180,12 @@ The Bun tests use fixtures and mocked clients. Foundry tests run the query contr
 ```sh
 bun run test:stress
 bun run bench:stress
+bun run bench:carbon
 ```
 
 The V2 stress tests accept `V2_STRESS_PAIRS`, `V2_STRESS_SEARCH_LIMIT_MS`, and `V2_STRESS_UPDATES` environment overrides. The benchmark also runs repeated worker searches while sampling a main-thread heartbeat. Cold graph transfer is included in transfer metrics; subsequent live transfers contain only changed markets. Compare repeated runs on the same machine. Synthetic timings are not live-network latency measurements.
+
+The Carbon benchmark compares full-snapshot updates with single-strategy patches across 10,000 synthetic strategies in 1,000 pairs. It reports main-graph update, patch extraction, structured-clone, and worker-graph application timings over 60 warmed samples. JSON bytes are a payload-size proxy; clone timings are not worker round-trip measurements. The tests separately exercise a real Bun worker and compare incremental quotes and execution data with full rebuilds.
 
 For a new protocol, start with [ProtocolPlugin](src/protocols/protocol-plugin.ts). Implement discovery, state loading, events, quotes, and execution encoding, then add the required catalog and graph support. Register the plugin in [src/protocols/registry.ts](src/protocols/registry.ts) and add its ID to `allowedProtocols`. Keep the TypeScript contract ID, Solidity execution support, and deployed ABI in agreement.
 
