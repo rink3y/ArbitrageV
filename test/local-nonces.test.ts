@@ -143,3 +143,14 @@ test('invalid intervals fail rather than turning into a tight timer loop', () =>
     expect(() => new LocalNonces(async () => 0, 43_200_000, interval)).toThrow('intervals');
   }
 });
+test('known-unsubmitted nonces can fill a gap without reusing an uncertain nonce', async () => {
+  const allocator = new LocalNonces(async () => 7, 100_000, 100_000);
+  try {
+    await allocator.start();
+    expect(allocator.reserve()).toBe(7);
+    expect(allocator.reserve()).toBe(8);
+    allocator.releaseUnsubmitted(7);
+    expect(allocator.reserve()).toBe(7);
+    expect(allocator.reserve()).toBe(9);
+  } finally { allocator.stop(); }
+});

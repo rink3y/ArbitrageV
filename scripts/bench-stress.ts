@@ -7,6 +7,8 @@ import { Q96 } from '../src/protocols/v3/quote';
 import { tokenAmount } from '../src/values';
 import { LatestUpdateScheduler } from '../src/runtime/event-scheduler';
 import { type Address } from 'viem';
+import { WorkerSearch } from '../src/opportunities/worker-search';
+import { latency } from '../src/runtime/latency';
 
 const [tokenA, tokenB, tokenC] = TOKENS.map(({ address }) => address);
 
@@ -133,7 +135,28 @@ async function main(): Promise<void> {
   }));
   const schedulerRun = await measureAsync('scheduler burst', () => scheduler.submit(burst));
 
-  console.log(JSON.stringify({ unified, unifiedSearch, v2, v2Search, schedulerRun }, null, 2));
+  const worker = new WorkerSearch(v2Engine.graph, policy);
+  let heartbeatTicks = 0;
+  let largestHeartbeatGapMs = 0;
+  try {
+    await worker.search({ startTokens: [tokenA] }); // cold transfer is reported separately in telemetry
+    let previous = performance.now();
+    const heartbeat = setInterval(() => {
+      const now = performance.now();
+      largestHeartbeatGapMs = Math.max(largestHeartbeatGapMs, now - previous);
+      previous = now;
+      heartbeatTicks++;
+    }, 1);
+    try {
+      for (let i = 0; i < 20; i++) {
+        v2Engine.graph.updateReserves([{ pairAddress: v2ChangedPair.pairAddress, reserve0: v2ChangedPair.reserve0, reserve1: v2ChangedPair.reserve1 + 1n }]);
+        await worker.search({ startTokens: [tokenA], changedPairs: [v2ChangedPair.pairAddress] });
+      }
+    } finally { clearInterval(heartbeat); }
+  } finally { worker.stop(); }
+
+  console.log(JSON.stringify({ unified, unifiedSearch, v2, v2Search, schedulerRun,
+    worker: { heartbeatTicks, largestHeartbeatGapMs, metrics: latency.snapshot() } }, null, 2));
 }
 
 await main();

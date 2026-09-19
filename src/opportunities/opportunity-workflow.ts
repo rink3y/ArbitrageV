@@ -6,6 +6,9 @@ import { type NetworkConfig } from '../network';
 import { basisPoints, formatBasisPoints, formatTokenAmountWithSymbol } from '../values';
 import { type MarketProtocol } from '../market-graph/types';
 import { type OpportunityEngine } from './opportunity-engine';
+import { WorkerSearch } from './worker-search';
+import { backgroundLogs } from '../runtime/background-queue';
+import { latency } from '../runtime/latency';
 import {
   type ArbitrageSearchResult,
   type FindOpportunitiesRequest,
@@ -14,6 +17,7 @@ import {
 export type OpportunityWorkflowRequest = {
   changedPairs?: readonly string[];
   releasedPairs?: readonly Address[];
+  observedAt?: number;
 };
 
 export async function createOpportunityScanner(
@@ -21,6 +25,7 @@ export async function createOpportunityScanner(
   networkConfig: NetworkConfig
 ): Promise<{
   scan: (request?: OpportunityWorkflowRequest) => Promise<ArbitrageSearchResult>;
+  warm: () => Promise<void>;
   stop: () => void;
 }> {
   const manager = EXECUTION_POLICY.executeTrades ? new OpportunityManager(networkConfig) : null;
@@ -30,37 +35,45 @@ export async function createOpportunityScanner(
     manager?.stop();
     throw error;
   }
+  const search = new WorkerSearch(engine.graph, engine.policy);
+  let stopped = false;
   return {
-    scan: request => scanAndExecuteOpportunities(engine, manager, request),
-    stop: () => manager?.stop(),
+    warm: async () => { await search.search({ startTokens: [] }); },
+    scan: request => stopped ? Promise.resolve([]) : scanAndExecuteOpportunities(engine, search, manager, request),
+    stop: () => { stopped = true; search.stop(); manager?.stop(); },
   };
 }
 
 async function scanAndExecuteOpportunities(
   engine: OpportunityEngine,
+  search: WorkerSearch,
   manager: OpportunityManager | null,
   request: OpportunityWorkflowRequest = {}
 ): Promise<ArbitrageSearchResult> {
   if (manager && request.releasedPairs) manager.releasePairs(request.releasedPairs);
 
-  const opportunities = engine.findOpportunities(createSearchRequest(request));
-  logOpportunities(opportunities);
+  const started = performance.now();
+  const results = await search.search(createSearchRequest(request));
+  const opportunities = results.filter(opportunity =>
+    opportunity.marketVersions && engine.graph.matchesVersions(opportunity.marketVersions) &&
+    Date.now() - opportunity.observedAt! <= RUNTIME.candidateMaxAgeMs);
+  latency.observe('scan.roundTrip', performance.now() - started);
+  latency.increment('search.stale', results.length - opportunities.length);
 
   if (manager && opportunities.length > 0) {
     const executableOpportunities: ExecutableOpportunity[] = opportunities
       .filter(opportunity =>
+        opportunity.flashPoolAddress !== undefined &&
         opportunity.protocols.length === opportunity.pairs.length &&
         opportunity.routeData.length === opportunity.pairs.length
       );
 
-    if (executableOpportunities.length === 0) return opportunities;
-
     manager.processOpportunities(engine.graph, executableOpportunities).catch(error => {
-      if (RUNTIME.debug) {
-        console.error('Error processing opportunities:', error);
-      }
+      backgroundLogs.enqueue('execution-error', () => console.error('Error processing opportunities:', error));
     });
   }
+
+  backgroundLogs.enqueue('opportunities', () => logOpportunities(opportunities));
 
   return opportunities;
 }
@@ -70,16 +83,10 @@ function createSearchRequest(request: OpportunityWorkflowRequest): FindOpportuni
     .slice(0, Math.min(ARBITRAGE_SEARCH_POLICY.topTokens, TOKENS.length))
     .map(addr => addr.address);
 
-  if (RUNTIME.debug) {
-    console.log(`Searching for arbitrage opportunities using ${startTokens.length} tokens simultaneously`);
-    startTokens.forEach((token, i) => {
-      console.log(`Token ${i + 1}: ${TOKENS[i].name} (${token})`);
-    });
-  }
-
   return {
     startTokens,
     changedPairs: request.changedPairs,
+    observedAt: request.observedAt ?? Date.now(),
   };
 }
 

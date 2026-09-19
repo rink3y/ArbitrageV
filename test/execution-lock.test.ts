@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { type Address } from "viem";
 import { OpportunityManager } from "../src/execute";
 import { type ExecutableOpportunity } from "../src/execution/execution-planner";
+import { RUNTIME } from '../src/constants';
 
 const pair = "0x0000000000000000000000000000000000000001" as Address;
 
@@ -31,4 +32,14 @@ test("locks pools before an overlapping fire-and-forget submission", async () =>
   expect(submissions).toBe(1);
   releaseFirst();
   await first;
+});
+
+test('stale and expired queued opportunities are skipped before reserving or submitting', async () => {
+  let submissions = 0;
+  const manager = new OpportunityManager({} as never, async () => { submissions++; return true; });
+  const graph = { matchesVersions: () => false } as never;
+  await manager.processOpportunities(graph, [{ ...opportunity, marketVersions: { [pair]: 1 } }]);
+  await manager.processOpportunities(graph, [{ ...opportunity, observedAt: Date.now() - RUNTIME.candidateMaxAgeMs - 1000 }]);
+  expect(submissions).toBe(0);
+  manager.stop();
 });

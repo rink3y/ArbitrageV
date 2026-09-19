@@ -14,7 +14,7 @@ export const V3_POOL_EVENT_ABI = [
 ];
 
 export type DecodedV3PoolEvent =
-  | { kind: 'initialize' }
+  | { kind: 'initialize'; update: Omit<V3PoolUpdate, 'poolAddress'> }
   | { kind: 'swap'; update: Omit<V3PoolUpdate, 'poolAddress'> }
   | { kind: 'liquidity'; update: { kind: 'mint' | 'burn'; tickLower: number; tickUpper: number; amount: bigint } }
   | { kind: 'collect' };
@@ -22,7 +22,7 @@ export type DecodedV3PoolEvent =
 export function decodeV3PoolEvent(log: any): DecodedV3PoolEvent | null {
   try {
     const decoded = decodeEventLog({ abi: V3_POOL_EVENT_ABI, data: log.data, topics: log.topics });
-    if (decoded.eventName === 'Initialize') return { kind: 'initialize' };
+    if (decoded.eventName === 'Initialize') return { kind: 'initialize', update: { sqrtPriceX96: decoded.args.sqrtPriceX96, tick: Number(decoded.args.tick), liquidity: 0n } };
     if (decoded.eventName === 'Swap') {
       return {
         kind: 'swap',

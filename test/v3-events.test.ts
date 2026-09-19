@@ -11,6 +11,23 @@ import { pool, policy, v3Fixture, liquidityLog, swapLog, factory } from "./helpe
 
 const [token0, token1] = TOKENS.map(token => token.address);
 describe("EventMonitor V3 pool events", () => {
+  test('V2 ingestion continues updating revisions while an earlier search is running', async () => {
+    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY);
+    const pairAddress = '0x0000000000000000000000000000000000000a22' as Address;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const adapter = new V2EventAdapter({} as any, graph, [{ pairAddress, token0, token1, fee: 30, factory: '',
+      variant: 'uniswap-v2', scale0: 1n, scale1: 1n }], async () => held);
+    const first = adapter.apply([syncLog(pairAddress, 0, 100n, 100n, 2n)]);
+    const versions = graph.marketVersions([pairAddress]);
+    const second = adapter.apply([syncLog(pairAddress, 1, 200n, 201n, 2n)]);
+    expect(graph.getAllPairs()[0].reserve0).toBe(200n);
+    expect(graph.matchesVersions(versions)).toBe(false);
+    const empty = adapter.apply([syncLog(pairAddress, 2, 0n, 0n, 2n)]);
+    expect(graph.getAllPairs()[0].reserve0).toBe(0n);
+    release();
+    await Promise.all([first, second, empty]);
+  });
   test("uses one feed for startup buffering and rejects stale live logs", async () => {
     const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, []);
     const pairAddress = "0x0000000000000000000000000000000000000a22" as Address;
@@ -120,7 +137,7 @@ describe("EventMonitor V3 pool events", () => {
     await monitor.stop();
   });
 
-  test("refreshes mixed V3 events once and tolerates duplicate delivery", async () => {
+  test("applies mixed V3 events without RPC or persistence and ignores duplicates", async () => {
     const previous = CONTRACTS.flashQuery;
     (CONTRACTS as any).flashQuery = factory;
     const selected = pool();
@@ -139,14 +156,17 @@ describe("EventMonitor V3 pool events", () => {
         { index: -selected.tickSpacing, liquidityGross: 1600n, liquidityNet: 1600n },
         { index: selected.tickSpacing, liquidityGross: 1600n, liquidityNet: -1600n },
       ]);
-      feed.logs.push(liquidityLog(selected, 'Mint', 11n), swapLog(selected, 11n));
+      const before = feed.calls.length;
+      feed.logs.push(liquidityLog(selected, 'Mint', 11n, -selected.tickSpacing, selected.tickSpacing, 600n), swapLog(selected, 11n, false, 1600n));
       await feed.callbacks[0]([...feed.logs].reverse());
       expect(graph.getV3Pools()[0].state?.liquidity).toBe(1600n);
       expect(graph.getV3InitializedTicks(selected.address)[0].liquidityGross).toBe(1600n);
       const reads = feed.calls.filter(call => call.functionName === 'getV3Ticks').length;
       await feed.callbacks[0](feed.logs);
       expect(feed.calls.filter(call => call.functionName === 'getV3Ticks')).toHaveLength(reads);
-      expect(scans).toBe(2);
+      expect(scans).toBe(1);
+      expect(feed.calls.length).toBe(before);
+      expect(store.snapshot(selected.address)?.blockNumber).toBe(10n);
     } finally {
       await monitor.stop();
       store.close();

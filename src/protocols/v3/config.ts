@@ -22,3 +22,13 @@ export const V3_STARTUP_POLICY = {
   eventAddressBatchSize: 100,
   catchUpBlockRange: 10_000n,
 } as const;
+
+export const V3_LIVE_POLICY = {
+  // Rotating block-pinned checkpoints also repair missed events. This is not a
+  // promise that a provider silently dropping a log is detected immediately.
+  checkpointIntervalMs: 60_000,
+  checkpointPoolsPerBatch: 10,
+  retryIntervalMs: 5_000,
+  recentLogsPerPool: 128,
+  recoveryLogsPerPool: 1024,
+} as const;

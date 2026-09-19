@@ -7,8 +7,10 @@ import { OpportunityEngine } from '../opportunities/opportunity-engine';
 import { createOpportunityScanner } from '../opportunities/opportunity-workflow';
 import { enabledProtocolPlugins } from '../protocols/registry';
 import { LatestUpdateScheduler } from './event-scheduler';
+import { latency, marketReceipt } from './latency';
+import { backgroundLogs } from './background-queue';
 
-type ScanUpdate = { key: string; releasedPairs: readonly Address[] };
+type ScanUpdate = { key: string; releasedPairs: readonly Address[]; observedAt: number };
 
 export async function runArbitrageBot(): Promise<void> {
   const runtimePlugins = enabledProtocolPlugins();
@@ -25,8 +27,11 @@ export async function runArbitrageBot(): Promise<void> {
 
   console.log('Building arbitrage graph...');
   const engine = new OpportunityEngine(ARBITRAGE_SEARCH_POLICY);
-  const { scan: scanOpportunities, stop: stopExecution } = await createOpportunityScanner(engine, network);
+  const { scan: scanOpportunities, warm: warmSearch, stop: stopExecution } = await createOpportunityScanner(engine, network);
   let monitor: EventMonitor | undefined;
+  let live = false;
+  const metricsTimer = setInterval(() => backgroundLogs.enqueue('metrics', () => console.log('Latency:', latency.snapshot())), RUNTIME.metricsIntervalMs);
+  metricsTimer.unref();
   try {
     const scanScheduler = new LatestUpdateScheduler<ScanUpdate>(
       async updates => {
@@ -34,19 +39,20 @@ export async function runArbitrageBot(): Promise<void> {
         for (const update of updates) {
           for (const pair of update.releasedPairs) releasedPairs.set(pair.toLowerCase(), pair);
         }
-        await scanOpportunities({
-          changedPairs: updates.map(update => update.key),
+        try { await scanOpportunities({
+          changedPairs: updates.some(update => update.key === '$all') ? undefined : updates.map(update => update.key),
           releasedPairs: [...releasedPairs.values()],
-        });
+          observedAt: updates.reduce((oldest, update) => Math.min(oldest, update.observedAt), Date.now()),
+        }); } catch (error) { console.error('Opportunity scan failed:', error); }
       },
       update => update.key.toLowerCase()
     );
     const scheduleScan = (changedPairs: readonly string[], releasedPairs: readonly Address[] = []) =>
-      scanScheduler.submit(changedPairs.map(key => ({ key, releasedPairs })));
+      live ? scanScheduler.submit(changedPairs.map(key => ({ key, releasedPairs, observedAt: marketReceipt(key) ?? Date.now() }))) : Promise.resolve();
     const eventAdapters = runtimePlugins
       .map(plugin => plugin.events({ client: network.client, catalog, graph: engine.graph, scan: scheduleScan }))
       .filter(adapter => adapter !== null);
-    monitor = new EventMonitor(network, eventAdapters);
+    monitor = new EventMonitor(network, eventAdapters, ready => { live = ready; engine.graph.setFeedReady(ready); });
 
     console.log('Starting market event feed in buffering mode...');
     await monitor.startBuffering();
@@ -64,18 +70,24 @@ export async function runArbitrageBot(): Promise<void> {
 
     if (RUNTIME.debug) console.log(`Loaded live state for ${runtimePlugins.map(plugin => plugin.id).join(', ')}`);
     console.log('Reconciling events received during startup...');
+    // Transfer the initial graph while the feed is still buffering. Live scans
+    // then send only changed pools/ticks, never the entire catalog.
+    await warmSearch();
     await monitor.activate(hydrationStartedAtBlock);
     console.log('Searching for initial arbitrage opportunities...');
-    await scanOpportunities();
+    await scheduleScan(['$all']);
 
     process.on('SIGINT', async () => {
       console.log('\nStopping event monitor...');
       stopExecution();
+      scanScheduler.clear();
+      clearInterval(metricsTimer);
       await monitor?.stop();
       process.exit();
     });
   } catch (error) {
     stopExecution();
+    clearInterval(metricsTimer);
     await monitor?.stop();
     throw error;
   }

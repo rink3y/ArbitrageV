@@ -14,5 +14,6 @@ export interface ProtocolEventAdapter {
   reconcile(logs: readonly any[]): Promise<void>;
   reconcileAddresses(addresses: readonly Address[]): Promise<void>;
   apply(logs: any[]): Promise<void>;
-  clear?(): void;
+  clear?(): void | Promise<void>;
+  suspend?(): void;
 }

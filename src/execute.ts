@@ -1,8 +1,9 @@
-import { type Address } from 'viem';
+import { encodeFunctionData, type Address, type Hex } from 'viem';
 import {
     CONTRACTS,
     EXECUTION_POLICY,
     RUNTIME,
+    NETWORK,
     TELEGRAM,
     TOKENS,
 } from './constants';
@@ -15,6 +16,9 @@ import {
 import { type NetworkConfig } from './network';
 import { LocalNonces } from './execution/local-nonces';
 import { formatTokenAmountWithSymbol } from './values';
+import { BackgroundQueue, backgroundLogs } from './runtime/background-queue';
+import { latency } from './runtime/latency';
+import { ReceiptTracker } from './execution/receipt-tracker';
 
 const TOKEN_PROFIT_SCALE = new Map(TOKENS.map(token => [token.address.toLowerCase(), token.minProfit]));
 
@@ -37,6 +41,7 @@ async function sendTransactionNotification(
 
     try {
         await fetch(`https://api.telegram.org/bot${TELEGRAM.botToken}/sendMessage`, {
+            signal: AbortSignal.timeout(RUNTIME.notificationTimeoutMs),
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
@@ -64,6 +69,9 @@ const PAIR_LOCK_TIMEOUT_MS = 30_000;
 export class OpportunityManager {
     private lockedPairs: Map<string, number> = new Map();
     private readonly nonces: LocalNonces;
+    private readonly notifications = new BackgroundQueue(128);
+    private stopped = false;
+    private readonly receipts: ReceiptTracker;
 
     constructor(
         private readonly networkConfig: NetworkConfig,
@@ -72,6 +80,7 @@ export class OpportunityManager {
             opportunity: ExecutableOpportunity
         ) => Promise<boolean>
     ) {
+        this.receipts = new ReceiptTracker(hash => networkConfig.client.getTransactionReceipt({ hash }));
         this.nonces = new LocalNonces(
             () => networkConfig.client.getTransactionCount({ address: networkConfig.account.address, blockTag: 'pending' }),
             EXECUTION_POLICY.nonceRefreshIntervalMs,
@@ -84,6 +93,9 @@ export class OpportunityManager {
     }
 
     stop(): void {
+        this.stopped = true;
+        this.notifications.stop();
+        this.receipts.stop();
         this.nonces.stop();
     }
 
@@ -121,19 +133,20 @@ export class OpportunityManager {
             return 0;
         });
 
-        if (RUNTIME.debug) {
+        if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
             console.log(`Processing ${sortedOpps.length} opportunities in profit order`);
-        }
+        });
 
         for (const opp of sortedOpps) {
+            if (!this.isFresh(graph, opp)) { latency.increment('execution.stale'); continue; }
             // Skip if any pairs conflict
             if (!this.tryLockPairs(opp.pairs)) {
-                if (RUNTIME.debug) {
+                if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
                     console.log('Skipping opportunity due to pair conflict:', {
                         pairs: opp.pairs,
                         lockedPairs: Array.from(this.lockedPairs.keys())
                     });
-                }
+                });
                 continue;
             }
 
@@ -147,17 +160,17 @@ export class OpportunityManager {
                     continue;
                 }
 
-                if (RUNTIME.debug) {
+                if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
                     console.log('Submitted opportunity:', {
                         profit: opp.profit.toString(),
                         pairs: opp.pairs
                     });
-                }
+                });
             } catch (error) {
                 this.releasePairs(opp.pairs);
-                if (RUNTIME.debug) {
+                if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
                     console.error('Failed to execute opportunity:', error);
-                }
+                });
             }
         }
     }
@@ -172,17 +185,17 @@ export class OpportunityManager {
 
         const plan = createExecutionPlan(graph, opportunity);
         if (!plan) {
-            if (RUNTIME.debug) {
+            if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
                 console.log('Skipping opportunity without executable plan:', {
                     path: opportunity.path,
                     pairs: opportunity.pairs,
                     protocols: opportunity.protocols,
                 });
-            }
+            });
             return false;
         }
 
-        if (RUNTIME.debug) {
+        if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
             console.log('Executing arbitrage:', {
                 params: {
                     ...plan.params,
@@ -192,18 +205,22 @@ export class OpportunityManager {
                 },
                 expectedProfit: opportunity.profit.toString()
             });
-        }
+        });
 
+        if (!this.isFresh(graph, opportunity)) return false;
+        const account = this.networkConfig.account;
+        if (account.type !== 'local') throw new Error('Execution requires a local signing account');
+        const data = encodeFunctionData({ abi: ArbABI, functionName: 'executeArbitrage', args: [plan.params] });
         const nonce = this.nonces.reserve();
-        let hash: `0x${string}`;
+        let serializedTransaction: Hex;
         try {
-            hash = await this.networkConfig.walletClient.writeContract({
-                address: CONTRACTS.arbitrage as Address,
-                abi: ArbABI,
-                functionName: 'executeArbitrage',
-                args: [plan.params],
-                chain: this.networkConfig.walletClient.chain,
-                account: this.networkConfig.account,
+            const signingStarted = performance.now();
+            // All transaction fields are known locally. No fill, estimation,
+            // chain-ID, or nonce RPC belongs between detection and submission.
+            serializedTransaction = await account.signTransaction({
+                to: CONTRACTS.arbitrage as Address,
+                data,
+                chainId: this.networkConfig.walletClient.chain?.id ?? NETWORK.chainId,
                 nonce,
                 gas: EXECUTION_POLICY.gasLimit,
                 ...(EXECUTION_POLICY.legacy
@@ -216,26 +233,48 @@ export class OpportunityManager {
                         maxPriorityFeePerGas: EXECUTION_POLICY.maxPriorityFeePerGas,
                         type: 'eip1559' as const,
                     }),
-            });
+            }, { serializer: this.networkConfig.walletClient.chain?.serializers?.transaction });
+            latency.observe('sign', performance.now() - signingStarted);
+        } catch (error) {
+            this.nonces.releaseUnsubmitted(nonce);
+            throw error;
+        }
+        if (!this.isFresh(graph, opportunity)) {
+            this.nonces.releaseUnsubmitted(nonce);
+            latency.increment('execution.stale');
+            return false;
+        }
+        let hash: Hex;
+        const submittedAt = performance.now();
+        try {
+            hash = await this.networkConfig.walletClient.sendRawTransaction({ serializedTransaction });
         } catch (error) {
             this.nonces.submissionFailed(nonce);
             throw error;
         }
+        latency.observe('submit.rpc', performance.now() - submittedAt);
+        if (opportunity.observedAt) latency.observe('event.toSubmissionAck', Date.now() - opportunity.observedAt);
+        this.receipts.track(hash, opportunity.observedAt);
         
-        if (RUNTIME.debug) {
+        if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
             console.log('Transaction sent:', {
                 hash,
                 nonce,
                 type: 'flashswap',
             });
-        }
+        });
 
-        await sendTransactionNotification(
+        this.notifications.enqueue(hash, () => sendTransactionNotification(
             hash,
             opportunity.profit,
             opportunity.path[opportunity.path.length - 1]
-        );
+        ));
 
         return true;
+    }
+
+    private isFresh(graph: FlashPoolLookup, opportunity: ExecutableOpportunity): boolean {
+        return !this.stopped && (!opportunity.marketVersions || graph.matchesVersions?.(opportunity.marketVersions) === true) &&
+            (opportunity.observedAt === undefined || Date.now() - opportunity.observedAt <= RUNTIME.candidateMaxAgeMs);
     }
 }

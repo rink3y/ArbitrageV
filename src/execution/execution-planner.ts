@@ -5,10 +5,11 @@ import { protocolPlugin } from '../protocols/registry';
 
 export type ExecutableOpportunity = Pick<
   ArbitrageOpportunity,
-  'path' | 'pairs' | 'protocols' | 'fees' | 'routeData' | 'optimalInput' | 'profit'
+  'path' | 'pairs' | 'protocols' | 'fees' | 'routeData' | 'optimalInput' | 'profit' | 'marketVersions' | 'observedAt' | 'flashPoolAddress'
 >;
 
 export type FlashPoolLookup = {
+  matchesVersions?(versions: NonNullable<ArbitrageOpportunity['marketVersions']>): boolean;
   findBestFlashPoolForToken(
     token: Address,
     amountIn: bigint,
@@ -51,6 +52,7 @@ export function createExecutionPlan(graph: FlashPoolLookup, opportunity: Executa
   );
 
   if (!flashPool) return null;
+  if (opportunity.flashPoolAddress && flashPool.poolAddress.toLowerCase() !== opportunity.flashPoolAddress.toLowerCase()) return null;
   const flashPlugin = protocolPlugin(flashPool.protocol);
   if (!flashPlugin.flashLoanFee) return null;
 

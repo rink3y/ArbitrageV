@@ -26,6 +26,7 @@ import {
 } from '../protocols/carbon/quote';
 import { Q96, quoteV3MultiRangeExactInput, V3_FEE_DENOMINATOR } from '../protocols/v3/quote';
 import { protocolPlugin } from '../protocols/registry';
+import { type GraphChanges, type MarketVersions } from './changes';
 import {
   type AnyMarketEdge,
   type ArbitrageSearchPolicy,
@@ -43,6 +44,7 @@ type TokenSlot = {
   address: Address;
   edgeIndexes: number[];
   incomingEdgeIndexes: number[];
+  pools: Map<number, number[]>;
 };
 
 type EdgeSlot = {
@@ -91,6 +93,79 @@ class AddressRegistry {
 }
 
 export class MarketGraph {
+  private readonly versions = new Map<string, number>();
+  private readonly dirtyPairs = new Set<string>();
+  private readonly dirtyV3 = new Map<string, Set<number> | null>();
+  private carbonStrategies: readonly CarbonStrategy[] = [];
+  private carbonDirty = false;
+  private feedReady = true;
+
+  setFeedReady(ready: boolean): void {
+    this.feedReady = ready;
+    this.touch('$feed');
+  }
+
+  marketVersions(addresses: readonly string[], carbon = false): MarketVersions {
+    return Object.fromEntries(['$feed', ...addresses.map(address => address.toLowerCase()), ...(carbon ? ['$carbon'] : [])]
+      .map(key => [key, this.versions.get(key) ?? 0]));
+  }
+
+  matchesVersions(versions: MarketVersions): boolean {
+    return this.feedReady && Object.entries(versions).every(([key, value]) => (this.versions.get(key) ?? 0) === value);
+  }
+
+  // One full transfer at startup. Thereafter send absolute pool states and only
+  // changed ticks, coalesced by pool/tick while the search worker is occupied.
+  takeChanges(full = false): GraphChanges {
+    const pairs = (full ? this.getAllPairs() : [...this.dirtyPairs].map(key => this.pairs[this.poolRegistry.get(key)!]!)).map(pair => ({ ...pair }));
+    const v3 = (full ? this.getV3Pools() : [...this.dirtyV3.keys()].map(key => this.getV3Pool(key as Address)!)).map(pool => {
+      const indexes = this.dirtyV3.get(pool.address.toLowerCase());
+      const replaceTicks = full || indexes === null;
+      const { state, ticks, bitmapWords: _bitmap, fullRange, ...config } = pool;
+      return { pool: config, state, fullRange: fullRange === true, replaceTicks,
+        ticks: replaceTicks ? [...ticks.values()] : [...indexes ?? []].map(index => ticks.get(index) ?? { index, liquidityGross: 0n, liquidityNet: 0n }) };
+    });
+    const keys = [...pairs.map(pair => pair.pairAddress), ...v3.map(item => item.pool.address)];
+    const changes: GraphChanges = { pairs, v3, versions: this.marketVersions(keys, full || this.carbonDirty) };
+    if (full || this.carbonDirty) changes.carbon = this.carbonStrategies;
+    this.dirtyPairs.clear();
+    this.dirtyV3.clear();
+    this.carbonDirty = false;
+    return changes;
+  }
+
+  applyChanges(changes: GraphChanges): void {
+    for (const pair of changes.pairs) {
+      const index = this.poolRegistry.get(pair.pairAddress);
+      if (index !== undefined && this.pairs[index]) this.updateReserves([pair]);
+      else this.addPair(pair);
+    }
+    for (const change of changes.v3) {
+      this.addV3Pool(change.pool);
+      const pool = this.getV3Pool(change.pool.address)!;
+      if (change.replaceTicks) pool.ticks.clear();
+      this.updateV3Ticks([{ poolAddress: pool.address, ticks: change.ticks }]);
+      pool.fullRange = change.fullRange;
+      if (change.state) this.updateV3PoolStates([{ poolAddress: pool.address, ...change.state }]);
+    }
+    if (changes.carbon) this.setCarbonStrategies(changes.carbon);
+    this.dirtyPairs.clear(); this.dirtyV3.clear(); this.carbonDirty = false;
+    for (const [key, version] of Object.entries(changes.versions)) this.versions.set(key, version);
+  }
+
+  private touch(address: string): void {
+    const key = address.toLowerCase();
+    this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
+  }
+
+  private touchV3(address: string, ticks: readonly V3Tick[] = []): void {
+    const key = address.toLowerCase();
+    this.touch(key);
+    if (this.dirtyV3.get(key) === null) return;
+    const indexes = this.dirtyV3.get(key) ?? new Set<number>();
+    for (const tick of ticks) indexes.add(tick.index);
+    this.dirtyV3.set(key, indexes);
+  }
   private readonly tokenRegistry = new AddressRegistry();
   private readonly poolRegistry = new AddressRegistry();
   private readonly tokens: TokenSlot[] = [];
@@ -113,10 +188,12 @@ export class MarketGraph {
   }
 
   addPair(pair: PairInfo): void {
-    if (pair.reserve0 === 0n || pair.reserve1 === 0n) return;
+    if ((pair.reserve0 === 0n || pair.reserve1 === 0n) && this.poolRegistry.get(pair.pairAddress) === undefined) return;
     const poolIndex = this.poolIndex(pair.pairAddress);
     this.pairs[poolIndex] = pair;
     this.upsertV2Edges(pair, poolIndex);
+    this.touch(pair.pairAddress);
+    this.dirtyPairs.add(pair.pairAddress.toLowerCase());
   }
 
   updateReserves(updates: ReserveUpdate[]): void {
@@ -130,6 +207,8 @@ export class MarketGraph {
       pair.reserve0 = update.reserve0;
       pair.reserve1 = update.reserve1;
       this.upsertV2Edges(pair, poolIndex);
+      this.touch(pair.pairAddress);
+      this.dirtyPairs.add(pair.pairAddress.toLowerCase());
     }
   }
 
@@ -148,6 +227,8 @@ export class MarketGraph {
 
     this.v3Pools[poolIndex] = poolInfo;
     this.upsertV3Edges(poolInfo, poolIndex);
+    this.touch(pool.address);
+    this.dirtyV3.set(pool.address.toLowerCase(), null);
   }
 
   replaceV3Snapshot(pool: V3PoolConfig, snapshot: V3Snapshot): void {
@@ -185,6 +266,7 @@ export class MarketGraph {
         tick: update.tick,
       };
       this.upsertV3Edges(pool, poolIndex);
+      this.touchV3(pool.address);
     }
   }
 
@@ -196,6 +278,13 @@ export class MarketGraph {
       if (!pool) continue;
 
       for (const tick of update.ticks) {
+        const compressed = tick.index / pool.tickSpacing;
+        const word = Math.floor(compressed / 256);
+        const mask = 1n << BigInt(compressed - word * 256);
+        const bitmap = pool.bitmapWords.get(word) ?? 0n;
+        const next = tick.liquidityGross > 0n ? bitmap | mask : bitmap & ~mask;
+        if (next === 0n) pool.bitmapWords.delete(word);
+        else pool.bitmapWords.set(word, next);
         if (tick.liquidityGross === 0n && tick.liquidityNet === 0n) {
           pool.ticks.delete(tick.index);
         } else {
@@ -203,6 +292,7 @@ export class MarketGraph {
         }
       }
       this.v3TicksCache[poolIndex] = undefined;
+      this.touchV3(pool.address, update.ticks);
     }
   }
 
@@ -215,6 +305,9 @@ export class MarketGraph {
   }
 
   setCarbonStrategies(strategies: readonly CarbonStrategy[]): void {
+    this.carbonStrategies = strategies;
+    this.carbonDirty = true;
+    this.touch('$carbon');
     for (const edgeId of this.carbonEdgeIds) {
       const edge = this.edge(edgeId);
       if (edge?.protocol !== 'carbon') continue;
@@ -257,16 +350,7 @@ export class MarketGraph {
   edgeIndexesForTokenPool(tokenIndex: number, poolIndex: number): number[] {
     if (tokenIndex < 0 || tokenIndex >= this.tokens.length) return [];
 
-    const edgeIndexes = this.tokens[tokenIndex].edgeIndexes;
-    const matches: number[] = [];
-
-    for (const edgeIndex of edgeIndexes) {
-      if (this.edges[edgeIndex].poolIndex === poolIndex) {
-        matches.push(edgeIndex);
-      }
-    }
-
-    return matches;
+    return this.tokens[tokenIndex].pools.get(poolIndex) ?? [];
   }
 
   tokenIndexOf(token: Address): number | undefined {
@@ -510,7 +594,7 @@ export class MarketGraph {
   }
 
   private upsertV2Edges(pair: PairInfo, poolIndex: number): void {
-    if (pair.reserve0 === 0n || pair.reserve1 === 0n || !protocolAllowed(this.policy, 'v2')) return;
+    if (!protocolAllowed(this.policy, 'v2')) return;
 
     const token0Index = this.tokenIndex(pair.token0);
     const token1Index = this.tokenIndex(pair.token1);
@@ -782,6 +866,14 @@ export class MarketGraph {
     if (existingIndex !== undefined) {
       const previousTokenIndex = this.edges[existingIndex].tokenIndex;
       const previousToTokenIndex = this.edges[existingIndex].toTokenIndex;
+      const previousPoolIndex = this.edges[existingIndex].poolIndex;
+      if (previousTokenIndex !== tokenIndex || previousPoolIndex !== poolIndex) {
+        const old = this.tokens[previousTokenIndex].pools.get(previousPoolIndex)!;
+        old.splice(old.indexOf(existingIndex), 1);
+        const next = this.tokens[tokenIndex].pools.get(poolIndex) ?? [];
+        next.push(existingIndex);
+        this.tokens[tokenIndex].pools.set(poolIndex, next);
+      }
       Object.assign(this.edges[existingIndex].edge, edge);
       this.edges[existingIndex].tokenIndex = tokenIndex;
       this.edges[existingIndex].toTokenIndex = toTokenIndex;
@@ -802,6 +894,9 @@ export class MarketGraph {
     this.edgeIndexes.set(edge.id, edgeIndex);
     this.edges.push({ edge, tokenIndex, toTokenIndex, poolIndex });
     this.tokens[tokenIndex].edgeIndexes.push(edgeIndex);
+    const poolEdges = this.tokens[tokenIndex].pools.get(poolIndex) ?? [];
+    poolEdges.push(edgeIndex);
+    this.tokens[tokenIndex].pools.set(poolIndex, poolEdges);
     this.tokens[toTokenIndex].incomingEdgeIndexes.push(edgeIndex);
     this.rankedEdgesCache.delete(tokenIndex);
     this.flashEdgesCache.delete(tokenIndex);
@@ -936,7 +1031,7 @@ export class MarketGraph {
 
   private tokenIndex(token: Address): number {
     const index = this.tokenRegistry.getOrAdd(token);
-    this.tokens[index] ??= { address: token, edgeIndexes: [], incomingEdgeIndexes: [] };
+    this.tokens[index] ??= { address: token, edgeIndexes: [], incomingEdgeIndexes: [], pools: new Map() };
     return index;
   }
 

@@ -73,22 +73,22 @@ export function v3Fixture(pools = [pool()]) {
   return fixture;
 }
 
-export function liquidityLog(pool: V3PoolConfig, kind: 'Mint' | 'Burn', blockNumber: bigint, lower = -pool.tickSpacing, upper = pool.tickSpacing) {
+export function liquidityLog(pool: V3PoolConfig, kind: 'Mint' | 'Burn', blockNumber: bigint, lower = -pool.tickSpacing, upper = pool.tickSpacing, amount = 1000n) {
   return {
-    address: pool.address, blockNumber, transactionIndex: 0, logIndex: 0,
+    address: pool.address, blockNumber, blockHash: hash(blockNumber), transactionIndex: 0, logIndex: 0,
     topics: encodeEventTopics({ abi: V3_POOL_EVENT_ABI, eventName: kind, args: { owner: address(99), tickLower: lower, tickUpper: upper } }),
     data: kind === 'Mint'
-      ? encodeAbiParameters([{ type: 'address' }, { type: 'uint128' }, { type: 'uint256' }, { type: 'uint256' }], [address(99), 1000n, 0n, 0n])
-      : encodeAbiParameters([{ type: 'uint128' }, { type: 'uint256' }, { type: 'uint256' }], [1000n, 0n, 0n]),
+      ? encodeAbiParameters([{ type: 'address' }, { type: 'uint128' }, { type: 'uint256' }, { type: 'uint256' }], [address(99), amount, 0n, 0n])
+      : encodeAbiParameters([{ type: 'uint128' }, { type: 'uint256' }, { type: 'uint256' }], [amount, 0n, 0n]),
   };
 }
 
-export function swapLog(pool: V3PoolConfig, blockNumber: bigint, sailor = false) {
+export function swapLog(pool: V3PoolConfig, blockNumber: bigint, sailor = false, liquidity = 1000n) {
   return {
-    address: pool.address, blockNumber, transactionIndex: 0, logIndex: 1,
+    address: pool.address, blockNumber, blockHash: hash(blockNumber), transactionIndex: 0, logIndex: 1,
     topics: encodeEventTopics({ abi: sailor ? [V3_SAILOR_SWAP_EVENT] : V3_POOL_EVENT_ABI, eventName: 'Swap', args: { sender: address(99), recipient: address(99) } }),
     data: sailor
-      ? encodeAbiParameters([{ type: 'int256' }, { type: 'int256' }, { type: 'uint160' }, { type: 'uint128' }, { type: 'int24' }, { type: 'uint128' }, { type: 'uint128' }], [1n, -1n, 2n ** 96n, 1000n, 0, 0n, 0n])
-      : encodeAbiParameters([{ type: 'int256' }, { type: 'int256' }, { type: 'uint160' }, { type: 'uint128' }, { type: 'int24' }], [1n, -1n, 2n ** 96n, 1000n, 0]),
+      ? encodeAbiParameters([{ type: 'int256' }, { type: 'int256' }, { type: 'uint160' }, { type: 'uint128' }, { type: 'int24' }, { type: 'uint128' }, { type: 'uint128' }], [1n, -1n, 2n ** 96n, liquidity, 0, 0n, 0n])
+      : encodeAbiParameters([{ type: 'int256' }, { type: 'int256' }, { type: 'uint160' }, { type: 'uint128' }, { type: 'int24' }], [1n, -1n, 2n ** 96n, liquidity, 0]),
   };
 }

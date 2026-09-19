@@ -13,6 +13,8 @@ export type ArbitrageSearchPolicy = {
   optimizationIterations: number;
   maxInputReserveFraction: bigint;
   maxOpportunities: number;
+  maxCandidatesToSize?: number;
+  maxSearchExpansions?: number;
 };
 
 export type MarketEdgeId = string;

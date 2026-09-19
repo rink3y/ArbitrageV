@@ -44,7 +44,7 @@ function prepareRuntime() {
   spyOn(marketDb, 'loadMarketSnapshot').mockReturnValue(catalog);
   const scan = mock(async () => []);
   const stop = mock(() => {});
-  const scanner = spyOn(workflow, 'createOpportunityScanner').mockResolvedValue({ scan, stop });
+  const scanner = spyOn(workflow, 'createOpportunityScanner').mockResolvedValue({ scan, stop, warm: async () => {} });
   const v2Hydrate = spyOn(protocolPlugin('v2'), 'hydrate').mockResolvedValue();
   const disabled = ['v3', 'carbon'].map(id => {
     const plugin = protocolPlugin(id as 'v3' | 'carbon');

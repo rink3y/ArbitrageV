@@ -91,6 +91,12 @@ The range is no longer a few words around the current price, and there is no 512
 
 Completed snapshots store their block number, block hash, and full-range coverage. Interrupted downloads save a separate cursor and resume at their original block; they are never admitted to the trading graph. On restart, the bot checks the saved block hash and catches up missed events. Swaps refresh live state; mints and burns refresh their affected tick boundaries. Burned-out ticks are removed. A reorg or unavailable history triggers a fresh snapshot. Failed pools stay out of the graph until a refresh succeeds.
 
+Once live, V3 does not call the query contract for every event. Swap events update price, tick, and active liquidity in memory. Mint and Burn events update both tick boundaries, their bitmap bits, and active liquidity when the position covers the current tick. Exact duplicate logs are ignored. Removed logs, conflicting block hashes, unexpected ordering, missing cursors, and liquidity inconsistencies exclude the affected pool until recovery succeeds.
+
+`V3_LIVE_POLICY` in [src/protocols/v3/config.ts](src/protocols/v3/config.ts) controls rotating checkpoints: 10 pools per batch, normally 60 seconds between batches, or 5 seconds while pools need recovery. These are batch intervals, not a promise that every pool is checked once a minute. Selected pools are temporarily unavailable while their block-pinned snapshot is refreshed. Events arriving during the read are replayed afterward; the saved database snapshot stays at its completed block. If the bounded replay buffer overflows, the pool stays unavailable and retries from a newer snapshot.
+
+The feed must deliver complete, ordered logs. There is no per-pool consecutive log counter, so skipped block numbers alone do not prove a gap. Disconnects trigger reconciliation, and rotating checkpoints repair events missed by the subscription when HTTP history is complete. A provider silently omitting events from both sources cannot be made reliable by a local cache.
+
 Your RPC must serve historical factory logs and block-pinned contract reads. Recent historical state is enough for a fresh download, but an archive endpoint helps resume older downloads. A provider that silently truncates logs can produce an incomplete catalog; use one that returns complete results or an explicit range-limit error.
 
 ### Updating the query contract
@@ -113,12 +119,27 @@ These settings are in [src/constants.ts](src/constants.ts):
 
 - `TOKENS` lists the search start tokens, liquidity thresholds, and minimum profits. Amounts use `tokenAmount` with the token's decimals.
 - `ARBITRAGE_SEARCH_POLICY` controls route length, search width, sizing iterations, and the number of opportunities returned.
+- `maxSearchExpansions` caps route exploration at 50,000 edge attempts. `maxCandidatesToSize` selects up to 64 candidates by marginal exchange rate before exact sizing. Both live in `ARBITRAGE_SEARCH_POLICY`; lower limits save computation but can miss profitable routes.
 - `EXECUTION_POLICY` controls transaction submission, the gas limit, and gas prices. The `gasPrice` helper takes values in gwei.
 - `RUNTIME.websocketEnabled` controls whether startup uses the configured WebSocket endpoint.
 
 Reported profit includes swap fees and deducts the selected flash-loan fee when a funding pool is available. Gas is not deducted from that figure. Set token profit thresholds with that in mind.
 
 Execution sends a transaction through `ARB_CONTRACT_ADDRESS`. Submission logs and Telegram messages mean the transaction was sent; they don't confirm that it succeeded or earned the quoted profit.
+
+### The live path
+
+Market events update the main graph before scheduling a search. Search and sizing run in a Bun worker, warmed while startup is still buffering events. V2 reserve updates and V3 state/tick changes are coalesced into compact worker patches. Carbon currently transfers its strategy list when it changes. Only one search runs at a time; queued requests retain the latest update per market. Liquidity deltas are applied before this queue, never discarded as superseded search work.
+
+Candidates carry revisions for their route pools and funding pool, plus the feed revision. Execution checks these after search, before signing, and again immediately before broadcasting. Carbon changes currently invalidate all Carbon candidates. `RUNTIME.candidateMaxAgeMs` also rejects candidates older than 500 ms from the triggering event receipt. A disconnected feed pauses acceptance until reconciliation finishes.
+
+Transaction data, gas, fees, chain ID, and nonce are supplied locally. The account signs locally, then the wallet sends the signed bytes. There is no transaction-fill, gas-estimation, chain-ID, or nonce lookup on that normal submission path. If signing fails or the market changes before broadcast, only that known-unsubmitted nonce can be reused. Once a submission has been attempted, the conservative uncertain-nonce policy below still applies.
+
+Opportunity/debug logs and Telegram notifications use bounded background queues. A slow Telegram request does not delay the next trade; requests time out after `RUNTIME.notificationTimeoutMs`. Queues can coalesce or drop diagnostics under load, so these messages are not a durable trade ledger. Checkpoint reads/writes run outside live event handling, but SQLite writes still share the main process and can briefly occupy its event loop.
+
+Every `RUNTIME.metricsIntervalMs` (60 seconds), the bot prints bounded latency samples and counters. Timings cover dispatch, V3 application, worker transfer/application, search, signing, submission acknowledgment, and receipt observation. Percentiles use the latest 512 samples per stage; counts are cumulative. Receipt tracking polls in the background, at most eight requests per batch, and expires after two minutes. Receipt-observation time includes polling and RPC delay, not just chain inclusion time. A successful receipt does not establish realized profit.
+
+The worker has a `RUNTIME.searchTimeoutMs` deadline. A failed or timed-out job produces no trades; the next scan rebuilds the worker from current state. Changing search limits or timeouts requires a restart. These limits bound work and reject stale results; they do not guarantee profitable execution or eliminate competition, RPC delay, or garbage-collection pauses.
 
 When execution is enabled, startup fetches the wallet's pending nonce before enabling submissions. Each trade then reserves its nonce locally, without a nonce RPC read. `EXECUTION_POLICY.nonceRefreshIntervalMs` defaults to 12 hours; background checks can advance the counter but never move it backward. Failed refreshes retry after `nonceRetryIntervalMs`, which defaults to 5 seconds.
 
@@ -159,7 +180,7 @@ bun run test:stress
 bun run bench:stress
 ```
 
-The V2 stress tests accept `V2_STRESS_PAIRS`, `V2_STRESS_SEARCH_LIMIT_MS`, and `V2_STRESS_UPDATES` environment overrides.
+The V2 stress tests accept `V2_STRESS_PAIRS`, `V2_STRESS_SEARCH_LIMIT_MS`, and `V2_STRESS_UPDATES` environment overrides. The benchmark also runs repeated worker searches while sampling a main-thread heartbeat. Cold graph transfer is included in transfer metrics; subsequent live transfers contain only changed markets. Compare repeated runs on the same machine. Synthetic timings are not live-network latency measurements.
 
 For a new protocol, start with [ProtocolPlugin](src/protocols/protocol-plugin.ts). Implement discovery, state loading, events, quotes, and execution encoding, then add the required catalog and graph support. Register the plugin in [src/protocols/registry.ts](src/protocols/registry.ts) and add its ID to `allowedProtocols`. Keep the TypeScript contract ID, Solidity execution support, and deployed ABI in agreement.
 

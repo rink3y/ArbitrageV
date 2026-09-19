@@ -1,4 +1,5 @@
 import { ARBITRAGE_SEARCH_POLICY, TOKENS } from '../constants';
+import { compareFractions } from '../fractions';
 import { encodeCarbonRouteData } from '../protocols/carbon/execution';
 import { flashLoanFee } from '../execution/execution-planner';
 import { MarketGraph } from '../market-graph/market-graph';
@@ -19,20 +20,44 @@ const TOKEN_BY_ADDRESS = new Map(TOKENS.map(token => [token.address.toLowerCase(
 export class OpportunityEngine {
   readonly graph: MarketGraph;
   private readonly strategy: CircularArbitrageStrategy;
+  lastSearchStats = { candidates: 0, sized: 0 };
 
   constructor(
-    private readonly policy: ArbitrageSearchPolicy = ARBITRAGE_SEARCH_POLICY,
+    readonly policy: ArbitrageSearchPolicy = ARBITRAGE_SEARCH_POLICY,
     configuredV3Pools: readonly V3PoolConfig[] = []
   ) {
+    for (const limit of [policy.maxCandidatesToSize ?? 64, policy.maxSearchExpansions ?? 50_000]) {
+      if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Search budgets must be positive integers');
+    }
     this.graph = new MarketGraph(policy, configuredV3Pools);
     this.strategy = new CircularArbitrageStrategy(this.graph, policy);
   }
 
   findOpportunities(request: FindOpportunitiesRequest): ArbitrageSearchResult {
     const opportunities: ArbitrageOpportunity[] = [];
-
+    const shortlist: Array<{ candidate: CandidateRoute; numerator: bigint; denominator: bigint }> = [];
+    const limit = this.policy.maxCandidatesToSize ?? 64;
+    this.lastSearchStats = { candidates: 0, sized: 0 };
     this.strategy.visitCandidates(request, candidate => {
+      this.lastSearchStats.candidates++;
+      let numerator = 1n;
+      let denominator = 1n;
+      for (const index of candidate.edgeIndexes!) {
+        const edge = this.graph.edgeAt(index)!;
+        numerator *= edge.rateNumerator;
+        denominator *= edge.rateDenominator;
+      }
+      let index = shortlist.length;
+      while (index > 0 && compareFractions(numerator, denominator, shortlist[index - 1].numerator, shortlist[index - 1].denominator) > 0) index--;
+      if (index >= limit) return;
+      shortlist.splice(index, 0, { candidate, numerator, denominator });
+      if (shortlist.length > limit) shortlist.pop();
+    });
+
+    for (const { candidate } of shortlist) {
+      this.lastSearchStats.sized++;
       const opportunity = this.sizeCandidate(candidate);
+      opportunity.observedAt = request.observedAt ?? Date.now();
       const originToken = opportunity.path[0];
       const token = TOKEN_BY_ADDRESS.get(originToken.toLowerCase());
 
@@ -40,9 +65,9 @@ export class OpportunityEngine {
         throw new Error(`No token config found for ${originToken}. Please update TOKENS in constants.ts.`);
       }
 
-      if (opportunity.profit <= token.minProfit) return;
+      if (opportunity.profit <= token.minProfit) continue;
       this.insertRankedOpportunity(opportunities, opportunity);
-    });
+    }
 
     return opportunities;
   }
@@ -80,6 +105,11 @@ export class OpportunityEngine {
       optimalInput: complete ? optimalInput : 0n,
       fees,
       routeData,
+      flashPoolAddress: flashPool?.poolAddress,
+      marketVersions: this.graph.marketVersions(
+        [...candidate.pairs, ...(flashPool ? [flashPool.poolAddress] : [])],
+        candidate.protocols.includes('carbon')
+      ),
     };
   }
 

@@ -2,6 +2,7 @@
 export class LocalNonces {
   private nextNonce: number | undefined;
   private readonly uncertain = new Set<number>();
+  private readonly unsubmitted = new Set<number>();
   private refreshing: Promise<void> | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
@@ -28,6 +29,11 @@ export class LocalNonces {
     if (this.stopped) throw new Error('Nonce allocator is stopped');
     if (this.nextNonce === undefined) throw new Error('Nonce allocator has not been warmed');
     if (this.uncertain.size > 0) throw new Error('Transaction submissions paused for nonce reconciliation');
+    if (this.unsubmitted.size > 0) {
+      const nonce = Math.min(...this.unsubmitted);
+      this.unsubmitted.delete(nonce);
+      return nonce;
+    }
     if (!Number.isSafeInteger(this.nextNonce + 1)) throw new Error('Nonce exceeds the safe integer range');
     // No await or RPC: concurrent callers reserve distinct values in this process.
     return this.nextNonce++;
@@ -39,6 +45,12 @@ export class LocalNonces {
     this.refreshInBackground();
   }
 
+  // Only for a local signing abort: these bytes have never reached a transport.
+  releaseUnsubmitted(nonce: number): void {
+    if (nonce < 0 || this.nextNonce === undefined || nonce >= this.nextNonce || this.uncertain.has(nonce)) throw new Error('Cannot release this nonce');
+    this.unsubmitted.add(nonce);
+  }
+
   refresh(): Promise<void> {
     if (this.stopped) return Promise.reject(new Error('Nonce allocator is stopped'));
     if (this.refreshing) return this.refreshing;
@@ -48,6 +60,7 @@ export class LocalNonces {
       if (!Number.isSafeInteger(pending) || pending < 0) throw new Error('Invalid pending nonce from RPC');
       // A slow/stale response must not overwrite reservations made while it was in flight.
       this.nextNonce = Math.max(this.nextNonce ?? pending, pending);
+      for (const nonce of this.unsubmitted) if (nonce < pending) this.unsubmitted.delete(nonce);
       for (const nonce of this.uncertain) {
         if (pending > nonce) this.uncertain.delete(nonce);
       }

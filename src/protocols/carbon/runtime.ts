@@ -390,8 +390,7 @@ export class CarbonEventAdapter implements ProtocolEventAdapter {
       if (group) group.push(log);
       else byController.set(key, [log]);
     }
-    for (const [controller, controllerLogs] of byController) {
-      await this.store.handleEvents(controller as Address, controllerLogs);
-    }
+    await Promise.all([...byController].map(([controller, controllerLogs]) =>
+      this.store.handleEvents(controller as Address, controllerLogs)));
   }
 }

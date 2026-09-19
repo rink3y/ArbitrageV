@@ -29,6 +29,8 @@ export class CircularArbitrageStrategy {
   ) {}
 
   visitCandidates(request: FindOpportunitiesRequest, visit: CandidateVisitor): void {
+    let expansions = 0;
+    const budget = this.policy.maxSearchExpansions ?? 50_000;
     const changedPoolIndexes = this.changedPoolIndexes(request.changedPairs || []);
     const startTokenIndexes = request.startTokens
       .map(token => this.graph.tokenIndexOf(token))
@@ -62,6 +64,7 @@ export class CircularArbitrageStrategy {
           let accepted = 0;
           let consideredEdgeIndexes = rankedEdgeIndexes;
           for (const edgeIndex of rankedEdgeIndexes) {
+            if (expansions++ >= budget) return;
             const didExpand = this.expandEdge(
               states,
               stateIndex,
@@ -81,6 +84,7 @@ export class CircularArbitrageStrategy {
               this.policy.beamWidth + this.policy.maxRouteEdges
             );
             for (let index = rankedEdgeIndexes.length; index < consideredEdgeIndexes.length; index++) {
+              if (expansions++ >= budget) return;
               const didExpand = this.expandEdge(
                 states,
                 stateIndex,
@@ -100,6 +104,7 @@ export class CircularArbitrageStrategy {
             const affectedEdgeIndexes = this.graph.edgeIndexesForTokenPool(currentTokenIndex, poolIndex);
             for (const edgeIndex of affectedEdgeIndexes) {
               if (consideredEdgeIndexes.includes(edgeIndex)) continue;
+              if (expansions++ >= budget) return;
 
               expanded = this.expandEdge(
                 states,
@@ -129,7 +134,7 @@ export class CircularArbitrageStrategy {
     visit: CandidateVisitor
   ): boolean {
     const edge = this.graph.edgeAt(edgeIndex);
-    if (!edge) return false;
+    if (!edge || edge.liquidity <= 0n || edge.rateDenominator <= 0n) return false;
     const toTokenIndex = this.graph.edgeToTokenIndex(edgeIndex);
     const originTokenIndex = states.originTokenIndexes[entryIndex];
     if (!this.graph.canReachToken(toTokenIndex, originTokenIndex, this.policy.maxRouteEdges - step)) return false;

@@ -1,7 +1,6 @@
 import { type Address } from 'viem';
 import { type PublicClient } from 'viem';
 import { type MarketGraph } from '../../market-graph/market-graph';
-import { LatestUpdateScheduler } from '../../runtime/event-scheduler';
 import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter';
 import { decodeV2SyncEvent, V2_SYNC_EVENT_ABI } from './events';
 import { type ReserveUpdate } from './types';
@@ -198,7 +197,6 @@ export async function refreshKnownPairsInfo(
 export class V2EventAdapter implements ProtocolEventAdapter {
   readonly id = 'v2';
   private readonly pools = new Map<string, V2PoolMetadata>();
-  private readonly scheduler: LatestUpdateScheduler<ReserveUpdate>;
 
   constructor(
     private readonly client: PublicClient<any, any, any>,
@@ -207,10 +205,6 @@ export class V2EventAdapter implements ProtocolEventAdapter {
     private readonly scan: (changedPairs: readonly string[], releasedPairs?: readonly Address[]) => Promise<void>
   ) {
     for (const pool of pools) this.pools.set(pool.pairAddress.toLowerCase(), pool);
-    this.scheduler = new LatestUpdateScheduler(
-      updates => this.applyUpdates(updates),
-      update => update.pairAddress.toLowerCase()
-    );
   }
 
   addresses(): readonly Address[] {
@@ -267,11 +261,9 @@ export class V2EventAdapter implements ProtocolEventAdapter {
       if (pool && decoded) updates[count++] = { pairAddress: pool.pairAddress, ...decoded };
     }
     updates.length = count;
-    if (count > 0) await this.scheduler.submit(updates);
-  }
-
-  clear(): void {
-    this.scheduler.clear();
+    // Apply absolute reserves before yielding to search. Coalescing belongs to
+    // search requests, otherwise an in-flight worker can appear falsely fresh.
+    if (count > 0) await this.applyUpdates(updates);
   }
 
   private async applyUpdates(updates: ReserveUpdate[]): Promise<void> {

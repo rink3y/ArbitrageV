@@ -32,6 +32,9 @@ export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
     optimizationIterations: 32,
     maxInputReserveFraction: 10n,
     maxOpportunities: 10,
+    // Live search is bounded even when discovery finds thousands of pools.
+    maxCandidatesToSize: 64,
+    maxSearchExpansions: 50_000,
 } as const;
 
 export const EXECUTION_POLICY = {
@@ -48,6 +51,12 @@ export const EXECUTION_POLICY = {
 export const RUNTIME = {
     debug: process.env.DEBUG === 'true',
     websocketEnabled: true,
+    searchTimeoutMs: 10_000,
+    candidateMaxAgeMs: 500,
+    metricsIntervalMs: 60_000,
+    notificationTimeoutMs: 5_000,
+    receiptPollIntervalMs: 1_000,
+    receiptTimeoutMs: 120_000,
 } as const;
 
 export const TELEGRAM = {
