@@ -30,6 +30,11 @@ export class V3EventAdapter implements ProtocolEventAdapter {
   private recoveryScanPending = false;
   private readonly recoveredForScan = new Set<Address>();
   private readonly replay = new Map<string, { floor: bigint; logs: any[] | null }>();
+  private readonly subscribed = new Set<string>();
+  private readonly unwatch = new Set<() => void | Promise<void>>();
+  private watchClient: PublicClient | undefined;
+  private onLogs: ((logs: any[]) => void | Promise<void>) | undefined;
+  private onError: ((error: any) => void | Promise<void>) | undefined;
 
   constructor(
     private readonly client: PublicClient<any, any, any>,
@@ -48,21 +53,56 @@ export class V3EventAdapter implements ProtocolEventAdapter {
 
   async watch(client: PublicClient, onLogs: (logs: any[]) => void | Promise<void>, onError: (error: any) => void | Promise<void>) {
     this.stopped = false;
-    const unwatch: Array<() => void> = [];
-    const addresses = this.addresses();
+    this.watchClient = client;
+    this.onLogs = onLogs;
+    this.onError = onError;
     try {
-      for (let start = 0; start < addresses.length; start += this.policy.eventAddressBatchSize) {
-        unwatch.push(client.watchContractEvent({
-          address: addresses.slice(start, start + this.policy.eventAddressBatchSize),
-          abi: V3_POOL_EVENT_ABI, strict: true, onLogs, onError,
-        }));
-      }
+      await this.subscribe(this.addresses());
       this.scheduleCheckpoint();
-      return unwatch;
+      return [async () => {
+        for (const stop of this.unwatch) await stop();
+        this.unwatch.clear();
+        this.subscribed.clear();
+        this.watchClient = undefined;
+        this.onLogs = undefined;
+        this.onError = undefined;
+      }];
     } catch (error) {
-      for (const stop of unwatch) stop();
+      for (const stop of this.unwatch) await stop();
+      this.unwatch.clear();
+      this.subscribed.clear();
+      this.watchClient = undefined;
+      this.onLogs = undefined;
+      this.onError = undefined;
       throw error;
     }
+  }
+
+  async replacePools(pools: readonly V3PoolConfig[]): Promise<void> {
+    const next = new Map(pools.filter(pool => pool.enabled).map(pool => [pool.address.toLowerCase(), pool]));
+    const removed: Address[] = [];
+    for (const [key, pool] of this.pools) {
+      if (next.has(key)) continue;
+      this.pools.delete(key);
+      this.pending.delete(key);
+      this.replay.delete(key);
+      this.cursors.delete(key);
+      this.observed.delete(key);
+      this.graph.removeV3Pool(pool.address);
+      removed.push(pool.address);
+    }
+    if (removed.length > 0) await this.scan(removed, removed);
+    const added: Address[] = [];
+    for (const [key, pool] of next) {
+      const previous = this.pools.get(key);
+      this.pools.set(key, pool);
+      if (previous && samePool(previous, pool)) continue;
+      added.push(pool.address);
+    }
+    await this.subscribe(added);
+    if (added.length > 0) await this.synchronize(added);
+    if (added.length > 0) await this.scan(added, added);
+    this.scheduleCheckpoint();
   }
 
   bufferKey(log: any): string | null {
@@ -136,6 +176,23 @@ export class V3EventAdapter implements ProtocolEventAdapter {
     this.recoveredForScan.clear();
     if (this.timer) clearTimeout(this.timer);
     await this.work?.catch(error => this.report(error));
+  }
+
+  private async subscribe(addresses: readonly Address[]): Promise<void> {
+    if (!this.watchClient || !this.onLogs || !this.onError) return;
+    const fresh = addresses.filter(address => !this.subscribed.has(address.toLowerCase()));
+    for (let start = 0; start < fresh.length; start += this.policy.eventAddressBatchSize) {
+      const batch = fresh.slice(start, start + this.policy.eventAddressBatchSize);
+      const stop = await this.watchClient.watchContractEvent({
+        address: batch,
+        abi: V3_POOL_EVENT_ABI,
+        strict: true,
+        onLogs: this.onLogs,
+        onError: this.onError,
+      });
+      this.unwatch.add(stop);
+      for (const address of batch) this.subscribed.add(address.toLowerCase());
+    }
   }
 
   private synchronize(addresses: readonly Address[], blockNumber?: bigint): Promise<void> {
@@ -228,3 +285,9 @@ export class V3EventAdapter implements ProtocolEventAdapter {
 }
 
 function max(a: bigint, b: bigint) { return a > b ? a : b; }
+
+function samePool(a: V3PoolConfig, b: V3PoolConfig): boolean {
+  return a.address.toLowerCase() === b.address.toLowerCase() &&
+    a.token0.toLowerCase() === b.token0.toLowerCase() && a.token1.toLowerCase() === b.token1.toLowerCase() &&
+    a.fee === b.fee && a.tickSpacing === b.tickSpacing && a.enabled === b.enabled;
+}

@@ -80,6 +80,34 @@ test('V3 worker patches merge state and tick updates without resending the full 
   expect(target.getV3Pool(selected.address)?.fullRange).toBe(false);
 });
 
+test('V2 and V3 removals are mirrored to the worker graph and can be re-added', () => {
+  const source = new MarketGraph(policy);
+  const target = new MarketGraph(policy);
+  const pair = { pairAddress: address(70), token0: a, token1: b, reserve0: 1000n, reserve1: 1000n,
+    fee: 30, variant: 'uniswap-v2' as const, scale0: 1n, scale1: 1n };
+  const selected = pool(71);
+  source.addPair(pair);
+  source.replaceV3Snapshot(selected, { poolAddress: selected.address, blockNumber: 1n, blockHash: hash(1n),
+    ...tickWordBounds(selected.tickSpacing), complete: true, bitmapWords: [], ticks: [], sqrtPriceX96: 2n ** 96n, liquidity: 1000n, tick: 0 });
+  target.applyChanges(source.takeChanges(true));
+
+  source.removePair(pair.pairAddress);
+  source.removeV3Pool(selected.address);
+  const changes = source.takeChanges();
+  expect(changes.removedPairs).toEqual([pair.pairAddress]);
+  expect(changes.removedV3).toEqual([selected.address]);
+  target.applyChanges(changes);
+  expect(target.getAllPairs()).toEqual([]);
+  expect(target.getV3Pools()).toEqual([]);
+
+  source.addPair(pair);
+  source.replaceV3Snapshot(selected, { poolAddress: selected.address, blockNumber: 2n, blockHash: hash(2n),
+    ...tickWordBounds(selected.tickSpacing), complete: true, bitmapWords: [], ticks: [], sqrtPriceX96: 2n ** 96n, liquidity: 1000n, tick: 0 });
+  target.applyChanges(source.takeChanges());
+  expect(target.getAllPairs()).toHaveLength(1);
+  expect(target.getV3Pools()).toHaveLength(1);
+});
+
 test('exact route sizing is capped and event-local results touch a changed pool', () => {
   const engine = market();
   const opportunities = engine.findOpportunities({ startTokens: [a], changedPairs: [address(1)] });

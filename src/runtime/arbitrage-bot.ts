@@ -9,6 +9,7 @@ import { enabledProtocolPlugins } from '../protocols/registry';
 import { LatestUpdateScheduler } from './event-scheduler';
 import { latency, marketReceipt } from './latency';
 import { backgroundLogs } from './background-queue';
+import { LiveMarketRegistry } from './live-market-registry';
 
 type ScanUpdate = { key: string; releasedPairs: readonly Address[]; observedAt: number };
 
@@ -49,9 +50,12 @@ export async function runArbitrageBot(): Promise<void> {
     );
     const scheduleScan = (changedPairs: readonly string[], releasedPairs: readonly Address[] = []) =>
       live ? scanScheduler.submit(changedPairs.map(key => ({ key, releasedPairs, observedAt: marketReceipt(key) ?? Date.now() }))) : Promise.resolve();
+    const liveMarkets = new LiveMarketRegistry(catalog);
     const eventAdapters = runtimePlugins
-      .map(plugin => plugin.events({ client: network.client, catalog, graph: engine.graph, scan: scheduleScan }))
-      .filter(adapter => adapter !== null);
+      .flatMap(plugin => {
+        const adapters = plugin.events({ client: network.client, catalog, graph: engine.graph, scan: scheduleScan, liveMarkets });
+        return adapters === null ? [] : Array.isArray(adapters) ? adapters : [adapters];
+      });
     monitor = new EventMonitor(network, eventAdapters, ready => { live = ready; engine.graph.setFeedReady(ready); });
 
     console.log('Starting market event feed in buffering mode...');

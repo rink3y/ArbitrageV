@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadMarketSnapshot, replaceMarketSnapshot } from '../src/market-db';
+import { loadMarketSnapshot, replaceMarketSnapshot, updateMarketPools } from '../src/market-db';
 
 const token0 = '0x0000000000000000000000000000000000000001' as const;
 const token1 = '0x0000000000000000000000000000000000000002' as const;
@@ -83,6 +83,35 @@ describe('market catalog', () => {
         carbonPairs: [],
       }, path)).toThrow();
       expect(loadMarketSnapshot(path)).toEqual(original);
+    } finally {
+      Bun.gc(true);
+      rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('updates live pool rows without replacing Carbon metadata', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arb-market-'));
+    const path = join(directory, 'markets.sqlite');
+    const carbonPairs = [{
+      controller: '0x0000000000000000000000000000000000000030' as const,
+      token0, token1, strategyCount: 2, feePpm: 4_000,
+    }];
+    try {
+      replaceMarketSnapshot({
+        v2Pools: [{ pairAddress: '0x0000000000000000000000000000000000000010', token0, token1,
+          fee: 30, factory: 'old', variant: 'uniswap-v2', scale0: 1n, scale1: 1n }],
+        v3Pools: [],
+        carbonPairs,
+      }, path);
+      updateMarketPools({
+        v2Pools: [],
+        v3Pools: [{ name: 'new', address: '0x0000000000000000000000000000000000000020', token0, token1,
+          fee: 500, tickSpacing: 10, enabled: true }],
+      }, path);
+      const snapshot = loadMarketSnapshot(path);
+      expect(snapshot.v2Pools).toEqual([]);
+      expect(snapshot.v3Pools).toHaveLength(1);
+      expect(snapshot.carbonPairs).toEqual(carbonPairs);
     } finally {
       Bun.gc(true);
       rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

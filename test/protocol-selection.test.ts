@@ -45,7 +45,10 @@ function prepareRuntime() {
   const scan = mock(async () => []);
   const stop = mock(() => {});
   const scanner = spyOn(workflow, 'createOpportunityScanner').mockResolvedValue({ scan, stop, warm: async () => {} });
-  const v2Hydrate = spyOn(protocolPlugin('v2'), 'hydrate').mockResolvedValue();
+  const v2 = protocolPlugin('v2');
+  const realV2Events = v2.events.bind(v2);
+  const v2Events = spyOn(v2, 'events').mockImplementation(context => realV2Events({ ...context, liveMarkets: undefined }));
+  const v2Hydrate = spyOn(v2, 'hydrate').mockResolvedValue();
   const disabled = ['v3', 'carbon'].map(id => {
     const plugin = protocolPlugin(id as 'v3' | 'carbon');
     return {
@@ -54,12 +57,12 @@ function prepareRuntime() {
     };
   });
   spyOn(console, 'log').mockImplementation(() => {});
-  return { catalog, watch, initialize, scan, scanner, stop, v2Hydrate, disabled };
+  return { catalog, watch, initialize, scan, scanner, stop, v2Events, v2Hydrate, disabled };
 }
 
 test('startup stops nonce refresh when event adapter creation fails', async () => {
-  const { stop } = prepareRuntime();
-  spyOn(protocolPlugin('v2'), 'events').mockImplementation(() => { throw new Error('adapter failed'); });
+  const { stop, v2Events } = prepareRuntime();
+  v2Events.mockImplementation(() => { throw new Error('adapter failed'); });
   await expect(runArbitrageBot()).rejects.toThrow('adapter failed');
   expect(stop).toHaveBeenCalledTimes(1);
 });

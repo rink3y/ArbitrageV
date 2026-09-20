@@ -65,6 +65,39 @@ export function replaceMarketSnapshot(snapshot: MarketSnapshot, path = marketDbP
   }
 }
 
+export function updateMarketPools(
+  snapshot: Pick<MarketSnapshot, 'v2Pools' | 'v3Pools'>,
+  path = marketDbPath()
+): void {
+  const db = openMarketDb(path);
+  try {
+    db.transaction(() => {
+      const next = [
+        ...snapshot.v2Pools.map(toStoredV2Pool),
+        ...snapshot.v3Pools.map(toStoredV3Pool),
+      ];
+      const existing = new Map(loadStoredPools(db).map(pool => [pool.address.toLowerCase(), pool]));
+      const selected = new Map(next.map(pool => [pool.address.toLowerCase(), pool]));
+      if (selected.size !== next.length) throw new Error('Duplicate market address in live catalog');
+      const remove = db.query('DELETE FROM pools WHERE address = ?');
+      for (const [key, pool] of existing) if (!selected.has(key)) remove.run(pool.address);
+
+      const upsert = db.query(`
+        INSERT OR REPLACE INTO pools (address, protocol, factory, token0, token1, fee, tick_spacing, variant, scale0, scale1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const pool of next) {
+        const previous = existing.get(pool.address.toLowerCase());
+        if (previous && storedPoolKey(previous) === storedPoolKey(pool)) continue;
+        upsert.run(pool.address, pool.protocol, pool.factory, pool.token0, pool.token1, pool.fee,
+          pool.tickSpacing, pool.variant, pool.scale0, pool.scale1);
+      }
+    })();
+  } finally {
+    db.close();
+  }
+}
+
 function marketDbPath(): string {
   return process.env.MARKET_DB_PATH || 'data/markets.sqlite';
 }
@@ -228,4 +261,9 @@ function storedV3Pools(pools: readonly StoredPool[]): V3PoolConfig[] {
       tickSpacing: pool.tickSpacing!,
       enabled: true,
     }));
+}
+
+function storedPoolKey(pool: StoredPool): string {
+  return [pool.address.toLowerCase(), pool.protocol, pool.factory, pool.token0.toLowerCase(), pool.token1.toLowerCase(),
+    pool.fee, pool.tickSpacing, pool.variant, pool.scale0, pool.scale1].join(':');
 }

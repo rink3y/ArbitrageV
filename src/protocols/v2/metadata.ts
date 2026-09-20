@@ -2,7 +2,8 @@ import { parseAbi, type Address } from 'viem';
 import UniswapFlashQueryABI from '../../ABI/UniswapFlashQuery.json';
 import bannedTokens from '../../bannedtax.json';
 import { CONTRACTS, RUNTIME } from '../../constants';
-import { V2_DISCOVERY_POLICY, V2_FACTORIES } from './config';
+import { type DexFactoryConfig, V2_DISCOVERY_POLICY, V2_FACTORIES } from './config';
+import { V2Store, type V2DiscoveryCheckpoint } from './store';
 import { type V2Variant } from './types';
 
 const BASE_V1_PAIR_ABI = parseAbi([
@@ -23,7 +24,11 @@ export type V2PoolMetadata = {
   scale1: bigint;
 };
 
-type V2Client = { readContract(parameters: any): Promise<unknown> };
+export type V2Client = {
+  readContract(parameters: any): Promise<unknown>;
+  getBlockNumber(parameters?: { cacheTime: number }): Promise<bigint>;
+  getBlock(parameters: { blockNumber: bigint }): Promise<{ number: bigint | null; hash: `0x${string}` | null }>;
+};
 type BaseV1Metadata = {
   scale0: bigint;
   scale1: bigint;
@@ -37,45 +42,67 @@ type RawBaseV1Metadata = BaseV1Metadata | readonly [bigint, bigint, bigint, bigi
 type SolidlyFees = { stable: number; volatile: number };
 const bannedTokenSet = new Set(bannedTokens.map(token => token.toLowerCase()));
 
-export async function discoverV2PoolMetadata(client: V2Client): Promise<V2PoolMetadata[]> {
-  const lengths = await getPairsLength(client);
-  const pools: V2PoolMetadata[] = [];
-  for (const factory of V2_FACTORIES) {
-    const total = lengths.get(factory.name) ?? 0;
-    if (total === 0) continue;
-    const fees = factory.kind === 'solidly' ? await getSolidlyFees(client, factory.address) : null;
+export async function discoverV2PoolMetadata(
+  client: V2Client,
+  store: V2Store,
+  factories: readonly DexFactoryConfig[] = V2_FACTORIES
+): Promise<V2PoolMetadata[]> {
+  const head = await client.getBlockNumber({ cacheTime: 0 });
+  const identity = await blockIdentity(client, head);
+  const lengths = await getPairsLength(client, factories, head);
+  for (const factory of factories) {
+    const total = lengths.get(factory.address.toLowerCase()) ?? 0;
+    const fees = factory.kind === 'solidly' && total > 0 ? await getSolidlyFees(client, factory.address, head) : null;
+    const configuration = JSON.stringify({ name: factory.name, fee: factory.fee, kind: factory.kind, fees });
+    let checkpoint = store.checkpoint(factory.address);
+    if (checkpoint && (checkpoint.configuration !== configuration || checkpoint.pairCount > total ||
+      checkpoint.blockNumber > head || (await blockIdentity(client, checkpoint.blockNumber)).blockHash !== checkpoint.blockHash)) {
+      store.resetFactory(factory.address);
+      checkpoint = null;
+    }
     const batchSize = factory.kind === 'solidly'
       ? V2_DISCOVERY_POLICY.solidlyReserveBatchSize
       : V2_DISCOVERY_POLICY.batchSize;
-    for (let start = 0; start < total; start += batchSize) {
-      pools.push(...await getPairsInRange(client, factory, start, Math.min(start + batchSize, total), fees));
+    let start = checkpoint?.pairCount ?? 0;
+    let saved = false;
+    while (start < total) {
+      const stop = Math.min(start + batchSize, total);
+      const pools = await getPairsInRange(client, factory, start, stop, fees, head);
+      store.saveDiscovery(factory.address, pools, { pairCount: stop, ...identity, configuration });
+      saved = true;
+      start = stop;
     }
+    if (!checkpoint && !saved) store.saveDiscovery(factory.address, [], { pairCount: total, ...identity, configuration });
   }
-  console.log(`Found ${pools.length} V2 pools across ${V2_FACTORIES.length} factories`);
+  if ((await blockIdentity(client, head)).blockHash !== identity.blockHash) throw new Error('Chain changed during V2 discovery; retry');
+  const pools = store.pools(factories.map(factory => factory.address));
+  console.log(`Found ${pools.length} V2 pools across ${factories.length} factories`);
   return pools;
 }
 
-async function getPairsLength(client: V2Client): Promise<Map<string, number>> {
-  try {
-    const lengths = await client.readContract({
-      address: CONTRACTS.flashQuery as Address,
-      abi: UniswapFlashQueryABI,
-      functionName: 'getPairsLength',
-      args: [V2_FACTORIES.map(factory => factory.address)],
-    }) as bigint[];
-    return new Map(V2_FACTORIES.map((factory, index) => [factory.name, Number(lengths[index])]));
-  } catch (error) {
-    if (RUNTIME.debug) console.error('Error fetching V2 pair counts:', error);
-    return new Map();
-  }
+async function getPairsLength(client: V2Client, factories: readonly DexFactoryConfig[], blockNumber: bigint): Promise<Map<string, number>> {
+  const lengths = await client.readContract({
+    address: CONTRACTS.flashQuery as Address,
+    abi: UniswapFlashQueryABI,
+    functionName: 'getPairsLength',
+    args: [factories.map(factory => factory.address)],
+    blockNumber,
+  }) as bigint[];
+  if (lengths.length !== factories.length) throw new Error('Incomplete V2 pair counts');
+  return new Map(factories.map((factory, index) => {
+    const count = Number(lengths[index]);
+    if (!Number.isSafeInteger(count) || count < 0) throw new Error(`Invalid V2 pair count for ${factory.name}`);
+    return [factory.address.toLowerCase(), count];
+  }));
 }
 
 async function getPairsInRange(
   client: V2Client,
-  factory: typeof V2_FACTORIES[number],
+  factory: DexFactoryConfig,
   start: number,
   stop: number,
-  fees: SolidlyFees | null
+  fees: SolidlyFees | null,
+  blockNumber: bigint
 ): Promise<V2PoolMetadata[]> {
   try {
     const pairs = await client.readContract({
@@ -83,6 +110,7 @@ async function getPairsInRange(
       abi: UniswapFlashQueryABI,
       functionName: 'getPairsByIndexRange',
       args: [factory.address, BigInt(start), BigInt(stop)],
+      blockNumber,
     }) as Address[][];
     const discovered = pairs
       .filter(([token0, token1]) => !bannedTokenSet.has(token0.toLowerCase()) && !bannedTokenSet.has(token1.toLowerCase()))
@@ -103,7 +131,9 @@ async function getPairsInRange(
       abi: UniswapFlashQueryABI,
       functionName: 'filterVolatileHermesPairs',
       args: [discovered.map(pair => pair.pairAddress)],
+      blockNumber,
     }) as boolean[];
+    if (stable.length !== discovered.length) throw new Error(`Incomplete ${factory.name} stable-pair response`);
 
     return Promise.all(discovered.map(async (pair, index) => {
       const isStable = stable[index];
@@ -112,6 +142,7 @@ async function getPairsInRange(
             address: pair.pairAddress,
             abi: BASE_V1_PAIR_ABI,
             functionName: 'metadata',
+            blockNumber,
           }) as RawBaseV1Metadata)
         : null;
       return {
@@ -128,23 +159,29 @@ async function getPairsInRange(
       const middle = start + Math.floor((stop - start) / 2);
       if (RUNTIME.debug) console.warn(`Retrying ${factory.name} V2 range ${start}-${stop} as smaller calls`);
       return [
-        ...await getPairsInRange(client, factory, start, middle, fees),
-        ...await getPairsInRange(client, factory, middle, stop, fees),
+        ...await getPairsInRange(client, factory, start, middle, fees, blockNumber),
+        ...await getPairsInRange(client, factory, middle, stop, fees, blockNumber),
       ];
     }
-    console.warn(`Skipping reverting ${factory.name} V2 pair index ${start}`);
-    return [];
+    throw new Error(`Cannot read ${factory.name} V2 pair index ${start}`, { cause: error });
   }
 }
 
-async function getSolidlyFees(client: V2Client, factory: Address): Promise<SolidlyFees> {
+async function getSolidlyFees(client: V2Client, factory: Address, blockNumber: bigint): Promise<SolidlyFees> {
   const [stable, volatile] = await Promise.all([true, false].map(stable => client.readContract({
     address: factory,
     abi: BASE_V1_FACTORY_ABI,
     functionName: 'getFee',
     args: [stable],
+    blockNumber,
   }) as Promise<bigint>));
   return { stable: Number(stable), volatile: Number(volatile) };
+}
+
+async function blockIdentity(client: V2Client, blockNumber: bigint): Promise<Pick<V2DiscoveryCheckpoint, 'blockNumber' | 'blockHash'>> {
+  const block = await client.getBlock({ blockNumber });
+  if (block.number !== blockNumber || !block.hash) throw new Error(`Missing V2 block ${blockNumber}`);
+  return { blockNumber, blockHash: block.hash };
 }
 
 function normalizeBaseV1Metadata(metadata: RawBaseV1Metadata): BaseV1Metadata {

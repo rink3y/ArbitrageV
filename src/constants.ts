@@ -57,6 +57,7 @@ export const RUNTIME = {
     notificationTimeoutMs: 5_000,
     receiptPollIntervalMs: 1_000,
     receiptTimeoutMs: 120_000,
+    marketDiscoveryIntervalMs: 60_000,
 } as const;
 
 export const TELEGRAM = {

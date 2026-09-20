@@ -90,7 +90,7 @@ Edit `V2_FACTORIES` in [src/protocols/v2/config.ts](src/protocols/v2/config.ts).
 
 The fee uses basis points: `30` means 0.30%. For Solidly pools, discovery reads the stable and volatile fees from the factory.
 
-V2 discovery does not scan historical blocks. A V2-only sync avoids all V3 and Carbon discovery, but it still reads the selected V2 factories from pair index zero through their current pair counts. V2 does not yet keep a pair-index checkpoint.
+V2 discovery does not scan historical blocks. It reads each factory's current pair count and fetches only indexes after the saved checkpoint. The complete discovered catalog and the per-factory pair count are stored in SQLite. If the checkpoint block changes in a reorg, or the factory configuration changes, that factory is rebuilt from index zero.
 
 ### V3
 
@@ -98,11 +98,11 @@ Edit `V3_FACTORIES` in [src/protocols/v3/config.ts](src/protocols/v3/config.ts).
 
 The defaults cover [Dragon's concentrated-liquidity factory](https://docs.dragonswap.app/dragonswap/faq/contract-addresses/dragonswapv2), [Uniswap on Sei, available through Oku](https://gov.uniswap.org/t/official-uniswap-v3-deployments-list/24323), and [Sailor's factory](https://seiscan.io/accounts/label/sailor). The adapter supports standard Uniswap V3 reads and events plus [Sailor's extended Swap event](https://seiscan.io/address/0xa77386b7CB41a5693a0A5Ad34b6bDEB9237F35eE). It does not support Algebra or dynamically changing fees.
 
-`fromBlock` defaults to `0n` so an unknown deployment date cannot hide older pools. The first scan can take a while. Set a verified factory deployment block to skip earlier history; do not use a recent block if you want every pool. Later syncs resume from saved checkpoints. `V3_DISCOVERY_POLICY` controls the block span, confirmation depth, and metadata batch size. V3 fees use parts per million: `3000` means 0.30%.
+The configured `fromBlock` must be at or before the factory deployment if you want every pool. The first scan can take a while. Later scans resume from saved checkpoints. `V3_DISCOVERY_POLICY` controls the block span and metadata batch size. V3 fees use parts per million: `3000` means 0.30%.
 
 ### V3's two phases
 
-`bun run sync:markets --protocol v3` runs phase 1 without querying V2 or Carbon. It saves each pool's factory, creation block, token addresses, fee, tick spacing, and full bitmap bounds. Factory events find the addresses; the query contract checks their immutable fields in batches. The complete V3 catalog stays in SQLite even when a pool fails the trading filters. Later V3 syncs begin at each factory's saved checkpoint plus one and stop at the chain head captured at the start of that sync.
+`bun run sync:markets --protocol v3` runs phase 1 without querying V2 or Carbon. It saves each pool's factory, creation block, token addresses, fee, tick spacing, and full bitmap bounds. Factory events find the addresses; the query contract checks their immutable fields in batches. The complete V3 catalog stays in SQLite even when a pool fails the trading filters. Later V3 scans begin at each factory's saved checkpoint plus one and stop at the chain head captured at the start of that scan.
 
 `bun start` runs phase 2 for the selected trading pools. It reads price, current tick, active liquidity, every bitmap word in the pool's legal tick range, and every initialized tick. All reads for a snapshot use the same block. Tick liquidity and actual occupied ranges are mutable, so they belong here, not in phase 1. This loads pool liquidity, not individual LP wallets or NFT positions.
 
@@ -111,6 +111,14 @@ The range is no longer a few words around the current price, and there is no 512
 Completed snapshots store their block number, block hash, and full-range coverage. Interrupted downloads save a separate cursor and resume at their original block; they are never admitted to the trading graph. On restart, the bot checks the saved block hash and catches up missed events. Swaps refresh live state; mints and burns refresh their affected tick boundaries. Burned-out ticks are removed. A reorg or unavailable history triggers a fresh snapshot. Failed pools stay out of the graph until a refresh succeeds.
 
 Once live, V3 does not call the query contract for every event. Swap events update price, tick, and active liquidity in memory. Mint and Burn events update both tick boundaries, their bitmap bits, and active liquidity when the position covers the current tick. Exact duplicate logs are ignored. Removed logs, conflicting block hashes, unexpected ordering, missing cursors, and liquidity inconsistencies exclude the affected pool until recovery succeeds.
+
+### New pools while the bot is running
+
+V2 and V3 factory feeds stay active after startup. A factory event triggers a checkpointed catch-up rather than trusting one notification as the source of truth. The bot also checks both factory catalogs every `RUNTIME.marketDiscoveryIntervalMs`, which defaults to 60 seconds, so a dropped subscription notification is repaired without a restart.
+
+Discovery and live state remain separate. First, the new pool's immutable metadata is saved in the complete catalog. The shared V2/V3/Carbon token filter is then recalculated and the filtered trading list is written to SQLite. If the pool is selected, its event subscription is installed before its current state is loaded. V2 buffers `Sync` logs while reading block-pinned reserves; V3 publishes only after a complete full-range snapshot and event catch-up. A failed hydration leaves the pool out of the graph and retries on a later catch-up.
+
+The same path handles removals caused by a factory reorg or a filter change. The pool is removed from the main graph and the search worker through an explicit removal patch. Adding one pool can also make another previously filtered V2 or V3 pool eligible, because filtering is rerun across the complete live catalogs.
 
 `V3_LIVE_POLICY` in [src/protocols/v3/config.ts](src/protocols/v3/config.ts) controls rotating checkpoints: 10 pools per batch, normally 60 seconds between batches, or 5 seconds while pools need recovery. These are batch intervals, not a promise that every pool is checked once a minute. Selected pools are temporarily unavailable while their block-pinned snapshot is refreshed. Events arriving during the read are replayed afterward; the saved database snapshot stays at its completed block. If the bounded replay buffer overflows, the pool stays unavailable and retries from a newer snapshot.
 
@@ -172,13 +180,13 @@ Use a dedicated wallet with one bot process. This in-memory allocator does not c
 
 ## What sync keeps
 
-The SQLite database stores the filtered trading list. V3 also has separate, chain-scoped tables for the complete discovered catalog, factory checkpoints, completed snapshots, and unfinished downloads. Replacing the trading list or disabling V3 does not erase these tables. Existing databases gain the tables automatically; there is no manual migration or database deletion step. Old manually listed V3 pools need one factory sync before startup.
+The SQLite database stores the filtered trading list. V2 has separate, chain-scoped tables for its complete discovered catalog and pair-count checkpoints. V3 has separate tables for its complete discovered catalog, factory checkpoints, completed snapshots, and unfinished downloads. Replacing the trading list or disabling a protocol does not erase these tables. Existing databases gain the tables automatically; there is no manual migration or database deletion step. Old manually listed V3 pools need one factory sync before startup.
 
 V2 reserves and Carbon orders are fetched when the bot starts and updated in memory. V3 state is also checkpointed to SQLite so a restart can catch up rather than download every tick again.
 
 The trading list excludes addresses in [src/bannedtax.json](src/bannedtax.json). It also removes markets unless both tokens appear in more than one discovered market. These filters do not delete V3's complete discovery catalog. V2 and Carbon apply additional liquidity filters when loading live state, so a discovered market may still be excluded from the graph.
 
-New pools and changes to token or market configuration need another sync and restart. Startup buffers market events while loading state, reconciles those events, then starts searching. Later searches run when tracked markets change.
+Startup buffers market events while loading state, reconciles those events, then starts searching. New V2 and V3 pools are discovered, saved, hydrated, and subscribed while the bot remains online. Configuration changes still require a restart; run the relevant sync first when changing factory definitions or `fromBlock`.
 
 ## When something doesn't show up
 
