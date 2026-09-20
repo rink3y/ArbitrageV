@@ -58,4 +58,34 @@ describe('market catalog', () => {
       rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
+
+  test('rolls back the whole catalog when replacement fails', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arb-market-'));
+    const path = join(directory, 'markets.sqlite');
+    const original = {
+      v2Pools: [{
+        pairAddress: '0x0000000000000000000000000000000000000010' as const,
+        token0, token1, fee: 30, factory: 'test-v2' as const,
+        variant: 'uniswap-v2' as const, scale0: 1n, scale1: 1n,
+      }],
+      v3Pools: [],
+      carbonPairs: [{
+        controller: '0x0000000000000000000000000000000000000030' as const,
+        token0, token1, strategyCount: 2, feePpm: 4_000,
+      }],
+    };
+
+    try {
+      replaceMarketSnapshot(original, path);
+      expect(() => replaceMarketSnapshot({
+        ...original,
+        v2Pools: [original.v2Pools[0], original.v2Pools[0]],
+        carbonPairs: [],
+      }, path)).toThrow();
+      expect(loadMarketSnapshot(path)).toEqual(original);
+    } finally {
+      Bun.gc(true);
+      rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
 });

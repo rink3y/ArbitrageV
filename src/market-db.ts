@@ -53,11 +53,13 @@ export function loadMarketSnapshot(path = marketDbPath()): MarketSnapshot {
 export function replaceMarketSnapshot(snapshot: MarketSnapshot, path = marketDbPath()): void {
   const db = openMarketDb(path);
   try {
-    replaceStoredPools(db, [
-      ...snapshot.v2Pools.map(toStoredV2Pool),
-      ...snapshot.v3Pools.map(toStoredV3Pool),
-    ]);
-    replaceStoredCarbonPairs(db, snapshot.carbonPairs);
+    db.transaction(() => {
+      replaceStoredPools(db, [
+        ...snapshot.v2Pools.map(toStoredV2Pool),
+        ...snapshot.v3Pools.map(toStoredV3Pool),
+      ]);
+      replaceStoredCarbonPairs(db, snapshot.carbonPairs);
+    })();
   } finally {
     db.close();
   }
@@ -112,25 +114,21 @@ function replaceStoredPools(db: Database, pools: readonly StoredPool[]): void {
     INSERT INTO pools (address, protocol, factory, token0, token1, fee, tick_spacing, variant, scale0, scale1)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const replace = db.transaction((rows: readonly StoredPool[]) => {
-    db.exec('DELETE FROM pools');
-    for (const pool of rows) {
-      insert.run(
-        pool.address,
-        pool.protocol,
-        pool.factory,
-        pool.token0,
-        pool.token1,
-        pool.fee,
-        pool.tickSpacing,
-        pool.variant,
-        pool.scale0,
-        pool.scale1
-      );
-    }
-  });
-
-  replace(pools);
+  db.exec('DELETE FROM pools');
+  for (const pool of pools) {
+    insert.run(
+      pool.address,
+      pool.protocol,
+      pool.factory,
+      pool.token0,
+      pool.token1,
+      pool.fee,
+      pool.tickSpacing,
+      pool.variant,
+      pool.scale0,
+      pool.scale1
+    );
+  }
 }
 
 function loadStoredPools(db: Database): StoredPool[] {
@@ -146,20 +144,16 @@ function replaceStoredCarbonPairs(db: Database, pairs: readonly CarbonPairMetada
     INSERT INTO carbon_pairs (controller, token0, token1, strategy_count, fee_ppm)
     VALUES (?, ?, ?, ?, ?)
   `);
-  const replace = db.transaction((rows: readonly CarbonPairMetadata[]) => {
-    db.exec('DELETE FROM carbon_pairs');
-    for (const pair of rows) {
-      insert.run(
-        pair.controller,
-        pair.token0,
-        pair.token1,
-        pair.strategyCount,
-        pair.feePpm
-      );
-    }
-  });
-
-  replace(pairs);
+  db.exec('DELETE FROM carbon_pairs');
+  for (const pair of pairs) {
+    insert.run(
+      pair.controller,
+      pair.token0,
+      pair.token1,
+      pair.strategyCount,
+      pair.feePpm
+    );
+  }
 }
 
 function loadStoredCarbonPairs(db: Database): CarbonPairMetadata[] {

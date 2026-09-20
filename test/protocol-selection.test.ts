@@ -5,7 +5,7 @@ import * as network from '../src/network';
 import * as workflow from '../src/opportunities/opportunity-workflow';
 import { protocolPlugin } from '../src/protocols/registry';
 import { runArbitrageBot } from '../src/runtime/arbitrage-bot';
-import { syncMarkets } from '../src/sync-markets';
+import { parseSyncProtocols, syncMarkets } from '../src/sync-markets';
 
 const previousProtocols = ARBITRAGE_SEARCH_POLICY.allowedProtocols;
 const previousSigintListeners = new Set(process.listeners('SIGINT'));
@@ -101,7 +101,7 @@ test('empty protocol configuration fails before network initialization', async (
   expect(initialize).not.toHaveBeenCalled();
 });
 
-test('V2-only market sync discovers and stores only enabled protocols', async () => {
+test('V2-only market sync refreshes V2 and preserves stored V3 and Carbon markets', async () => {
   const { catalog } = prepareRuntime();
   const previousRpc = NETWORK.rpcUrl;
   const previousFlashQuery = CONTRACTS.flashQuery;
@@ -123,9 +123,80 @@ test('V2-only market sync discovers and stores only enabled protocols', async ()
     expect(v2Discover).toHaveBeenCalledTimes(1);
     expect(v3Discover).not.toHaveBeenCalled();
     expect(carbonDiscover).not.toHaveBeenCalled();
-    expect(save).toHaveBeenCalledWith({ v2Pools: pools, v3Pools: [], carbonPairs: [] });
+    expect(save).toHaveBeenCalledWith({
+      v2Pools: pools,
+      v3Pools: catalog.v3Pools,
+      carbonPairs: catalog.carbonPairs,
+    });
   } finally {
     Object.assign(NETWORK, { rpcUrl: previousRpc });
     Object.assign(CONTRACTS, { flashQuery: previousFlashQuery });
   }
+});
+
+test('an explicit V3-only sync does not discover or replace V2 and Carbon', async () => {
+  const { catalog } = prepareRuntime();
+  const previousRpc = NETWORK.rpcUrl;
+  const previousFlashQuery = CONTRACTS.flashQuery;
+  Object.assign(NETWORK, { rpcUrl: 'http://127.0.0.1:1' });
+  Object.assign(CONTRACTS, { flashQuery: v2Address });
+  const discoveredV3 = [{ ...catalog.v3Pools[0], address: '0x0000000000000000000000000000000000000007' as const }];
+  const v2Discover = spyOn(protocolPlugin('v2'), 'discover').mockResolvedValue();
+  const v3Discover = spyOn(protocolPlugin('v3'), 'discover').mockImplementation(async context => {
+    expect(context.catalog.v2Pools).toEqual(catalog.v2Pools);
+    expect(context.catalog.carbonPairs).toEqual(catalog.carbonPairs);
+    context.catalog.v3Pools = discoveredV3;
+  });
+  const carbonDiscover = spyOn(protocolPlugin('carbon'), 'discover').mockResolvedValue();
+  const save = spyOn(marketDb, 'replaceMarketSnapshot').mockImplementation(() => {});
+  try {
+    await syncMarkets({ protocols: ['v3'] });
+    expect(v2Discover).not.toHaveBeenCalled();
+    expect(v3Discover).toHaveBeenCalledTimes(1);
+    expect(carbonDiscover).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalledWith({
+      v2Pools: catalog.v2Pools,
+      v3Pools: discoveredV3,
+      carbonPairs: catalog.carbonPairs,
+    });
+  } finally {
+    Object.assign(NETWORK, { rpcUrl: previousRpc });
+    Object.assign(CONTRACTS, { flashQuery: previousFlashQuery });
+  }
+});
+
+test('Carbon-only sync receives the stored V2 and V3 token universe', async () => {
+  const { catalog } = prepareRuntime();
+  const previousRpc = NETWORK.rpcUrl;
+  const previousFlashQuery = CONTRACTS.flashQuery;
+  Object.assign(NETWORK, { rpcUrl: 'http://127.0.0.1:1' });
+  Object.assign(CONTRACTS, { flashQuery: v2Address });
+  const carbonDiscover = spyOn(protocolPlugin('carbon'), 'discover').mockImplementation(async context => {
+    expect(context.catalog.v2Pools).toEqual(catalog.v2Pools);
+    expect(context.catalog.v3Pools).toEqual(catalog.v3Pools);
+    context.catalog.carbonPairs = [];
+  });
+  const save = spyOn(marketDb, 'replaceMarketSnapshot').mockImplementation(() => {});
+  try {
+    await syncMarkets({ protocols: ['carbon'] });
+    expect(carbonDiscover).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith({
+      v2Pools: catalog.v2Pools,
+      v3Pools: catalog.v3Pools,
+      carbonPairs: [],
+    });
+  } finally {
+    Object.assign(NETWORK, { rpcUrl: previousRpc });
+    Object.assign(CONTRACTS, { flashQuery: previousFlashQuery });
+  }
+});
+
+test('sync protocol arguments support repeated, comma-separated, and all selections', () => {
+  expect(parseSyncProtocols([])).toBeUndefined();
+  expect(parseSyncProtocols(['--protocol', 'v3'])).toEqual(['v3']);
+  expect(parseSyncProtocols(['--protocol', 'v2,carbon', '--protocol', 'v3'])).toEqual(['v2', 'carbon', 'v3']);
+  expect(parseSyncProtocols(['--all'])).toEqual(['v2', 'v3', 'carbon']);
+  expect(() => parseSyncProtocols(['--protocol', 'wrong'])).toThrow('Unknown protocol');
+  expect(() => parseSyncProtocols(['--all', '--protocol', 'v3'])).toThrow('either --all or --protocol');
+  expect(() => parseSyncProtocols(['--wat'])).toThrow('Unknown sync option');
 });

@@ -8,7 +8,7 @@ const stores: V3Store[] = [];
 const queryAddress = CONTRACTS.flashQuery;
 afterEach(() => { for (const store of stores.splice(0)) store.close(); Object.assign(CONTRACTS, { flashQuery: queryAddress }); });
 const factories = [{ name: 'test', address: factory, fromBlock: 0n, enabled: true }];
-const policy = { blockRange: 5n, confirmations: 0n, batchSize: 10 };
+const policy = { blockRange: 5n, batchSize: 10 };
 
 function setup() {
   Object.assign(CONTRACTS, { flashQuery: factory });

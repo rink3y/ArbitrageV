@@ -10,7 +10,6 @@ export const V3_FACTORIES: readonly V3FactoryConfig[] = [
 
 export const V3_DISCOVERY_POLICY = {
   blockRange: 100_000n,
-  confirmations: 12n,
   batchSize: 32,
 } as const;
 

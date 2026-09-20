@@ -11,24 +11,23 @@ type MetadataResult = { pool: Address; factory: Address; token0: Address; token1
 
 export async function discoverV3Pools(
   client: V3Client, store: V3Store, factories: readonly V3FactoryConfig[] = V3_FACTORIES,
-  policy: { blockRange: bigint; confirmations: bigint; batchSize: number } = V3_DISCOVERY_POLICY
+  policy: { blockRange: bigint; batchSize: number } = V3_DISCOVERY_POLICY
 ): Promise<V3PoolMetadata[]> {
-  if (policy.blockRange <= 0n || policy.confirmations < 0n) throw new Error('Invalid V3 discovery policy');
+  if (policy.blockRange <= 0n) throw new Error('Invalid V3 discovery policy');
   const enabled = factories.filter(factory => factory.enabled);
   if (enabled.length === 0) return [];
   const head = await client.getBlockNumber({ cacheTime: 0 });
-  const end = head > policy.confirmations ? head - policy.confirmations : 0n;
   const metadataBlock = await blockIdentity(client, head);
   for (const factory of enabled) {
     if (factory.fromBlock < 0n) throw new Error('V3 fromBlock must be non-negative');
     let checkpoint = store.checkpoint(factory.address);
-    if (checkpoint && (checkpoint.fromBlock !== factory.fromBlock || checkpoint.blockNumber > end ||
+    if (checkpoint && (checkpoint.fromBlock !== factory.fromBlock || checkpoint.blockNumber > head ||
       (await blockIdentity(client, checkpoint.blockNumber)).blockHash !== checkpoint.blockHash)) {
       store.resetFactory(factory.address);
       checkpoint = null;
     }
-    for (let from = checkpoint ? checkpoint.blockNumber + 1n : factory.fromBlock; from <= end;) {
-      const to = from + policy.blockRange - 1n < end ? from + policy.blockRange - 1n : end;
+    for (let from = checkpoint ? checkpoint.blockNumber + 1n : factory.fromBlock; from <= head;) {
+      const to = from + policy.blockRange - 1n < head ? from + policy.blockRange - 1n : head;
       const identity = await blockIdentity(client, to);
       const logs = await readLogs(client, { address: factory.address, event: V3_POOL_CREATED }, from, to);
       const events = new Map<string, any>();
