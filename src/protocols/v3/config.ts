@@ -3,9 +3,9 @@ import { type V3FactoryConfig } from './types';
 // Standard Uniswap V3 PoolCreated interface. Addresses are documented in README.md.
 // fromBlock is inclusive. Set the verified deployment block to shorten the first scan.
 export const V3_FACTORIES: readonly V3FactoryConfig[] = [
-  { name: 'dragon', address: '0x179D9a5592Bc77050796F7be28058c51cA575df4', fromBlock: 0n, enabled: true },
-  { name: 'oku', address: '0x75FC67473A91335B5b8F8821277262a13B38c9b3', fromBlock: 0n, enabled: true },
-  { name: 'sailor', address: '0xA51136931fdd3875902618bF6B3abe38Ab2D703b', fromBlock: 0n, enabled: true },
+  { name: 'dragon', address: '0x179D9a5592Bc77050796F7be28058c51cA575df4', fromBlock: 96611315n, enabled: true },
+  { name: 'oku', address: '0x75FC67473A91335B5b8F8821277262a13B38c9b3', fromBlock: 79245151n, enabled: true },
+  { name: 'sailor', address: '0xA51136931fdd3875902618bF6B3abe38Ab2D703b', fromBlock: 126356437n, enabled: true },
 ];
 
 export const V3_DISCOVERY_POLICY = {
