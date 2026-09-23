@@ -152,7 +152,15 @@ These settings are in [src/constants.ts](src/constants.ts):
 - `EXECUTION_POLICY` controls transaction submission, the gas limit, and gas prices. The `gasPrice` helper takes values in gwei.
 - `RUNTIME.websocketEnabled` controls whether startup uses the configured WebSocket endpoint.
 
-Reported profit includes swap fees and deducts the selected flash-loan fee when a funding pool is available. Gas is not deducted from that figure. Set token profit thresholds with that in mind.
+Linear-route reported profit includes swap fees and deducts the selected flash-loan fee when a funding pool is available. Gas is not deducted from that legacy figure. Set token profit thresholds with that in mind.
+
+### Split routing
+
+`ARBITRAGE_SEARCH_POLICY.splitRouting` in [src/constants.ts](src/constants.ts) controls split-and-merge search across V2, V3 and Carbon. It is **off by default**. It uses the same `TOKENS`, `topTokens`, token `minProfit` and reserve-fraction cap as linear search; there is no second token list. Supported plans have at most two branches per stage, three stages and six swaps, in one atomic transaction. The search compares conservative net profit with the funded linear candidates and tracks every branch for stale-state rejection.
+
+`shadow` searches without submitting split trades. It does **not** disable existing linear trading; set `EXECUTION_POLICY.executeTrades = false` for observation only. `live` needs a newly deployed NArb and fresh gas-cost data. WSEI uses its native 1:1 conversion; other borrow tokens need a fresh `gasConversion` on their existing `TOKENS` entry, or rates supplied with the search request. No deployment happens automatically.
+
+The new NArb implementation makes both execution entry points owner-only, validates callbacks and exact branch spending, and enforces a final profit floor for splits. Its ABI is generated with `bun run abi:arb` after `forge build`. See [split routing](docs/split-routing.md) for configuration, amount accounting, gas assumptions, rollout requirements and offline replay commands.
 
 Execution sends a transaction through `ARB_CONTRACT_ADDRESS`. Submission logs and Telegram messages mean the transaction was sent; they don't confirm that it succeeded or earned the quoted profit.
 
@@ -204,12 +212,13 @@ bun test
 forge test
 ```
 
-The Bun tests use fixtures and mocked clients. Foundry tests run the query contract against local mock pools. Neither submits trades or requires a live chain. The Bun suite includes the stress tests. You can also run the V2 stress tests and the local benchmark separately:
+The Bun tests use fixtures and mocked clients. Foundry tests run the query and arbitrage contracts against local mock pools. Neither submits trades or requires a live chain. The Bun suite includes the stress tests. You can also run the V2 stress tests and the local benchmarks separately:
 
 ```sh
 bun run test:stress
 bun run bench:stress
 bun run bench:carbon
+bun run bench:split
 ```
 
 The V2 stress tests accept `V2_STRESS_PAIRS`, `V2_STRESS_SEARCH_LIMIT_MS`, and `V2_STRESS_UPDATES` environment overrides. The benchmark also runs repeated worker searches while sampling a main-thread heartbeat. Cold graph transfer is included in transfer metrics; subsequent live transfers contain only changed markets. Compare repeated runs on the same machine. Synthetic timings are not live-network latency measurements.

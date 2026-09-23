@@ -207,7 +207,7 @@ export class MarketGraph {
   private readonly carbonGroupQuoter = new CarbonGroupQuoter();
 
   constructor(
-    private readonly policy: ArbitrageSearchPolicy = ARBITRAGE_SEARCH_POLICY,
+    readonly policy: ArbitrageSearchPolicy = ARBITRAGE_SEARCH_POLICY,
     configuredV3Pools: readonly V3PoolConfig[] = []
   ) {
     for (const pool of configuredV3Pools) this.addV3Pool(pool);
@@ -487,11 +487,37 @@ export class MarketGraph {
     return edgeIndex === undefined ? null : this.edges[edgeIndex].edge;
   }
 
-  quoteEdgeAt(edgeIndex: number, amountIn: bigint): MarketRouteQuote {
+  quoteEdgeAt(edgeIndex: number, amountIn: bigint, spendWork?: () => boolean): MarketRouteQuote {
     const edge = this.edgeAt(edgeIndex);
     return edge
-      ? this.quoteEdge(edge, amountIn)
+      ? this.quoteEdge(edge, amountIn, spendWork)
       : { amountIn, amountOut: 0n, profit: -1n, complete: false };
+  }
+
+  splitEdgeIndexes(from: Address, to: Address, limit: number, spendWork: () => boolean): number[] {
+    const tokenIndex = this.tokenIndexOf(from);
+    if (tokenIndex === undefined) return [];
+    const byRate: number[] = [];
+    const byCapacity: number[] = [];
+    const insert = (list: number[], index: number, compare: (a: AnyMarketEdge, b: AnyMarketEdge) => number) => {
+      let at = 0;
+      while (at < list.length && compare(this.edges[list[at]].edge, this.edges[index].edge) >= 0) at++;
+      list.splice(at, 0, index);
+      if (list.length > limit) list.pop();
+    };
+    for (const index of this.tokens[tokenIndex].edgeIndexes) {
+      if (!spendWork()) break;
+      const edge = this.edges[index].edge;
+      if (edge.to.toLowerCase() !== to.toLowerCase() || edge.liquidity <= 0n || !protocolAllowed(this.policy, edge.protocol)) continue;
+      insert(byRate, index, (a, b) => compareFractions(a.rateNumerator, a.rateDenominator, b.rateNumerator, b.rateDenominator));
+      insert(byCapacity, index, (a, b) => this.edgeInputCapacity(a) > this.edgeInputCapacity(b) ? 1 : -1);
+    }
+    const chosen = new Set<number>();
+    for (let i = 0; chosen.size < limit && i < limit; i++) {
+      if (byRate[i] !== undefined) chosen.add(byRate[i]);
+      if (chosen.size < limit && byCapacity[i] !== undefined) chosen.add(byCapacity[i]);
+    }
+    return [...chosen];
   }
 
   carbonExecution(
@@ -554,9 +580,14 @@ export class MarketGraph {
 
   maxInputForRoute(route: MarketRoute): bigint {
     const edgeIndexes = route.edgeIndexes ?? route.edgeIds.map(edgeId => this.edgeIndexes.get(edgeId) ?? -1);
-    const first = this.edgeAt(edgeIndexes[0] ?? -1);
-    if (!first) return 0n;
-    return this.edgeInputCapacity(first) / this.policy.maxInputReserveFraction;
+    return this.maxInputForEdges(edgeIndexes.slice(0, 1));
+  }
+
+  maxInputForEdges(edgeIndexes: readonly number[]): bigint {
+    return edgeIndexes.reduce((total, index) => {
+      const edge = this.edgeAt(index);
+      return total + (edge ? this.edgeInputCapacity(edge) / this.policy.maxInputReserveFraction : 0n);
+    }, 0n);
   }
 
   getPairAddresses(): Address[] {
@@ -595,7 +626,8 @@ export class MarketGraph {
   findBestFlashPoolForToken(
     token: Address,
     amountIn: bigint,
-    excludePools: Address[] = []
+    excludePools: Address[] = [],
+    spendWork?: () => boolean,
   ): FlashPoolCandidate | null {
     const tokenIndex = this.tokenIndexOf(token);
     if (tokenIndex === undefined) return null;
@@ -607,8 +639,10 @@ export class MarketGraph {
     }
 
     let best: FlashPoolCandidate | null = null;
+    let bestEdge: AnyMarketEdge | undefined;
 
-    for (const edgeIndex of this.flashEdgeIndexes(tokenIndex)) {
+    for (const edgeIndex of spendWork ? this.tokens[tokenIndex].edgeIndexes : this.flashEdgeIndexes(tokenIndex)) {
+      if (spendWork && !spendWork()) return null;
       if (excluded.has(this.edges[edgeIndex].poolIndex)) continue;
       const edge = this.edges[edgeIndex].edge;
       if (!protocolPlugin(edge.protocol).flashLoanFee) continue;
@@ -617,7 +651,10 @@ export class MarketGraph {
       const inputCapacity = this.edgeInputCapacity(edge);
       if (edge.protocol === 'v3' && inputCapacity <= amountIn) continue;
 
-      if (!best || this.flashFee(edge.protocol, edge.fee, amountIn) < this.flashFee(best.protocol, best.fee, amountIn)) {
+      const fee = this.flashFee(edge.protocol, edge.fee, amountIn);
+      const bestFee = best ? this.flashFee(best.protocol, best.fee, amountIn) : 0n;
+      if (!best || fee < bestFee || (spendWork && fee === bestFee && this.compareFlashEdges(edge, bestEdge!) < 0)) {
+        bestEdge = edge;
         best = {
           protocol: edge.protocol,
           poolAddress: edge.poolAddress,
@@ -644,18 +681,18 @@ export class MarketGraph {
     };
   }
 
-  private quoteEdge(edge: AnyMarketEdge, amountIn: bigint): MarketRouteQuote {
+  private quoteEdge(edge: AnyMarketEdge, amountIn: bigint, spendWork?: () => boolean): MarketRouteQuote {
     if (edge.liquidity <= 0n) {
       return { amountIn, amountOut: 0n, profit: -1n, complete: false };
     }
     return edge.protocol === 'v2'
       ? this.quoteV2Edge(edge, amountIn)
       : edge.protocol === 'v3'
-        ? this.quoteV3Edge(edge, amountIn)
+        ? this.quoteV3Edge(edge, amountIn, spendWork)
         : this.quoteCarbonEdge(edge, amountIn);
   }
 
-  private quoteV3Edge(edge: Extract<AnyMarketEdge, { protocol: 'v3' }>, amountIn: bigint): MarketRouteQuote {
+  private quoteV3Edge(edge: Extract<AnyMarketEdge, { protocol: 'v3' }>, amountIn: bigint, spendWork?: () => boolean): MarketRouteQuote {
     const poolIndex = this.poolIndexOf(edge.poolAddress);
     const pool = poolIndex === undefined ? undefined : this.v3Pools[poolIndex];
     if (!pool?.state || pool.state.liquidity <= 0n) {
@@ -674,6 +711,7 @@ export class MarketGraph {
         ticks: this.getV3InitializedTicks(pool.address),
         normalizedTicks: true,
         fullRange: pool.fullRange,
+        spendWork,
       });
     } catch {
       return { amountIn, amountOut: 0n, profit: -1n, complete: false };
@@ -1103,17 +1141,17 @@ export class MarketGraph {
         return Boolean(protocolPlugin(edge.protocol).flashLoanFee) &&
           (edge.protocol !== 'v2' || edge.variant === 'uniswap-v2');
       })
-      .sort((aIndex, bIndex) => {
-        const a = this.edges[aIndex].edge;
-        const b = this.edges[bIndex].edge;
-        const nominal = 10n ** 18n;
-        const aFee = this.flashFee(a.protocol, a.fee, nominal);
-        const bFee = this.flashFee(b.protocol, b.fee, nominal);
-        if (aFee !== bFee) return aFee < bFee ? -1 : 1;
-        return a.liquidity > b.liquidity ? -1 : a.liquidity < b.liquidity ? 1 : 0;
-      });
+      .sort((aIndex, bIndex) => this.compareFlashEdges(this.edges[aIndex].edge, this.edges[bIndex].edge));
     this.flashEdgesCache.set(tokenIndex, edgeIndexes);
     return edgeIndexes;
+  }
+
+  private compareFlashEdges(a: AnyMarketEdge, b: AnyMarketEdge): number {
+    const nominal = 10n ** 18n;
+    const aFee = this.flashFee(a.protocol, a.fee, nominal);
+    const bFee = this.flashFee(b.protocol, b.fee, nominal);
+    if (aFee !== bFee) return aFee < bFee ? -1 : 1;
+    return a.liquidity > b.liquidity ? -1 : a.liquidity < b.liquidity ? 1 : 0;
   }
 
   private hopDistancesTo(targetTokenIndex: number): Int32Array {

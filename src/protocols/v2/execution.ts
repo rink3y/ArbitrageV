@@ -6,6 +6,8 @@ export function encodeV2RouteData(variant: V2Variant): Hex {
 }
 
 export function v2FlashLoanFee(fee: number, amount: bigint): bigint {
+  if (!Number.isInteger(fee) || fee < 0 || fee >= 10000 || amount < 0n) throw new Error('Invalid V2 flash fee input');
   const rawFee = BigInt(fee);
-  return (amount * rawFee) / (10_000n - rawFee) + 1n;
+  const denominator = 10_000n - rawFee;
+  return (amount * rawFee + denominator - 1n) / denominator;
 }

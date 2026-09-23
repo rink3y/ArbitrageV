@@ -1,4 +1,5 @@
-import { ARBITRAGE_SEARCH_POLICY, TOKENS } from '../constants';
+import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, TOKENS, type TokenConfig } from '../constants';
+import { searchSplitRoutes, splitGasCost } from './split-routing';
 import { compareFractions } from '../fractions';
 import { encodeCarbonRouteData } from '../protocols/carbon/execution';
 import { flashLoanFee } from '../execution/execution-planner';
@@ -15,31 +16,42 @@ import {
   type FindOpportunitiesRequest,
 } from './opportunity-types';
 
-const TOKEN_BY_ADDRESS = new Map(TOKENS.map(token => [token.address.toLowerCase(), token]));
-
 export class OpportunityEngine {
   readonly graph: MarketGraph;
+  private readonly tokenByAddress: Map<string, TokenConfig>;
+  readonly startTokens: TokenConfig['address'][];
   private readonly strategy: CircularArbitrageStrategy;
   lastSearchStats = { candidates: 0, sized: 0 };
+  lastSplitStats = { work: 0, evaluated: 0, exhausted: false, elapsedMs: 0, winners: 0 };
 
   constructor(
     readonly policy: ArbitrageSearchPolicy = ARBITRAGE_SEARCH_POLICY,
-    configuredV3Pools: readonly V3PoolConfig[] = []
+    configuredV3Pools: readonly V3PoolConfig[] = [],
+    readonly tokens: readonly TokenConfig[] = TOKENS,
   ) {
     for (const limit of [policy.maxCandidatesToSize ?? 64, policy.maxSearchExpansions ?? 50_000]) {
       if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Search budgets must be positive integers');
     }
+    this.tokenByAddress = new Map(tokens.slice(0, policy.topTokens).map(token => [token.address.toLowerCase(), token]));
+    this.startTokens = tokens.slice(0, policy.topTokens).map(token => token.address);
     this.graph = new MarketGraph(policy, configuredV3Pools);
     this.strategy = new CircularArbitrageStrategy(this.graph, policy);
   }
 
   findOpportunities(request: FindOpportunitiesRequest): ArbitrageSearchResult {
+    request = { ...request, startTokens: request.startTokens.filter(token => this.tokenByAddress.has(token.toLowerCase())) };
+    const splitEnabled = !!this.policy.splitRouting && this.policy.splitRouting !== 'off';
     const opportunities: ArbitrageOpportunity[] = [];
     const shortlist: Array<{ candidate: CandidateRoute; numerator: bigint; denominator: bigint }> = [];
     const limit = this.policy.maxCandidatesToSize ?? 64;
+    const splitPaths = new Map<string, CandidateRoute['path']>();
+    const baselineNet = new Map<string, bigint>();
     this.lastSearchStats = { candidates: 0, sized: 0 };
     this.strategy.visitCandidates(request, candidate => {
       this.lastSearchStats.candidates++;
+      if (splitEnabled && splitPaths.size < limit && candidate.path.length <= Math.min(this.policy.maxRouteEdges, 3) + 1) {
+        splitPaths.set(candidate.path.map(token => token.toLowerCase()).join(':'), candidate.path);
+      }
       let numerator = 1n;
       let denominator = 1n;
       for (const index of candidate.edgeIndexes!) {
@@ -59,7 +71,15 @@ export class OpportunityEngine {
       const opportunity = this.sizeCandidate(candidate);
       opportunity.observedAt = request.observedAt ?? Date.now();
       const originToken = opportunity.path[0];
-      const token = TOKEN_BY_ADDRESS.get(originToken.toLowerCase());
+      const token = this.tokenByAddress.get(originToken.toLowerCase());
+      if (splitEnabled) {
+        const key = originToken.toLowerCase();
+        const gas = splitGasCost(request.splitCosts, originToken);
+        if (gas !== null) {
+          opportunity.netProfit = opportunity.profit - gas;
+          if (opportunity.flashPoolAddress && opportunity.netProfit > (baselineNet.get(key) ?? 0n)) baselineNet.set(key, opportunity.netProfit);
+        }
+      }
 
       if (!token) {
         throw new Error(`No token config found for ${originToken}. Please update TOKENS in constants.ts.`);
@@ -69,6 +89,26 @@ export class OpportunityEngine {
       this.insertRankedOpportunity(opportunities, opportunity);
     }
 
+    const started = performance.now();
+    const splitResults = searchSplitRoutes(this.graph, [...splitPaths.values()], this.tokens, request.splitCosts, baselineNet);
+    this.lastSplitStats = { work: splitResults.work, evaluated: splitResults.evaluated, exhausted: splitResults.exhausted,
+      elapsedMs: performance.now() - started, winners: splitResults.candidates.length };
+    for (const candidate of splitResults.candidates) {
+      const branches = candidate.quote.stages.flatMap(stage => stage.branches);
+      const pairs = branches.map(branch => branch.pool);
+      const protocols = branches.map(branch => branch.protocol);
+      opportunities.push({ path: candidate.path, pairs, edgeIds: [], protocols,
+        fees: branches.map(branch => branch.fee), routeData: branches.map(branch => branch.data),
+        optimalInput: candidate.quote.amountIn, profit: candidate.netProfit + candidate.gasCost,
+        netProfit: candidate.netProfit, flashPoolAddress: candidate.flashPool.poolAddress,
+        observedAt: request.observedAt ?? Date.now(),
+        marketVersions: this.graph.marketVersions([...pairs, candidate.flashPool.poolAddress], protocols.includes('carbon')),
+        split: { mode: this.policy.splitRouting as 'shadow' | 'live', stages: candidate.quote.stages, resources: candidate.quote.resources,
+          minSurplusAfterRepayment: candidate.minSurplusAfterRepayment,
+          deadline: BigInt(Math.floor((request.observedAt ?? Date.now()) / 1000) + 30),
+          gasLimit: EXECUTION_POLICY.gasLimit, gasPriceWei: request.splitCosts!.gasPriceWei, costsValidUntil: request.splitCosts!.validUntil },
+      });
+    }
     return opportunities;
   }
 
@@ -179,8 +219,8 @@ export class OpportunityEngine {
   }
 
   private compareOpportunityValue(a: ArbitrageOpportunity, b: ArbitrageOpportunity): number {
-    const aScale = TOKEN_BY_ADDRESS.get(a.path[0].toLowerCase())?.minProfit ?? 1n;
-    const bScale = TOKEN_BY_ADDRESS.get(b.path[0].toLowerCase())?.minProfit ?? 1n;
+    const aScale = this.tokenByAddress.get(a.path[0].toLowerCase())?.minProfit ?? 1n;
+    const bScale = this.tokenByAddress.get(b.path[0].toLowerCase())?.minProfit ?? 1n;
     const left = a.profit * bScale;
     const right = b.profit * aScale;
     return left > right ? 1 : left < right ? -1 : 0;

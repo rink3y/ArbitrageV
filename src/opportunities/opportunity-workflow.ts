@@ -1,5 +1,5 @@
 import { type Address } from 'viem';
-import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, RUNTIME, TOKENS } from '../constants';
+import { EXECUTION_POLICY, RUNTIME, TOKENS } from '../constants';
 import { OpportunityManager } from '../execute';
 import { type ExecutableOpportunity } from '../execution/execution-planner';
 import { type NetworkConfig } from '../network';
@@ -7,6 +7,7 @@ import { basisPoints, formatBasisPoints, formatTokenAmountWithSymbol } from '../
 import { type MarketProtocol } from '../market-graph/types';
 import { type OpportunityEngine } from './opportunity-engine';
 import { WorkerSearch } from './worker-search';
+import { splitCostsFromConstants } from './split-costs';
 import { backgroundLogs } from '../runtime/background-queue';
 import { latency } from '../runtime/latency';
 import {
@@ -35,7 +36,7 @@ export async function createOpportunityScanner(
     manager?.stop();
     throw error;
   }
-  const search = new WorkerSearch(engine.graph, engine.policy);
+  const search = new WorkerSearch(engine.graph, engine.policy, engine.tokens);
   let stopped = false;
   return {
     warm: async () => { await search.search({ startTokens: [] }); },
@@ -53,7 +54,11 @@ async function scanAndExecuteOpportunities(
   if (manager && request.releasedPairs) manager.releasePairs(request.releasedPairs);
 
   const started = performance.now();
-  const results = await search.search(createSearchRequest(request));
+  const results = await search.search({
+    ...createSearchRequest(engine, request),
+    splitCosts: engine.policy.splitRouting && engine.policy.splitRouting !== 'off'
+      ? splitCostsFromConstants(engine.tokens) : undefined,
+  });
   const opportunities = results.filter(opportunity =>
     opportunity.marketVersions && engine.graph.matchesVersions(opportunity.marketVersions) &&
     Date.now() - opportunity.observedAt! <= RUNTIME.candidateMaxAgeMs);
@@ -78,10 +83,8 @@ async function scanAndExecuteOpportunities(
   return opportunities;
 }
 
-function createSearchRequest(request: OpportunityWorkflowRequest): FindOpportunitiesRequest {
-  const startTokens = TOKENS
-    .slice(0, Math.min(ARBITRAGE_SEARCH_POLICY.topTokens, TOKENS.length))
-    .map(addr => addr.address);
+function createSearchRequest(engine: OpportunityEngine, request: OpportunityWorkflowRequest): FindOpportunitiesRequest {
+  const startTokens = engine.startTokens;
 
   return {
     startTokens,
@@ -116,6 +119,7 @@ function logOpportunities(opportunities: ArbitrageSearchResult): void {
     console.log(`Path: ${path.join(' -> ')}`);
     console.log(`Expected profit: ${formatTokenAmountWithSymbol(profit, lastTokenInfo)}`);
     console.log(`Route type: ${routeKind}`);
+    if (opportunity.split) console.log(`Split ${opportunity.split.mode}: ${opportunity.split.stages.map(stage => stage.branches.length).join(' -> ')} branches; conservative net ${opportunity.netProfit}`);
     console.log(`Optimal input amount: ${optimalInput.toString()} wei || ${formatTokenAmountWithSymbol(optimalInput, startTokenInfo)}`);
     console.log(`Profit percentage: ${formatBasisPoints(profitBps)}%`);
     console.log(`Pairs used: ${pairs.join(', ')}`);

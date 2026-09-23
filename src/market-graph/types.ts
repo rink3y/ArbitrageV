@@ -5,6 +5,8 @@ import { type SwapDirection, type V2Variant } from '../protocols/v2/types';
 export type MarketProtocol = 'v2' | 'v3' | 'carbon';
 
 export type ArbitrageSearchPolicy = {
+  splitRouting?: 'off' | 'shadow' | 'live';
+  splitSearchMs?: number;
   topTokens: number;
   allowedProtocols: readonly MarketProtocol[];
   allowProtocolMixing: boolean;

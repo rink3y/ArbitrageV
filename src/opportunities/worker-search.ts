@@ -1,4 +1,4 @@
-import { RUNTIME } from '../constants';
+import { RUNTIME, TOKENS, type TokenConfig } from '../constants';
 import { type MarketGraph } from '../market-graph/market-graph';
 import { type ArbitrageSearchPolicy } from '../market-graph/types';
 import { latency } from '../runtime/latency';
@@ -11,7 +11,7 @@ export class WorkerSearch {
   private pending: { resolve: (result: ArbitrageSearchResult) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | undefined;
   private stopped = false;
 
-  constructor(private readonly graph: MarketGraph, private readonly policy: ArbitrageSearchPolicy) {}
+  constructor(private readonly graph: MarketGraph, private readonly policy: ArbitrageSearchPolicy, private readonly tokens: readonly TokenConfig[] = TOKENS) {}
 
   search(request: FindOpportunitiesRequest): Promise<ArbitrageSearchResult> {
     if (this.stopped) return Promise.reject(new Error('Search worker is stopped'));
@@ -29,6 +29,10 @@ export class WorkerSearch {
         latency.observe('search', event.data.searchMs);
         latency.increment('search.candidates', event.data.stats.candidates);
         latency.increment('search.sized', event.data.stats.sized);
+        latency.observe('split.search', event.data.splitStats.elapsedMs);
+        latency.increment('split.work', event.data.splitStats.work);
+        latency.increment('split.winners', event.data.splitStats.winners);
+        if (event.data.splitStats.exhausted) latency.increment('split.budgetStops');
         pending.resolve(event.data.opportunities);
       };
       this.worker.onerror = event => this.fail(new Error(event.message || 'Search worker failed'));
@@ -40,7 +44,7 @@ export class WorkerSearch {
       this.pending = { resolve, reject, timer };
       try {
         const started = performance.now();
-        this.worker!.postMessage({ policy: this.policy, changes: this.graph.takeChanges(full), request });
+        this.worker!.postMessage({ policy: this.policy, tokens: this.tokens, changes: this.graph.takeChanges(full), request });
         latency.observe('worker.transfer', performance.now() - started);
       } catch (error) { this.fail(error instanceof Error ? error : new Error(String(error))); }
     });

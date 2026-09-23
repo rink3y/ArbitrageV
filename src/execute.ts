@@ -6,6 +6,7 @@ import {
     NETWORK,
     TELEGRAM,
     TOKENS,
+    ARBITRAGE_SEARCH_POLICY,
 } from './constants';
 import ArbABI from './ABI/Arb.json';
 import {
@@ -126,8 +127,8 @@ export class OpportunityManager {
         const sortedOpps = [...opportunities].sort((a, b) => {
             const aScale = TOKEN_PROFIT_SCALE.get(a.path[0].toLowerCase()) ?? 1n;
             const bScale = TOKEN_PROFIT_SCALE.get(b.path[0].toLowerCase()) ?? 1n;
-            const aValue = a.profit * bScale;
-            const bValue = b.profit * aScale;
+            const aValue = (ARBITRAGE_SEARCH_POLICY.splitRouting === 'live' ? a.netProfit ?? a.profit : a.profit) * bScale;
+            const bValue = (ARBITRAGE_SEARCH_POLICY.splitRouting === 'live' ? b.netProfit ?? b.profit : b.profit) * aScale;
             if (bValue > aValue) return 1;
             if (bValue < aValue) return -1;
             return 0;
@@ -138,6 +139,7 @@ export class OpportunityManager {
         });
 
         for (const opp of sortedOpps) {
+            if (opp.split && !this.splitExecutable(opp)) { latency.increment('split.notSubmitted'); continue; }
             if (!this.isFresh(graph, opp)) { latency.increment('execution.stale'); continue; }
             // Skip if any pairs conflict
             if (!this.tryLockPairs(opp.pairs)) {
@@ -201,7 +203,7 @@ export class OpportunityManager {
                     ...plan.params,
                     borrowAmount: plan.params.borrowAmount.toString(),
                     v2RepayFee: plan.params.v2RepayFee.toString(),
-                    fees: plan.params.fees.map(fee => fee.toString()),
+                    ...(plan.kind === 'flash' ? { fees: plan.params.fees.map(fee => fee.toString()) } : {}),
                 },
                 expectedProfit: opportunity.profit.toString()
             });
@@ -210,7 +212,7 @@ export class OpportunityManager {
         if (!this.isFresh(graph, opportunity)) return false;
         const account = this.networkConfig.account;
         if (account.type !== 'local') throw new Error('Execution requires a local signing account');
-        const data = encodeFunctionData({ abi: ArbABI, functionName: 'executeArbitrage', args: [plan.params] });
+        const data = encodeFunctionData({ abi: ArbABI, functionName: plan.kind === 'split' ? 'executeSplitArbitrage' : 'executeArbitrage', args: [plan.params] });
         const nonce = this.nonces.reserve();
         let serializedTransaction: Hex;
         try {
@@ -222,7 +224,7 @@ export class OpportunityManager {
                 data,
                 chainId: this.networkConfig.walletClient.chain?.id ?? NETWORK.chainId,
                 nonce,
-                gas: EXECUTION_POLICY.gasLimit,
+                gas: opportunity.split?.gasLimit ?? EXECUTION_POLICY.gasLimit,
                 ...(EXECUTION_POLICY.legacy
                     ? {
                         gasPrice: EXECUTION_POLICY.legacyGasPrice,
@@ -274,7 +276,16 @@ export class OpportunityManager {
     }
 
     private isFresh(graph: FlashPoolLookup, opportunity: ExecutableOpportunity): boolean {
-        return !this.stopped && (!opportunity.marketVersions || graph.matchesVersions?.(opportunity.marketVersions) === true) &&
+        return !this.stopped && (!opportunity.split || this.splitExecutable(opportunity)) && (!opportunity.marketVersions || graph.matchesVersions?.(opportunity.marketVersions) === true) &&
             (opportunity.observedAt === undefined || Date.now() - opportunity.observedAt <= RUNTIME.candidateMaxAgeMs);
+    }
+
+    private splitExecutable(opportunity: ExecutableOpportunity): boolean {
+        const split = opportunity.split;
+        const feeCap = EXECUTION_POLICY.legacy ? EXECUTION_POLICY.legacyGasPrice : EXECUTION_POLICY.maxFeePerGas;
+        return !!split && ARBITRAGE_SEARCH_POLICY.splitRouting === 'live' && split.mode === 'live' &&
+            !!opportunity.marketVersions && opportunity.observedAt !== undefined &&
+            split.costsValidUntil > Date.now() && split.deadline >= BigInt(Math.floor(Date.now() / 1000)) &&
+            split.gasLimit === EXECUTION_POLICY.gasLimit && split.gasPriceWei >= feeCap;
     }
 }

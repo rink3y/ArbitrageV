@@ -31,6 +31,7 @@ export type V3MultiRangeQuoteRequest = V3SingleRangeQuoteRequest & {
   normalizedTicks?: boolean;
   fullRange?: boolean;
   sqrtPriceLimitX96?: bigint;
+  spendWork?: () => boolean;
 };
 
 export type V3MultiRangeQuote = V3SingleRangeQuote & {
@@ -269,6 +270,9 @@ export function quoteV3MultiRangeExactInput(request: V3MultiRangeQuoteRequest): 
   let initializedTicksCrossed = 0;
 
   while (amountRemaining > 0n) {
+    if (request.spendWork && !request.spendWork()) {
+      return finishMultiRangeQuote(request.amountIn, amountInAfterFee, amountOut, sqrtPriceX96, liquidity, tick, initializedTicksCrossed, true);
+    }
     const nextTick = nextInitializedTick(initializedTicks, tick, zeroForOne);
     if (liquidity <= 0n) {
       // A complete bitmap distinguishes an empty interval from missing data.

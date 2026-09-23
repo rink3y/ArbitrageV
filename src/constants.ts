@@ -8,6 +8,8 @@ export type TokenConfig = {
     liquidityAmount: bigint;
     minProfit: bigint;
     decimals: number;
+    // Smallest token units per native wei. Non-native split profits need a fresh rate.
+    gasConversion?: { numerator: bigint; denominator: bigint; validUntil: number };
 };
 
 export const NETWORK = {
@@ -35,6 +37,9 @@ export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
     // Live search is bounded even when discovery finds thousands of pools.
     maxCandidatesToSize: 64,
     maxSearchExpansions: 50_000,
+    // Shadow reports splits without submitting them; linear trading is unaffected.
+    splitRouting: 'off', //splitRouting: 'off', // 'off' | 'shadow' | 'live'
+    splitSearchMs: 10,
 } as const;
 
 export const EXECUTION_POLICY = {
@@ -42,6 +47,8 @@ export const EXECUTION_POLICY = {
     nonceRefreshIntervalMs: 12 * 60 * 60 * 1000,
     nonceRetryIntervalMs: 5_000,
     gasLimit: 2500000n,
+    // Minimum-output haircut for each split branch.
+    slippageBps: 5,
     legacy: false,
     legacyGasPrice: gasPrice('50.9'),
     maxFeePerGas: gasPrice('60'),

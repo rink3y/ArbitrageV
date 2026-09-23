@@ -19,6 +19,8 @@ describe("createExecutionPlan", () => {
   test("calculates the exact flash repayment fee", () => {
     expect(flashLoanFee({ protocol: "v2", poolAddress: address(1), fee: 30, liquidity: 10_000n }, 1_000n)).toBe(4n);
     expect(flashLoanFee({ protocol: "v3", poolAddress: address(2), fee: 500, liquidity: 10_000n }, 1_000n)).toBe(1n);
+    expect(flashLoanFee({ protocol: "v2", poolAddress: address(1), fee: 0, liquidity: 10_000n }, 200n)).toBe(0n);
+    expect(flashLoanFee({ protocol: "v2", poolAddress: address(1), fee: 30, liquidity: 10_000n }, 997n)).toBe(3n);
   });
 
   test("builds ArbParams for a mixed V2/V3 circular route", () => {
