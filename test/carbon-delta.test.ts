@@ -1,9 +1,12 @@
+import { NETWORK } from '../src/constants';
 import { expect, test } from 'bun:test';
 import { type Address } from 'viem';
 import { ARBITRAGE_SEARCH_POLICY } from '../src/constants';
 import { MarketGraph } from '../src/market-graph/market-graph';
 import { carbonStrategyKey, type CarbonDelta, type CarbonStrategy } from '../src/protocols/carbon/types';
-import { NATIVE_SEI, WSEI } from '../src/tokens';
+import { NATIVE_TOKEN } from '../src/tokens';
+
+const WRAPPED_NATIVE = NETWORK.wrappedNativeToken;
 
 const address = (n: number): Address => `0x${n.toString(16).padStart(40, '0')}`;
 const controller = address(1);
@@ -118,13 +121,13 @@ test('patches coalesce final strategy states and recovery snapshots include drai
 
 test('raw native/wrapped pairs and controller-scoped IDs remain separate', () => {
   const graph = new MarketGraph(policy);
-  const native = [strategy(1, NATIVE_SEI), strategy(2, NATIVE_SEI)];
-  const wrapped = [strategy(3, WSEI), strategy(4, WSEI)];
+  const native = [strategy(1, NATIVE_TOKEN), strategy(2, NATIVE_TOKEN)];
+  const wrapped = [strategy(3, WRAPPED_NATIVE), strategy(4, WRAPPED_NATIVE)];
   const other = { ...strategy(1), controller: address(20) };
   graph.setCarbonStrategies([...native, ...wrapped, other]);
   graph.updateCarbonStrategies({ upserts: [], removed: [native[0]] });
-  expect(graph.edge(`carbon-group:${controller}:${NATIVE_SEI.toLowerCase()}:${address(3)}`)?.liquidity).toBe(0n);
-  expect(graph.edge(`carbon-group:${controller}:${WSEI.toLowerCase()}:${address(3)}`)?.liquidity).toBe(2000n);
+  expect(graph.edge(`carbon-group:${controller}:${NATIVE_TOKEN.toLowerCase()}:${address(3)}`)?.liquidity).toBe(0n);
+  expect(graph.edge(`carbon-group:${controller}:${WRAPPED_NATIVE.toLowerCase()}:${address(3)}`)?.liquidity).toBe(2000n);
   expect(graph.edge(`${carbonStrategyKey(other)}:1`)?.liquidity).toBe(1000n);
   const rebuilt = new MarketGraph(policy);
   rebuilt.setCarbonStrategies([native[1], ...wrapped, other]);

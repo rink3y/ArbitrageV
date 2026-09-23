@@ -119,7 +119,7 @@ contract NArbSplitTest {
 
     function setUp() public {
         a = new SplitToken(); b = new SplitToken();
-        executor = new ArbitrageExecutor(address(this));
+        executor = new ArbitrageExecutor(address(this), address(new SplitWrappedToken()));
         funding = new SplitV2Pool(a, b, 100000, 100000);
         buy1 = new SplitV2Pool(a, b, 1000, 2000);
         buy2 = new SplitV2Pool(a, b, 1000, 2000);
@@ -219,9 +219,9 @@ contract NArbSplitTest {
         p.stages[0].branches[0] = ArbitrageExecutor.SplitBranch(address(carbon), 2, 0, 100, 181, abi.encode(address(a), address(b), ids, amounts)); reject(p);
     }
     function testNativeCarbonBothDirectionsPreserveOldNativeBalance() public {
-        address wrapped = 0xE30feDd158A2e3b13e9badaeABaFc5516e95e8C7;
+        address wrapped = executor.wrappedNativeToken();
         address native = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
-        SplitWrappedToken implementation = new SplitWrappedToken(); vm.etch(wrapped, address(implementation).code); vm.deal(wrapped, 1000000);
+        vm.deal(wrapped, 1000000);
         SplitToken w = SplitToken(wrapped);
         SplitV2Pool loan = new SplitV2Pool(w, b, 100000, 100000);
         SplitCarbon carbon = new SplitCarbon(); vm.deal(address(carbon), 1000000); vm.deal(address(executor), 777);
@@ -232,6 +232,10 @@ contract NArbSplitTest {
         p.stages[1].branches[0] = ArbitrageExecutor.SplitBranch(address(carbon), 2, 0, 400, 800, abi.encode(uint256(2), address(b), native));
         executor.executeSplitArbitrage(p);
         require(w.balanceOf(address(executor)) == 600 && address(executor).balance == 777, "native accounting");
+    }
+    function testRejectsMissingWrappedNativeContract() public {
+        try new ArbitrageExecutor(address(this), address(0)) { revert("accepted zero address"); } catch {}
+        try new ArbitrageExecutor(address(this), address(123)) { revert("accepted non-contract"); } catch {}
     }
     function testOwnerCannotReenterAnActiveSplit() public {
         ArbitrageExecutor.SplitParams memory p = plan();

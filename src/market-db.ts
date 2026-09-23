@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { type Address } from 'viem';
+import { NETWORK } from './constants';
 import { type V2PoolMetadata } from './protocols/v2/metadata';
 import { type V2Variant } from './protocols/v2/types';
 import { type CarbonPairMetadata } from './protocols/carbon/types';
@@ -98,18 +99,34 @@ export function updateMarketPools(
   }
 }
 
-function marketDbPath(): string {
-  return process.env.MARKET_DB_PATH || 'data/markets.sqlite';
+export function marketDbPath(): string {
+  return process.env.MARKET_DB_PATH || `data/markets-${NETWORK.chain.id}.sqlite`;
 }
 
 function openMarketDb(path = marketDbPath()): Database {
   mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
-  initMarketDb(db);
-  return db;
+  try {
+    db.transaction(() => initMarketDb(db))();
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 function initMarketDb(db: Database): void {
+  const bound = db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'market_network'").get();
+  if (!bound) {
+    const legacy = db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('pools', 'carbon_pairs') LIMIT 1").get();
+    if (legacy) throw new Error('Market database has no chain identity. Use a new MARKET_DB_PATH and run sync:markets; the old database is unchanged.');
+    db.exec('CREATE TABLE market_network (id INTEGER PRIMARY KEY CHECK (id = 1), chain_id INTEGER NOT NULL)');
+    db.query('INSERT INTO market_network VALUES (1, ?)').run(NETWORK.chain.id);
+  }
+  const network = db.query('SELECT chain_id FROM market_network WHERE id = 1').get() as { chain_id: number } | null;
+  if (network?.chain_id !== NETWORK.chain.id) {
+    throw new Error(`Market database chain ${network?.chain_id ?? 'unknown'} does not match NETWORK.chain.id ${NETWORK.chain.id}. Use a separate MARKET_DB_PATH.`);
+  }
   const version = db.query('PRAGMA user_version').get() as { user_version: number };
   if (version.user_version < 2) {
     db.exec('DROP TABLE IF EXISTS pools; DROP TABLE IF EXISTS carbon_pairs; PRAGMA user_version = 2');

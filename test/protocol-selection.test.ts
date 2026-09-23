@@ -22,6 +22,7 @@ afterEach(() => {
 });
 
 function prepareRuntime() {
+  spyOn(network, 'assertRpcChain').mockResolvedValue();
   ARBITRAGE_SEARCH_POLICY.allowedProtocols = ['v2'];
   const catalog: marketDb.MarketSnapshot = {
     v2Pools: [{
@@ -109,16 +110,27 @@ test('read clients require an RPC URL but no private key', async () => {
   try {
     Object.assign(NETWORK, { rpcUrl: undefined, privateKey: undefined });
     expect(() => network.createReadClient()).toThrow('RPC_URL is required');
-    Object.assign(NETWORK, { rpcUrl: 'http://127.0.0.1:1', chainId: 713715 });
+    const chain = { id: 713715, name: 'Offline test chain',
+      nativeCurrency: { name: 'Test coin', symbol: 'TEST', decimals: 18 },
+      rpcUrls: { default: { http: ['http://127.0.0.1:2'] } } };
+    Object.assign(NETWORK, { rpcUrl: 'http://127.0.0.1:1', chain });
     const client = network.createReadClient();
     expect<number>(client.chain.id).toBe(713715);
+    expect(client.chain).toEqual(chain);
     expect(client.transport.type).toBe('http');
     expect(client.transport.url).toBe('http://127.0.0.1:1');
     expect(client.account).toBeUndefined();
     await expect(network.initializeNetwork()).rejects.toThrow('PRIVATE_KEY is required');
+    Object.assign(NETWORK, { wrappedNativeToken: '0x0000000000000000000000000000000000000000' });
+    expect(() => network.createReadClient()).toThrow('nonzero token address');
   } finally {
     Object.assign(NETWORK, previousNetwork);
   }
+});
+
+test('RPC chain validation rejects another network', async () => {
+  await expect(network.assertRpcChain({ getChainId: async () => NETWORK.chain.id })).resolves.toBeUndefined();
+  await expect(network.assertRpcChain({ getChainId: async () => NETWORK.chain.id + 1 })).rejects.toThrow('does not match');
 });
 
 test('V2-only market sync needs no private key and preserves stored V3 and Carbon markets', async () => {

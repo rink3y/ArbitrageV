@@ -2,12 +2,49 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadMarketSnapshot, replaceMarketSnapshot, updateMarketPools } from '../src/market-db';
+import { Database } from 'bun:sqlite';
+import { NETWORK } from '../src/constants';
+import { loadMarketSnapshot, marketDbPath, replaceMarketSnapshot, updateMarketPools } from '../src/market-db';
 
 const token0 = '0x0000000000000000000000000000000000000001' as const;
 const token1 = '0x0000000000000000000000000000000000000002' as const;
 
 describe('market catalog', () => {
+  test('uses chain-specific defaults and rejects a reused database without modifying its catalog', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arb-chain-'));
+    const path = join(directory, 'markets.sqlite');
+    const previousChain = NETWORK.chain;
+    const previousPath = process.env.MARKET_DB_PATH;
+    const original = { v2Pools: [], v3Pools: [], carbonPairs: [{
+      controller: token0, token0, token1, strategyCount: 1, feePpm: 4000,
+    }] };
+    try {
+      delete process.env.MARKET_DB_PATH;
+      const firstPath = marketDbPath();
+      replaceMarketSnapshot(original, path);
+      Object.assign(NETWORK, { chain: { ...previousChain, id: previousChain.id + 1 } });
+      expect(marketDbPath()).not.toBe(firstPath);
+      process.env.MARKET_DB_PATH = path;
+      expect(() => loadMarketSnapshot()).toThrow('does not match');
+      expect(() => replaceMarketSnapshot({ v2Pools: [], v3Pools: [], carbonPairs: [] })).toThrow('does not match');
+      Object.assign(NETWORK, { chain: previousChain });
+      expect(loadMarketSnapshot()).toEqual(original);
+      const db = new Database(path);
+      db.exec('DROP TABLE market_network');
+      db.close();
+      expect(() => loadMarketSnapshot()).toThrow('no chain identity');
+      const legacy = new Database(path, { readonly: true });
+      expect(legacy.query('SELECT strategy_count FROM carbon_pairs').get()).toEqual({ strategy_count: 1 });
+      legacy.close();
+    } finally {
+      Object.assign(NETWORK, { chain: previousChain });
+      if (previousPath === undefined) delete process.env.MARKET_DB_PATH;
+      else process.env.MARKET_DB_PATH = previousPath;
+      Bun.gc(true);
+      rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('replaces and loads one domain snapshot', () => {
     const directory = mkdtempSync(join(tmpdir(), 'arb-market-'));
     const path = join(directory, 'markets.sqlite');

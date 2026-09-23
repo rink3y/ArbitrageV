@@ -6,6 +6,11 @@
         "name": "owner_",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "wrappedNativeToken_",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "nonpayable"
@@ -306,6 +311,19 @@
     "stateMutability": "nonpayable"
   },
   {
+    "type": "function",
+    "name": "wrappedNativeToken",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
     "type": "error",
     "name": "ArbitrageMustReturnToStart",
     "inputs": []
@@ -368,6 +386,11 @@
   {
     "type": "error",
     "name": "InvalidV3SwapDelta",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidWrappedNativeToken",
     "inputs": []
   },
   {

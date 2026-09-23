@@ -1,4 +1,5 @@
-import { type Address } from 'viem';
+import { type Address, type Chain } from 'viem';
+import { sei } from 'viem/chains';
 import { type ArbitrageSearchPolicy } from './market-graph/types';
 import { gasPrice, tokenAmount } from './values';
 
@@ -13,7 +14,8 @@ export type TokenConfig = {
 };
 
 export const NETWORK = {
-    chainId: 1329,
+    chain: sei as Chain,
+    wrappedNativeToken: '0xE30feDd158A2e3b13e9badaeABaFc5516e95e8C7' as Address,
     rpcUrl: process.env.RPC_URL,
     wsUrl: process.env.WSS_URL,
     privateKey: process.env.PRIVATE_KEY,

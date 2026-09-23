@@ -34,7 +34,7 @@ interface ICarbonController {
     ) external payable returns (uint128);
 }
 
-interface IWSEI {
+interface IWrappedNative {
     function deposit() external payable;
     function withdraw(uint256 wad) external;
 }
@@ -60,13 +60,14 @@ error StableSolverDidNotConverge();
 error InvalidSplitPlan();
 error SplitMinimumNotMet();
 error ExecutionInProgress();
+error InvalidWrappedNativeToken();
 
 contract ArbitrageExecutor is Withdrawable {
     uint8 private constant V2 = 0;
     uint8 private constant V3 = 1;
     uint8 private constant CARBON = 2;
-    address private constant NATIVE_SEI = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
-    address private constant WSEI = 0xE30feDd158A2e3b13e9badaeABaFc5516e95e8C7;
+    address private constant NATIVE_TOKEN = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+    address public immutable wrappedNativeToken;
     uint256 private constant FEE_DENOMINATOR = 10000;
     uint256 private constant ONE = 1e18;
     uint160 private constant MIN_SQRT_RATIO_PLUS_ONE = 4295128740;
@@ -143,7 +144,10 @@ contract ArbitrageExecutor is Withdrawable {
         address token1;
     }
 
-    constructor(address owner_) Withdrawable(owner_) {}
+    constructor(address owner_, address wrappedNativeToken_) Withdrawable(owner_) {
+        if (wrappedNativeToken_ == NATIVE_TOKEN || wrappedNativeToken_.code.length == 0) revert InvalidWrappedNativeToken();
+        wrappedNativeToken = wrappedNativeToken_;
+    }
 
     modifier executionLock() {
         if (executing) revert ExecutionInProgress();
@@ -567,14 +571,14 @@ contract ArbitrageExecutor is Withdrawable {
             }
             if (totalActionAmount != amountIn) revert InvalidCarbonAmount();
         }
-        bool sourceIsNative = rawSourceToken == NATIVE_SEI;
-        bool targetIsNative = rawTargetToken == NATIVE_SEI;
-        tokenOut = targetIsNative ? WSEI : rawTargetToken;
-        if (sourceIsNative && tokenIn != WSEI) revert SwapPathError();
+        bool sourceIsNative = rawSourceToken == NATIVE_TOKEN;
+        bool targetIsNative = rawTargetToken == NATIVE_TOKEN;
+        tokenOut = targetIsNative ? wrappedNativeToken : rawTargetToken;
+        if (sourceIsNative && tokenIn != wrappedNativeToken) revert SwapPathError();
         if (!sourceIsNative && tokenIn != rawSourceToken) revert SwapPathError();
 
         if (sourceIsNative) {
-            IWSEI(WSEI).withdraw(amountIn);
+            IWrappedNative(wrappedNativeToken).withdraw(amountIn);
         } else {
             _approveCarbonIfNeeded(tokenIn, controller, amountIn);
         }
@@ -595,7 +599,7 @@ contract ArbitrageExecutor is Withdrawable {
 
         if (targetIsNative) {
             amountOut = address(this).balance - balanceBefore;
-            IWSEI(WSEI).deposit{value: amountOut}();
+            IWrappedNative(wrappedNativeToken).deposit{value: amountOut}();
         } else {
             amountOut = IERC20(rawTargetToken).balanceOf(address(this)) - balanceBefore;
         }

@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { type Address } from 'viem';
 import { NETWORK } from '../../constants';
+import { marketDbPath } from '../../market-db';
 import { type V3PoolMetadata, type V3Snapshot } from './types';
 
 export type DiscoveryCheckpoint = { fromBlock: bigint; blockNumber: bigint; blockHash: `0x${string}` };
@@ -15,7 +16,7 @@ const decode = <T>(value: string): T => JSON.parse(value, (_key, item) => item &
 export class V3Store {
   private readonly db: Database;
 
-  constructor(path = process.env.MARKET_DB_PATH || 'data/markets.sqlite', private readonly chainId: number = NETWORK.chainId) {
+  constructor(path = marketDbPath(), private readonly chainId: number = NETWORK.chain.id) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path);
     this.db.exec(`

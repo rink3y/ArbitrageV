@@ -2,7 +2,7 @@ import { CONTRACTS, RUNTIME } from './constants';
 import { filterDiscoveredMarkets } from './market-filter';
 import { loadMarketSnapshot, replaceMarketSnapshot, type MarketSnapshot } from './market-db';
 import { type MarketProtocol } from './market-graph/types';
-import { createReadClient } from './network';
+import { assertRpcChain, createReadClient } from './network';
 import { enabledProtocolPlugins, PROTOCOL_PLUGINS } from './protocols/registry';
 
 export type SyncMarketsOptions = {
@@ -14,6 +14,7 @@ export async function syncMarkets(options: SyncMarketsOptions = {}): Promise<voi
   const selected = new Set(plugins.map(plugin => plugin.id));
   const client = createReadClient();
   if (!CONTRACTS.flashQuery) throw new Error('UNISWAP_FLASH_QUERY_CONTRACT_ADDRESS is required');
+  await assertRpcChain(client);
 
   const existing = loadMarketSnapshot();
   const catalog: MarketSnapshot = {

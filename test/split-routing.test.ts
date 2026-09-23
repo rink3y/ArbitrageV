@@ -103,7 +103,7 @@ test('missing, expired and uneconomic cost data fail closed; off mode does no wo
   expect(splitGasCost({ ...costs(), rates: { [a.toLowerCase()]: { numerator: 3n, denominator: EXECUTION_POLICY.gasLimit * 2n } } }, a)).toBe(2n);
 });
 
-test('gas conversion excludes expired tokens and uses the WSEI identity rate', () => {
+test('gas conversion excludes expired tokens and uses the configured wrapped-native identity rate', () => {
   const configured = tokens.map(token => ({ ...token, gasConversion: { numerator: 1n, denominator: 3n, validUntil: 999 } }));
   const quote = splitCostsFromConstants(configured, 1000);
   expect(quote.rates[b.toLowerCase()]).toBeUndefined();

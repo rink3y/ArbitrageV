@@ -32,13 +32,14 @@ async function sendTransactionNotification(
 
     const token = resolveToken(tokenAddress);
     const status = expectedProfit > 0n ? 'PROFIT' : 'WARNING';
+    const explorer = NETWORK.chain.blockExplorers?.default.url;
     const message =
         `<b>${status}: Arbitrage Transaction</b>\n\n` +
         '<b>Type:</b> Flash Swap\n' +
         `<b>Expected Profit:</b> ${formatTokenAmountWithSymbol(expectedProfit, token)}\n\n` +
         `<b>Transaction:</b>\n` +
         `<code>${hash}</code>\n\n` +
-        `<a href="https://seiscan.io/tx/${hash}">View on Explorer</a>`;
+        (explorer ? `<a href="${explorer.replace(/\/$/, '')}/tx/${hash}">View on Explorer</a>` : '');
 
     try {
         await fetch(`https://api.telegram.org/bot${TELEGRAM.botToken}/sendMessage`, {
@@ -222,7 +223,7 @@ export class OpportunityManager {
             serializedTransaction = await account.signTransaction({
                 to: CONTRACTS.arbitrage as Address,
                 data,
-                chainId: this.networkConfig.walletClient.chain?.id ?? NETWORK.chainId,
+                chainId: this.networkConfig.walletClient.chain?.id ?? NETWORK.chain.id,
                 nonce,
                 gas: opportunity.split?.gasLimit ?? EXECUTION_POLICY.gasLimit,
                 ...(EXECUTION_POLICY.legacy

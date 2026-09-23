@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { type Address } from 'viem';
 import { NETWORK } from '../../constants';
+import { marketDbPath } from '../../market-db';
 import { type V2PoolMetadata } from './metadata';
 
 export type V2DiscoveryCheckpoint = {
@@ -22,7 +23,7 @@ const decode = <T>(value: string): T => JSON.parse(value, (_key, item) =>
 export class V2Store {
   private readonly db: Database;
 
-  constructor(path = process.env.MARKET_DB_PATH || 'data/markets.sqlite', private readonly chainId = NETWORK.chainId) {
+  constructor(path = marketDbPath(), private readonly chainId = NETWORK.chain.id) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path);
     this.db.exec(`

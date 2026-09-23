@@ -1,12 +1,12 @@
 # ArbitrageV
 
-An arbitrage bot for Sei EVM, written in TypeScript and run with Bun. It looks for circular trades across V2 pools, V3 pools, and Carbon strategies, and can execute them using a flash loan from a V2 or V3 pool.
+An arbitrage bot for compatible EVM networks, written in TypeScript and run with Bun. It looks for circular trades across V2 pools, V3 pools, and Carbon strategies, and can execute them using a flash loan from a V2 or V3 pool. The supplied chain, token and DEX settings are for Sei.
 
 V2 and V3 pools are discovered from factories. Carbon pairs come from the configured controllers. You choose which protocols to use in `src/constants.ts`.
 
 ## Getting started
 
-You'll need Bun, a Sei HTTP RPC endpoint, and a deployed query contract matching [UniswapFlashQuery.sol](Contract/UniswapFlashQuery.sol). To submit trades, you'll also need a deployed [arbitrage contract](Contract/NArb.sol) and a wallet with SEI for gas. Contract deployment isn't included in the setup commands.
+You'll need Bun, an HTTP RPC endpoint for your chosen chain, and a deployed query contract matching [UniswapFlashQuery.sol](Contract/UniswapFlashQuery.sol). To submit trades, you'll also need a deployed [arbitrage contract](Contract/NArb.sol) and a wallet with the chain's native currency for gas. Contract deployment isn't included in the setup commands.
 
 From the repository root:
 
@@ -31,7 +31,7 @@ bun run sync:markets
 bun start
 ```
 
-Sync builds the market list in `data/markets.sqlite`. Startup loads that list, fetches current market state, and begins watching for changes. Stop the bot with `Ctrl+C`.
+Sync builds the market list in `data/markets-<chainId>.sqlite`. Startup loads that list, fetches current market state, and begins watching for changes. Stop the bot with `Ctrl+C`.
 
 To refresh one protocol without querying or removing the others, select it on the command line:
 
@@ -59,10 +59,24 @@ With no command-line selection, sync refreshes the protocols in `ARBITRAGE_SEARC
 | `WSS_URL` | Optional WebSocket endpoint. Leave it unset to receive market events through HTTP. |
 | `UNISWAP_FLASH_QUERY_CONTRACT_ADDRESS` | Deployed query contract used for market discovery and batch reads. |
 | `ARB_CONTRACT_ADDRESS` | Deployed contract used to execute trades. |
-| `MARKET_DB_PATH` | Overrides the default database path, `data/markets.sqlite`. |
+| `MARKET_DB_PATH` | Overrides `data/markets-<chainId>.sqlite`. Each catalog file is bound to one chain. |
 | `DEBUG` | Set to `true` to see detailed market, opportunity, and transaction logs. |
 | `TELEGRAM_BOT_TOKEN` | Bot token for transaction notifications. |
 | `TELEGRAM_CHAT_ID` | Chat receiving those notifications. Leave both Telegram fields blank to disable them. |
+
+## Switching networks
+
+Edit `NETWORK` in [src/constants.ts](src/constants.ts). Set `chain` to the full definition imported from `viem/chains`, and `wrappedNativeToken` to that chain's wrapped native currency contract. For a custom EVM network, use viem's `defineChain` in the same file. There is no separate chain ID to keep in sync. Clients, signing, explorer links, native-token aliases and split gas conversion use these settings.
+
+Also replace `TOKENS`, the enabled V2/V3 factories and Carbon controllers, and any chain-specific entries in `src/bannedtax.json`. Set the new RPC endpoints and deployed contract addresses in `.env`. Disable protocols that do not have a supported deployment on the new chain. A matching protocol name alone does not establish compatible contract behavior.
+
+Deploy `ArbitrageExecutor(owner, wrappedNativeToken)` from [NArb.sol](Contract/NArb.sol), using the same wrapped-token address as `NETWORK.wrappedNativeToken`. The wrapper must implement standard `deposit()` and `withdraw(uint256)` with 1:1 native-unit accounting. This constructor replaces the old owner-only constructor, so existing deployments need replacement to use this implementation. Regenerate the ABI with `bun run abi:arb` after building. No command here deploys a contract automatically.
+
+Sync and startup check the HTTP RPC chain ID before using markets. A mismatched WebSocket endpoint falls back to HTTP. These checks run at initialization, not for each trade. With no explorer configured in the chain definition, notifications show the transaction hash without a link.
+
+The default database path changes with the chain ID. An explicit `MARKET_DB_PATH` pointing at another chain's catalog is rejected. Old unbound catalogs such as `data/markets.sqlite` are left untouched and rejected rather than assigned a guessed chain. Unset that override or choose a fresh path, then run `bun run sync:markets` to rebuild the list.
+
+Set `EXECUTION_POLICY.executeTrades = false` while configuring a new network. Review token thresholds and the legacy/EIP-1559 gas settings, sync, and validate against that network before enabling trades. Portability covers compatible EVM networks and the existing protocol adapters, not non-EVM chains, arbitrary DEX forks or cross-chain arbitrage. Split cost estimates cover execution gas only; additional chain-specific fees, such as L1 data fees on some rollups, are not modeled. Leave split live execution off on those networks until those costs are accounted for.
 
 ## Switching protocols
 
@@ -158,7 +172,7 @@ Linear-route reported profit includes swap fees and deducts the selected flash-l
 
 `ARBITRAGE_SEARCH_POLICY.splitRouting` in [src/constants.ts](src/constants.ts) controls split-and-merge search across V2, V3 and Carbon. It is **off by default**. It uses the same `TOKENS`, `topTokens`, token `minProfit` and reserve-fraction cap as linear search; there is no second token list. Supported plans have at most two branches per stage, three stages and six swaps, in one atomic transaction. The search compares conservative net profit with the funded linear candidates and tracks every branch for stale-state rejection.
 
-`shadow` searches without submitting split trades. It does **not** disable existing linear trading; set `EXECUTION_POLICY.executeTrades = false` for observation only. `live` needs a newly deployed NArb and fresh gas-cost data. WSEI uses its native 1:1 conversion; other borrow tokens need a fresh `gasConversion` on their existing `TOKENS` entry, or rates supplied with the search request. No deployment happens automatically.
+`shadow` searches without submitting split trades. It does **not** disable existing linear trading; set `EXECUTION_POLICY.executeTrades = false` for observation only. `live` needs a newly deployed NArb and fresh gas-cost data. `NETWORK.wrappedNativeToken` uses its native 1:1 conversion; other borrow tokens need a fresh `gasConversion` on their existing `TOKENS` entry, or rates supplied with the search request. No deployment happens automatically.
 
 The new NArb implementation makes both execution entry points owner-only, validates callbacks and exact branch spending, and enforces a final profit floor for splits. Its ABI is generated with `bun run abi:arb` after `forge build`. See [split routing](docs/split-routing.md) for configuration, amount accounting, gas assumptions, rollout requirements and offline replay commands.
 
@@ -168,7 +182,7 @@ Execution sends a transaction through `ARB_CONTRACT_ADDRESS`. Submission logs an
 
 Market events update the main graph before scheduling a search. Search and sizing run in a Bun worker, warmed while startup is still buffering events. V2 reserve updates and V3 state/tick changes are coalesced into compact worker patches. Carbon sends a full strategy snapshot at startup or recovery, then sends only changed strategies and deletion IDs. Only one search runs at a time; queued requests retain the latest update per market. Liquidity deltas are applied before this queue, never discarded as superseded search work.
 
-A Carbon update rebuilds the changed strategy's edges and the two trading directions for its pair, on both the main graph and the worker. Other pairs keep their edges and ranking caches. Strategies are keyed by controller and ID; native SEI and wrapped SEI remain separate execution groups. Repeated changes to a strategy are folded into its latest state before transfer. Groups still select at most eight orders, with strategy ID breaking equal-rate ties. Updating a busy pair still requires inspecting that pair's strategies, but no longer the whole Carbon catalog. A restarted worker receives a fresh full snapshot, including changes drained by a failed search.
+A Carbon update rebuilds the changed strategy's edges and the two trading directions for its pair, on both the main graph and the worker. Other pairs keep their edges and ranking caches. Strategies are keyed by controller and ID; native currency and its wrapped token remain separate execution groups. Repeated changes to a strategy are folded into its latest state before transfer. Groups still select at most eight orders, with strategy ID breaking equal-rate ties. Updating a busy pair still requires inspecting that pair's strategies, but no longer the whole Carbon catalog. A restarted worker receives a fresh full snapshot, including changes drained by a failed search.
 
 Candidates carry revisions for their route pools and funding pool, plus the feed revision. Execution checks these after search, before signing, and again immediately before broadcasting. Carbon changes currently invalidate all Carbon candidates. `RUNTIME.candidateMaxAgeMs` also rejects candidates older than 500 ms from the triggering event receipt. A disconnected feed pauses acceptance until reconciliation finishes.
 
@@ -188,7 +202,7 @@ Use a dedicated wallet with one bot process. This in-memory allocator does not c
 
 ## What sync keeps
 
-The SQLite database stores the filtered trading list. V2 has separate, chain-scoped tables for its complete discovered catalog and pair-count checkpoints. V3 has separate tables for its complete discovered catalog, factory checkpoints, completed snapshots, and unfinished downloads. Replacing the trading list or disabling a protocol does not erase these tables. Existing databases gain the tables automatically; there is no manual migration or database deletion step. Old manually listed V3 pools need one factory sync before startup.
+The SQLite database stores the filtered trading list in a chain-bound file. V2 has separate, chain-scoped tables for its complete discovered catalog and pair-count checkpoints. V3 has separate tables for its complete discovered catalog, factory checkpoints, completed snapshots, and unfinished downloads. Replacing the trading list or disabling a protocol does not erase these tables. Tables are created automatically in the new file. Legacy catalogs without a chain identity require a fresh path and sync as described in [switching networks](#switching-networks); no existing database is deleted.
 
 V2 reserves and Carbon orders are fetched when the bot starts and updated in memory. V3 state is also checkpointed to SQLite so a restart can catch up rather than download every tick again.
 
@@ -227,7 +241,7 @@ The Carbon benchmark compares full-snapshot updates with single-strategy patches
 
 For a new protocol, start with [ProtocolPlugin](src/protocols/protocol-plugin.ts). Implement discovery, state loading, events, quotes, and execution encoding, then add the required catalog and graph support. Register the plugin in [src/protocols/registry.ts](src/protocols/registry.ts) and add its ID to `allowedProtocols`. Keep the TypeScript contract ID, Solidity execution support, and deployed ABI in agreement.
 
-The current chain ID is `1329`. Moving to another chain requires more than changing that number: [src/network.ts](src/network.ts) and [src/sync-markets.ts](src/sync-markets.ts) use Sei's chain definition, and [src/tokens.ts](src/tokens.ts) and [NArb.sol](Contract/NArb.sol) contain Sei-specific native-token addresses. Factory, pool, controller, token, and deployed contract addresses also need to match the new chain.
+See [switching networks](#switching-networks) before changing chains. The provided addresses are a Sei configuration, not a cross-chain address registry.
 
 ## License
 
