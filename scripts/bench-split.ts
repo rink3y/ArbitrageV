@@ -1,10 +1,13 @@
-import { ARBITRAGE_SEARCH_POLICY, TOKENS } from '../src/constants';
+import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, TOKENS } from '../src/constants';
 import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
 import { WorkerSearch } from '../src/opportunities/worker-search';
-import { splitCostsFromConstants } from '../src/opportunities/split-costs';
+import { splitCostsFromSnapshot } from '../src/opportunities/split-costs';
 import { applyV2SplitFill } from '../src/opportunities/split-replay';
 
 const [a, b] = TOKENS.map(token => token.address);
+const fees = { type: 'eip1559', maxFeePerGas: EXECUTION_POLICY.maxFeePerGas,
+  maxPriorityFeePerGas: EXECUTION_POLICY.maxPriorityFeePerGas, validUntil: Number.MAX_SAFE_INTEGER } as const;
+const costs = () => splitCostsFromSnapshot(TOKENS, fees);
 const unit = 10n ** 18n;
 const policy = { ...ARBITRAGE_SEARCH_POLICY, splitRouting: 'shadow' as const, maxRouteEdges: 3 };
 const engine = new OpportunityEngine(policy);
@@ -23,7 +26,7 @@ try {
   for (let i = 0; i < 40; i++) {
     for (const [name, worker] of [['off', off], ['shadow', shadow]] as const) {
       const started = performance.now();
-      const result = await worker.search({ startTokens: [a], observedAt: Date.now(), splitCosts: splitCostsFromConstants() });
+      const result = await worker.search({ startTokens: [a], observedAt: Date.now(), splitCosts: costs() });
       timings[name].push(performance.now() - started);
       if (name === 'shadow' && result.some(opportunity => opportunity.split)) splitObservations++;
     }
@@ -38,7 +41,7 @@ const depletion = new OpportunityEngine({ ...policy, splitSearchMs: 1000, maxSea
 depletion.graph.applyChanges(snapshot);
 const fills: string[] = [];
 for (let i = 0; i < 10; i++) {
-  const candidate = depletion.findOpportunities({ startTokens: [a], splitCosts: splitCostsFromConstants() }).find(opportunity => opportunity.split);
+  const candidate = depletion.findOpportunities({ startTokens: [a], splitCosts: costs() }).find(opportunity => opportunity.split);
   if (!candidate) break;
   const surplus = applyV2SplitFill(depletion.graph, candidate);
   if (surplus === null) throw new Error('Synthetic split fill did not match its quote');

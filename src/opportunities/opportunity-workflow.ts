@@ -3,11 +3,12 @@ import { EXECUTION_POLICY, RUNTIME, TOKENS } from '../constants';
 import { OpportunityManager } from '../execute';
 import { type ExecutableOpportunity } from '../execution/execution-planner';
 import { type NetworkConfig } from '../network';
+import { GasFees } from '../execution/gas-fees';
 import { basisPoints, formatBasisPoints, formatTokenAmountWithSymbol } from '../values';
 import { type MarketProtocol } from '../market-graph/types';
 import { type OpportunityEngine } from './opportunity-engine';
 import { WorkerSearch } from './worker-search';
-import { splitCostsFromConstants } from './split-costs';
+import { splitCostsFromSnapshot } from './split-costs';
 import { backgroundLogs } from '../runtime/background-queue';
 import { latency } from '../runtime/latency';
 import {
@@ -29,19 +30,22 @@ export async function createOpportunityScanner(
   warm: () => Promise<void>;
   stop: () => void;
 }> {
-  const manager = EXECUTION_POLICY.executeTrades ? new OpportunityManager(networkConfig) : null;
+  const gasFees = new GasFees(type => networkConfig.client.estimateFeesPerGas({ type, chain: networkConfig.client.chain }));
+  const manager = EXECUTION_POLICY.executeTrades ? new OpportunityManager(networkConfig, undefined, gasFees) : null;
   try {
+    if (EXECUTION_POLICY.feeMode === 'auto') await gasFees.start();
     await manager?.start();
   } catch (error) {
     manager?.stop();
+    gasFees.stop();
     throw error;
   }
   const search = new WorkerSearch(engine.graph, engine.policy, engine.tokens);
   let stopped = false;
   return {
     warm: async () => { await search.search({ startTokens: [] }); },
-    scan: request => stopped ? Promise.resolve([]) : scanAndExecuteOpportunities(engine, search, manager, request),
-    stop: () => { stopped = true; search.stop(); manager?.stop(); },
+    scan: request => stopped ? Promise.resolve([]) : scanAndExecuteOpportunities(engine, search, manager, gasFees, request),
+    stop: () => { stopped = true; search.stop(); manager?.stop(); gasFees.stop(); },
   };
 }
 
@@ -49,17 +53,19 @@ async function scanAndExecuteOpportunities(
   engine: OpportunityEngine,
   search: WorkerSearch,
   manager: OpportunityManager | null,
+  gasFees: GasFees,
   request: OpportunityWorkflowRequest = {}
 ): Promise<ArbitrageSearchResult> {
   if (manager && request.releasedPairs) manager.releasePairs(request.releasedPairs);
 
   const started = performance.now();
+  const feeSnapshot = gasFees.current();
+  if (!feeSnapshot) { latency.increment('fees.unavailable'); return []; }
   const searchRequest = createSearchRequest(engine, request);
   latency.observe('scan.inputAge', Math.max(0, Date.now() - searchRequest.observedAt!));
   const results = await search.search({
     ...searchRequest,
-    splitCosts: engine.policy.splitRouting && engine.policy.splitRouting !== 'off'
-      ? splitCostsFromConstants(engine.tokens) : undefined,
+    splitCosts: splitCostsFromSnapshot(engine.tokens, feeSnapshot),
   });
   const checkedAt = Date.now();
   const opportunities: ArbitrageSearchResult = [];
@@ -88,7 +94,7 @@ async function scanAndExecuteOpportunities(
         opportunity.routeData.length === opportunity.pairs.length
       );
 
-    manager.processOpportunities(engine.graph, executableOpportunities).catch(error => {
+    manager.processOpportunities(engine.graph, executableOpportunities, feeSnapshot).catch(error => {
       backgroundLogs.enqueue('execution-error', () => console.error('Error processing opportunities:', error));
     });
   }
@@ -142,6 +148,7 @@ function logOpportunities(
     console.log(status ? `\nQuote #${index + 1} (${status}):` : `\nOpportunity #${index + 1}:`);
     console.log(`Path: ${path.join(' -> ')}`);
     console.log(`${status ? 'Quoted' : 'Expected'} profit: ${formatTokenAmountWithSymbol(profit, lastTokenInfo)}`);
+    if (opportunity.netProfit !== undefined) console.log(`Conservative net after gas: ${formatTokenAmountWithSymbol(opportunity.netProfit, lastTokenInfo)}`);
     if (expiredSet.has(opportunity)) console.log(`Age at check: ${opportunity.observedAt === undefined ? 'unknown' : `${checkedAt - opportunity.observedAt} ms`} (limit ${RUNTIME.candidateMaxAgeMs} ms)`);
     console.log(`Route type: ${routeKind}`);
     if (opportunity.split) console.log(`Split ${opportunity.split.mode}: ${opportunity.split.stages.map(stage => stage.branches.length).join(' -> ')} branches; conservative net ${opportunity.netProfit}`);

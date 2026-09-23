@@ -76,7 +76,7 @@ Sync and startup check the HTTP RPC chain ID before using markets. A mismatched 
 
 The default database path changes with the chain ID. An explicit `MARKET_DB_PATH` pointing at another chain's catalog is rejected. Old unbound catalogs such as `data/markets.sqlite` are left untouched and rejected rather than assigned a guessed chain. Unset that override or choose a fresh path, then run `bun run sync:markets` to rebuild the list.
 
-Set `EXECUTION_POLICY.executeTrades = false` while configuring a new network. Review token thresholds and the legacy/EIP-1559 gas settings, sync, and validate against that network before enabling trades. Portability covers compatible EVM networks and the existing protocol adapters, not non-EVM chains, arbitrary DEX forks or cross-chain arbitrage. Split cost estimates cover execution gas only; additional chain-specific fees, such as L1 data fees on some rollups, are not modeled. Leave split live execution off on those networks until those costs are accounted for.
+Set `EXECUTION_POLICY.executeTrades = false` while configuring a new network. Review token thresholds and the legacy/EIP-1559 gas settings, sync, and validate against that network before enabling trades. Portability covers compatible EVM networks and the existing protocol adapters, not non-EVM chains, arbitrary DEX forks or cross-chain arbitrage. Profit checks cover execution gas only; additional chain-specific fees, such as L1 data fees on some rollups, are not modeled. Leave live execution off on those networks until those costs are accounted for.
 
 ## Switching protocols
 
@@ -163,10 +163,12 @@ These settings are in [src/constants.ts](src/constants.ts):
 - `TOKENS` lists the search start tokens, liquidity thresholds, and minimum profits. Amounts use `tokenAmount` with the token's decimals.
 - `ARBITRAGE_SEARCH_POLICY` controls route length, search width, sizing iterations, and the number of opportunities returned.
 - `maxSearchExpansions` caps route exploration at 50,000 edge attempts. `maxCandidatesToSize` selects up to 64 candidates by marginal exchange rate before exact sizing. Both live in `ARBITRAGE_SEARCH_POLICY`; lower limits save computation but can miss profitable routes.
-- `EXECUTION_POLICY` controls transaction submission, the gas limit, and gas prices. The `gasPrice` helper takes values in gwei.
+- `EXECUTION_POLICY` controls transaction submission, the gas limit, and gas fees. The `gasPrice` helper takes values in gwei.
 - `RUNTIME.websocketEnabled` controls whether startup uses the configured WebSocket endpoint.
 
-Linear-route reported profit includes swap fees and deducts the selected flash-loan fee when a funding pool is available. Gas is not deducted from that legacy figure. Set token profit thresholds with that in mind.
+`EXECUTION_POLICY.feeMode` selects `'manual'` or `'auto'`; it starts in manual mode so switching it on cannot silently change live transaction costs. Manual mode signs with `legacyGasPrice` or `maxFeePerGas` and `maxPriorityFeePerGas`, according to `legacy`. Auto mode reads a fee estimate from the existing HTTP client at startup and every `feeRefreshIntervalMs` (five minutes by default). Change that interval in the same constant if needed. It refuses an estimate above `autoMaxFeePerGas` rather than clamping it to an underpriced value. The default 1,000 gwei ceiling implies a maximum 2.5 native coins at the configured 2.5-million gas limit; it is a safety limit, not a recommended network price. A failed refresh or an expired quote pauses searches and submissions until a refresh succeeds. Check the ceiling against your chain and wallet before enabling auto mode.
+
+The fee snapshot used to score a search is also used to sign its transaction. There is no fee read, gas estimation, or transaction preparation RPC on the submission path. The gas model conservatively charges the full `gasLimit` at the snapshot's fee cap, which can reject trades that would use less gas in practice. Linear-route reported profit still shows swap proceeds after the selected flash fee; the separate `Conservative net after gas` line is the figure used for ranking and the token's `minProfit` check. A missing or expired native-to-borrow-token conversion makes that token ineligible for live searches. The wrapped native token needs no conversion entry.
 
 ### Split routing
 
@@ -186,7 +188,7 @@ A Carbon update rebuilds the changed strategy's edges and the two trading direct
 
 Candidates carry revisions for their route pools and funding pool, plus the feed revision. Execution checks these after search, before signing, and again immediately before broadcasting. Carbon changes currently invalidate all Carbon candidates. `RUNTIME.candidateMaxAgeMs` also rejects candidates older than 500 ms from the triggering event receipt. A disconnected feed pauses acceptance until reconciliation finishes.
 
-Transaction data, gas, fees, chain ID, and nonce are supplied locally. The account signs locally, then the wallet sends the signed bytes. There is no transaction-fill, gas-estimation, chain-ID, or nonce lookup on that normal submission path. If signing fails or the market changes before broadcast, only that known-unsubmitted nonce can be reused. Once a submission has been attempted, the conservative uncertain-nonce policy below still applies.
+Transaction data, cached gas fees, gas limit, chain ID, and nonce are supplied locally. The account signs locally, then the wallet sends the signed bytes. There is no transaction-fill, gas-estimation, chain-ID, fee, or nonce lookup on that normal submission path. If signing fails, fees change, or the market changes before broadcast, only that known-unsubmitted nonce can be reused. Once a submission has been attempted, the conservative uncertain-nonce policy below still applies.
 
 Opportunity/debug logs and Telegram notifications use bounded background queues. A slow Telegram request does not delay the next trade; requests time out after `RUNTIME.notificationTimeoutMs`. Queues can coalesce or drop diagnostics under load, so these messages are not a durable trade ledger. Checkpoint reads/writes run outside live event handling, but SQLite writes still share the main process and can briefly occupy its event loop.
 

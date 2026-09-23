@@ -23,12 +23,12 @@ Use the existing settings in `src/constants.ts`. There is no separate split toke
 | `ARBITRAGE_SEARCH_POLICY.splitRouting` | `off` skips splits; `shadow` reports them; `live` permits submission. Default: `off`. |
 | `ARBITRAGE_SEARCH_POLICY.splitSearchMs` | Extra worker time allowed for split search. Default: 10 ms, checked cooperatively. |
 | `TOKENS` and `topTokens` | The same first N tokens are eligible to start linear and split trades. Intermediate tokens can still come from the graph. |
-| Token `minProfit` | Required surplus after swap and flash fees, before gas, just as for linear routes. |
+| Token `minProfit` | Linear routes must exceed it after the conservative gas allowance. Splits must exceed it before gas and remain positive after gas. |
 | `maxInputReserveFraction` | Caps each opening branch at its input capacity divided by this value. Combined borrowing cannot exceed those caps added together. |
 | `maxRouteEdges`, `allowedProtocols`, `allowProtocolMixing` | Existing route restrictions also apply to splits. The contract permits at most three split stages. |
 | `maxCandidatesToSize`, `maxSearchExpansions` | Reused as the split topology and work limits. Each search phase has its own counter; these are not a combined per-job budget. |
 | `beamWidth` | Limits the split alternatives shortlist, with an internal maximum of four. |
-| `EXECUTION_POLICY.gasLimit` and fee settings | Used directly for gas scoring and submission. |
+| `EXECUTION_POLICY.gasLimit` and fee settings | One manual or periodically refreshed fee snapshot prices search and submission. |
 | `EXECUTION_POLICY.slippageBps` | Haircut on each split branch output. Default: 5 basis points. |
 
 `liquidityAmount` still filters which markets load; it is not a borrowing limit. For V3, the opening cap uses virtual input reserves; for Carbon, it uses order input capacity. Later stages spend only the preceding stage's minimum proceeds.
@@ -60,9 +60,9 @@ Swap fees and price impact are already reflected in the quotes. Favorable interm
 
 The initial gas model charges the **full transaction gas limit at the configured fee cap**, not an optimistic per-swap estimate. That covers a successful transaction within that limit, including callbacks, approval resets, wrapping and calldata execution costs. It may reject profitable trades and does not prove a route fits the limit. It also does not accurately rank the difference in actual gas between a short linear trade and a longer split. Protocol-specific calibrated gas estimates are not implemented. Gas-limit feasibility and actual gas use still need fork or live shadow simulation before rollout.
 
-`NETWORK.wrappedNativeToken` uses the native-token identity conversion. Other tokens can supply `gasConversion: { numerator, denominator, validUntil }` on their existing `TOKENS` entry. This is a conservative `numerator / denominator` in smallest token units per smallest native unit and a `validUntil` Unix-millisecond timestamp. Missing, invalid or expired conversions make that borrow token ineligible for splits, without disabling its legacy linear search. There is no price-oracle integration or automatic market-price refresh for these manual entries. An upstream cached price source can instead supply `FindOpportunitiesRequest.splitCosts`. Never derive gas prices from token minimum-profit settings. Additional chain-specific fees such as rollup L1 data fees are not included in the execution-gas model; live splits require those costs to be accounted for before rollout.
+`NETWORK.wrappedNativeToken` uses the native-token identity conversion. Other tokens can supply `gasConversion: { numerator, denominator, validUntil }` on their existing `TOKENS` entry. This is a conservative `numerator / denominator` in smallest token units per smallest native unit and a `validUntil` Unix-millisecond timestamp. Missing, invalid or expired conversions make that borrow token ineligible for both linear and split live searches. Auto gas fees do not refresh these token conversion rates. An upstream cached price source can instead supply `FindOpportunitiesRequest.splitCosts`. Never derive gas prices from token minimum-profit settings. Additional chain-specific fees such as rollup L1 data fees are not included in the execution-gas model; live execution requires those costs to be accounted for before rollout.
 
-The executor checks that a split's priced gas cap is at least the cap it will sign. Expired costs, expired deadlines, changed market revisions and old candidates are rejected before submission. These checks run again after signing. There is still a gap between broadcast and inclusion.
+The executor checks that a split's priced gas cap equals the cap it will sign. A refreshed fee snapshot, expired costs, expired deadlines, changed market revisions and old candidates are rejected before submission. These checks run again after signing. There is still a gap between broadcast and inclusion.
 
 ## Contract execution
 

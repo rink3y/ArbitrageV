@@ -9,15 +9,17 @@ import { decodeFunctionData, encodeFunctionData } from 'viem';
 import ArbABI from '../src/ABI/Arb.json';
 import { splitGasCost } from '../src/opportunities/split-routing';
 import { WorkerSearch } from '../src/opportunities/worker-search';
-import { splitCostsFromConstants } from '../src/opportunities/split-costs';
+import { splitCostsFromSnapshot } from '../src/opportunities/split-costs';
 import { quoteV3MultiRangeExactInput, Q96 } from '../src/protocols/v3/quote';
 import { tickWordBounds } from '../src/protocols/v3/coverage';
 
 const [a, b] = TOKENS.map(token => token.address);
 const address = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const;
 const tokens = TOKENS.map(token => ({ ...token, minProfit: 1n }));
+const fees = { type: 'eip1559', maxFeePerGas: EXECUTION_POLICY.maxFeePerGas,
+  maxPriorityFeePerGas: EXECUTION_POLICY.maxPriorityFeePerGas, validUntil: Number.MAX_SAFE_INTEGER } as const;
 function searchPolicy(): ArbitrageSearchPolicy {
-  return { ...ARBITRAGE_SEARCH_POLICY, splitRouting: 'shadow' as const, splitSearchMs: 1000,
+  return { ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2', 'v3', 'carbon'], splitRouting: 'shadow' as const, splitSearchMs: 1000,
     maxCandidatesToSize: 24, maxSearchExpansions: 100000, maxInputReserveFraction: 5n };
 }
 export function splitMarket(policy = searchPolicy()) {
@@ -79,6 +81,17 @@ test('engine finds splits before the single-route profit filter and encodes a st
 
 function costs() { return { validUntil: Date.now() + 60000, gasPriceWei: 1n, rates: { [a.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimit } } }; }
 
+test('direct routes account for gas even when split routing is off', () => {
+  const engine = new OpportunityEngine({ ...searchPolicy(), splitRouting: 'off', maxRouteEdges: 2 }, [], tokens);
+  engine.graph.applyChanges(splitMarket().takeChanges(true));
+  const gross = engine.findOpportunities({ startTokens: [a] });
+  expect(gross.some(opportunity => !opportunity.split)).toBe(true);
+  const cheap = engine.findOpportunities({ startTokens: [a], splitCosts: costs() });
+  expect(cheap.some(opportunity => !opportunity.split && opportunity.netProfit === opportunity.profit - 1n)).toBe(true);
+  const expensive = engine.findOpportunities({ startTokens: [a], splitCosts: { ...costs(), gasPriceWei: 1_000n } });
+  expect(expensive).toHaveLength(0);
+});
+
 test('search matches a small exhaustive V2 allocation oracle within integer rounding', () => {
   let oracle = 0n;
   for (let input = 2n; input <= 400n; input++) for (let first = 1n; first < input; first++) {
@@ -105,12 +118,12 @@ test('missing, expired and uneconomic cost data fail closed; off mode does no wo
 
 test('gas conversion excludes expired tokens and uses the configured wrapped-native identity rate', () => {
   const configured = tokens.map(token => ({ ...token, gasConversion: { numerator: 1n, denominator: 3n, validUntil: 999 } }));
-  const quote = splitCostsFromConstants(configured, 1000);
+  const quote = splitCostsFromSnapshot(configured, fees, 1000);
   expect(quote.rates[b.toLowerCase()]).toBeUndefined();
   expect(quote.rates[a.toLowerCase()]).toEqual({ numerator: 1n, denominator: 1n });
-  const fresh = splitCostsFromConstants(tokens.map(token => ({ ...token,
+  const fresh = splitCostsFromSnapshot(tokens.map(token => ({ ...token,
     gasConversion: { numerator: 3n, denominator: 2n, validUntil: 2000 },
-  })), 1000);
+  })), fees, 1000);
   expect(fresh.rates[b.toLowerCase()]).toMatchObject({ numerator: 3n, denominator: 2n });
   expect(fresh.rates[a.toLowerCase()]).toEqual({ numerator: 1n, denominator: 1n });
   expect(fresh.validUntil).toBe(2000);
@@ -224,7 +237,7 @@ test('default TOKENS work without a second allowlist', () => {
   for (const pair of splitMarket().getAllPairs()) {
     engine.graph.addPair({ ...pair, reserve0: pair.reserve0 * unit, reserve1: pair.reserve1 * unit });
   }
-  const result = engine.findOpportunities({ startTokens: engine.startTokens, splitCosts: splitCostsFromConstants() });
+  const result = engine.findOpportunities({ startTokens: engine.startTokens, splitCosts: splitCostsFromSnapshot(TOKENS, fees) });
   expect(result.some(candidate => candidate.split && candidate.path[0] === a)).toBe(true);
   expect(result.filter(candidate => candidate.split).every(candidate => candidate.path[0] === a)).toBe(true);
 });

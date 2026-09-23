@@ -16,6 +16,7 @@ import {
 } from './execution/execution-planner';
 import { type NetworkConfig } from './network';
 import { LocalNonces } from './execution/local-nonces';
+import { GasFees, gasPriceCeiling, type GasFeeSnapshot } from './execution/gas-fees';
 import { formatTokenAmountWithSymbol } from './values';
 import { BackgroundQueue, backgroundLogs } from './runtime/background-queue';
 import { latency } from './runtime/latency';
@@ -74,14 +75,17 @@ export class OpportunityManager {
     private readonly notifications = new BackgroundQueue(128);
     private stopped = false;
     private readonly receipts: ReceiptTracker;
+    private readonly gasFees: GasFees;
 
     constructor(
         private readonly networkConfig: NetworkConfig,
         private readonly submitOpportunity?: (
             graph: FlashPoolLookup,
             opportunity: ExecutableOpportunity
-        ) => Promise<boolean>
+        ) => Promise<boolean>,
+        gasFees?: GasFees,
     ) {
+        this.gasFees = gasFees ?? new GasFees(async () => { throw new Error('No automatic fee reader configured'); });
         this.receipts = new ReceiptTracker(hash => networkConfig.client.getTransactionReceipt({ hash }));
         this.nonces = new LocalNonces(
             () => networkConfig.client.getTransactionCount({ address: networkConfig.account.address, blockTag: 'pending' }),
@@ -122,14 +126,16 @@ export class OpportunityManager {
     // Process and execute a batch of opportunities
     async processOpportunities(
         graph: FlashPoolLookup,
-        opportunities: ExecutableOpportunity[]
+        opportunities: ExecutableOpportunity[],
+        feeSnapshot: GasFeeSnapshot | null = this.gasFees.current(),
     ): Promise<void> {
+        if (!feeSnapshot || !this.gasFees.isCurrent(feeSnapshot)) return;
         // Sort opportunities by expected profit (descending)
         const sortedOpps = [...opportunities].sort((a, b) => {
             const aScale = TOKEN_PROFIT_SCALE.get(a.path[0].toLowerCase()) ?? 1n;
             const bScale = TOKEN_PROFIT_SCALE.get(b.path[0].toLowerCase()) ?? 1n;
-            const aValue = (ARBITRAGE_SEARCH_POLICY.splitRouting === 'live' ? a.netProfit ?? a.profit : a.profit) * bScale;
-            const bValue = (ARBITRAGE_SEARCH_POLICY.splitRouting === 'live' ? b.netProfit ?? b.profit : b.profit) * aScale;
+            const aValue = (a.netProfit ?? a.profit) * bScale;
+            const bValue = (b.netProfit ?? b.profit) * aScale;
             if (bValue > aValue) return 1;
             if (bValue < aValue) return -1;
             return 0;
@@ -140,8 +146,10 @@ export class OpportunityManager {
         });
 
         for (const opp of sortedOpps) {
-            if (opp.split && !this.splitExecutable(opp)) { latency.increment('split.notSubmitted'); continue; }
-            if (!this.isFresh(graph, opp)) { latency.increment('execution.stale'); continue; }
+            if (!this.gasFees.isCurrent(feeSnapshot)) return;
+            if (opp.netProfit !== undefined && opp.netProfit <= 0n) continue;
+            if (opp.split && !this.splitExecutable(opp, feeSnapshot)) { latency.increment('split.notSubmitted'); continue; }
+            if (!this.isFresh(graph, opp, feeSnapshot)) { latency.increment('execution.stale'); continue; }
             // Skip if any pairs conflict
             if (!this.tryLockPairs(opp.pairs)) {
                 if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
@@ -157,7 +165,7 @@ export class OpportunityManager {
                 // Execute the opportunity
                 const executed = await (this.submitOpportunity
                     ? this.submitOpportunity(graph, opp)
-                    : this.executeArbitrageOpportunity(graph, opp));
+                    : this.executeArbitrageOpportunity(graph, opp, feeSnapshot));
                 if (!executed) {
                     this.releasePairs(opp.pairs);
                     continue;
@@ -180,7 +188,8 @@ export class OpportunityManager {
 
     private async executeArbitrageOpportunity(
         graph: FlashPoolLookup,
-        opportunity: ExecutableOpportunity
+        opportunity: ExecutableOpportunity,
+        feeSnapshot: GasFeeSnapshot,
     ): Promise<boolean> {
         if (!CONTRACTS.arbitrage || !CONTRACTS.arbitrage.match(/^0x[a-fA-F0-9]{40}$/)) {
             throw new Error('Invalid CONTRACTS.arbitrage address');
@@ -210,7 +219,7 @@ export class OpportunityManager {
             });
         });
 
-        if (!this.isFresh(graph, opportunity)) return false;
+        if (!this.isFresh(graph, opportunity, feeSnapshot)) return false;
         const account = this.networkConfig.account;
         if (account.type !== 'local') throw new Error('Execution requires a local signing account');
         const data = encodeFunctionData({ abi: ArbABI, functionName: plan.kind === 'split' ? 'executeSplitArbitrage' : 'executeArbitrage', args: [plan.params] });
@@ -226,14 +235,14 @@ export class OpportunityManager {
                 chainId: this.networkConfig.walletClient.chain?.id ?? NETWORK.chain.id,
                 nonce,
                 gas: opportunity.split?.gasLimit ?? EXECUTION_POLICY.gasLimit,
-                ...(EXECUTION_POLICY.legacy
+                ...(feeSnapshot.type === 'legacy'
                     ? {
-                        gasPrice: EXECUTION_POLICY.legacyGasPrice,
+                        gasPrice: feeSnapshot.gasPrice,
                         type: 'legacy' as const,
                     }
                     : {
-                        maxFeePerGas: EXECUTION_POLICY.maxFeePerGas,
-                        maxPriorityFeePerGas: EXECUTION_POLICY.maxPriorityFeePerGas,
+                        maxFeePerGas: feeSnapshot.maxFeePerGas,
+                        maxPriorityFeePerGas: feeSnapshot.maxPriorityFeePerGas,
                         type: 'eip1559' as const,
                     }),
             }, { serializer: this.networkConfig.walletClient.chain?.serializers?.transaction });
@@ -242,7 +251,7 @@ export class OpportunityManager {
             this.nonces.releaseUnsubmitted(nonce);
             throw error;
         }
-        if (!this.isFresh(graph, opportunity)) {
+        if (!this.isFresh(graph, opportunity, feeSnapshot)) {
             this.nonces.releaseUnsubmitted(nonce);
             latency.increment('execution.stale');
             return false;
@@ -276,17 +285,18 @@ export class OpportunityManager {
         return true;
     }
 
-    private isFresh(graph: FlashPoolLookup, opportunity: ExecutableOpportunity): boolean {
-        return !this.stopped && (!opportunity.split || this.splitExecutable(opportunity)) && (!opportunity.marketVersions || graph.matchesVersions?.(opportunity.marketVersions) === true) &&
+    private isFresh(graph: FlashPoolLookup, opportunity: ExecutableOpportunity, feeSnapshot: GasFeeSnapshot): boolean {
+        return !this.stopped && this.gasFees.isCurrent(feeSnapshot) &&
+            (!opportunity.split || this.splitExecutable(opportunity, feeSnapshot)) &&
+            (!opportunity.marketVersions || graph.matchesVersions?.(opportunity.marketVersions) === true) &&
             (opportunity.observedAt === undefined || Date.now() - opportunity.observedAt <= RUNTIME.candidateMaxAgeMs);
     }
 
-    private splitExecutable(opportunity: ExecutableOpportunity): boolean {
+    private splitExecutable(opportunity: ExecutableOpportunity, feeSnapshot: GasFeeSnapshot): boolean {
         const split = opportunity.split;
-        const feeCap = EXECUTION_POLICY.legacy ? EXECUTION_POLICY.legacyGasPrice : EXECUTION_POLICY.maxFeePerGas;
         return !!split && ARBITRAGE_SEARCH_POLICY.splitRouting === 'live' && split.mode === 'live' &&
             !!opportunity.marketVersions && opportunity.observedAt !== undefined &&
             split.costsValidUntil > Date.now() && split.deadline >= BigInt(Math.floor(Date.now() / 1000)) &&
-            split.gasLimit === EXECUTION_POLICY.gasLimit && split.gasPriceWei >= feeCap;
+            split.gasLimit === EXECUTION_POLICY.gasLimit && split.gasPriceWei === gasPriceCeiling(feeSnapshot);
     }
 }

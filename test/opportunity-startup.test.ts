@@ -6,8 +6,9 @@ import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
 import { createOpportunityScanner } from '../src/opportunities/opportunity-workflow';
 
 const originalExecution = EXECUTION_POLICY.executeTrades;
+const originalFeeMode = EXECUTION_POLICY.feeMode;
 afterEach(() => {
-  Object.assign(EXECUTION_POLICY, { executeTrades: originalExecution });
+  Object.assign(EXECUTION_POLICY, { executeTrades: originalExecution, feeMode: originalFeeMode });
   mock.restore();
 });
 
@@ -41,6 +42,18 @@ test('watch-only mode does not start a nonce allocator', async () => {
   const scanner = await createOpportunityScanner(new OpportunityEngine(), {} as NetworkConfig);
   scanner.stop();
   expect(start).not.toHaveBeenCalled();
+});
+
+test('auto fee refresh happens at startup, not on each search', async () => {
+  Object.assign(EXECUTION_POLICY, { executeTrades: false, feeMode: 'auto' });
+  const estimate = mock(async () => ({ maxFeePerGas: 500n * 10n ** 9n, maxPriorityFeePerGas: 3n * 10n ** 9n }));
+  const network = { client: { estimateFeesPerGas: estimate } } as unknown as NetworkConfig;
+  const scanner = await createOpportunityScanner(new OpportunityEngine(), network);
+  try {
+    await scanner.scan();
+    await scanner.scan();
+    expect(estimate).toHaveBeenCalledTimes(1);
+  } finally { scanner.stop(); }
 });
 
 test('a failed nonce warmup rejects startup and cancels background retries', async () => {

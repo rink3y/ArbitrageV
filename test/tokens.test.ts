@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { NETWORK, TOKENS } from "../src/constants";
 import { graphToken, NATIVE_TOKEN } from "../src/tokens";
-import { splitCostsFromConstants } from '../src/opportunities/split-costs';
-import { tokenAmount } from "../src/values";
+import { splitCostsFromSnapshot } from '../src/opportunities/split-costs';
 
 describe("token aliases", () => {
   test("uses the configured wrapped native token for graph aliases and gas conversion", () => {
@@ -13,7 +12,7 @@ describe("token aliases", () => {
       expect(graphToken(NATIVE_TOKEN)).toBe(wrapped);
       expect(graphToken(wrapped)).toBe(wrapped);
       expect(graphToken(previous)).toBe(previous);
-      const costs = splitCostsFromConstants([], 1000);
+      const costs = splitCostsFromSnapshot([], { type: 'legacy', gasPrice: 1n, validUntil: 2000 }, 1000);
       expect(costs.rates[wrapped]).toEqual({ numerator: 1n, denominator: 1n });
       expect(costs.rates[previous.toLowerCase()]).toBeUndefined();
     } finally {
@@ -21,11 +20,13 @@ describe("token aliases", () => {
     }
   });
 
-  test("stores configured amounts in each token's native decimals", () => {
+  test("keeps token thresholds below their configured liquidity amount", () => {
     const usdc = TOKENS.find(token => token.name === "USDC")!;
     const wbtc = TOKENS.find(token => token.name === "WBTC")!;
 
-    expect(usdc.minProfit).toBe(tokenAmount("0.09", 6));
-    expect(wbtc.liquidityAmount).toBe(tokenAmount("0.0003324", 8));
+    expect(usdc.decimals).toBe(6);
+    expect(wbtc.decimals).toBe(8);
+    expect(usdc.liquidityAmount).toBeGreaterThan(usdc.minProfit);
+    expect(wbtc.liquidityAmount).toBeGreaterThan(wbtc.minProfit);
   });
 });

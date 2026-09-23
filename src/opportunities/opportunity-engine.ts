@@ -75,16 +75,18 @@ export class OpportunityEngine {
       opportunity.observedAt = request.observedAt ?? Date.now();
       const originToken = opportunity.path[0];
       const token = this.tokenByAddress.get(originToken.toLowerCase())!;
-      if (splitEnabled) {
+      if (request.splitCosts) {
         const key = originToken.toLowerCase();
         const gas = splitGasCost(request.splitCosts, originToken);
         if (gas !== null) {
           opportunity.netProfit = opportunity.profit - gas;
-          if (opportunity.flashPoolAddress && opportunity.netProfit > (baselineNet.get(key) ?? 0n)) baselineNet.set(key, opportunity.netProfit);
+          if (splitEnabled && opportunity.flashPoolAddress && opportunity.netProfit > (baselineNet.get(key) ?? 0n))
+            baselineNet.set(key, opportunity.netProfit);
         }
       }
 
-      if (opportunity.profit <= token.minProfit) continue;
+      if (opportunity.profit <= token.minProfit ||
+          (request.splitCosts && (opportunity.netProfit === undefined || opportunity.netProfit <= token.minProfit))) continue;
       this.insertRankedOpportunity(opportunities, opportunity);
     }
     this.lastSearchStats.sizingMs = performance.now() - sizingStarted;
@@ -217,8 +219,8 @@ export class OpportunityEngine {
   private compareOpportunityValue(a: ArbitrageOpportunity, b: ArbitrageOpportunity): number {
     const aScale = this.tokenByAddress.get(a.path[0].toLowerCase())?.minProfit ?? 1n;
     const bScale = this.tokenByAddress.get(b.path[0].toLowerCase())?.minProfit ?? 1n;
-    const left = a.profit * bScale;
-    const right = b.profit * aScale;
+    const left = (a.netProfit ?? a.profit) * bScale;
+    const right = (b.netProfit ?? b.profit) * aScale;
     return left > right ? 1 : left < right ? -1 : 0;
   }
 }
