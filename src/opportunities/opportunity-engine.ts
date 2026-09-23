@@ -54,7 +54,7 @@ export class OpportunityEngine {
       }
       let numerator = 1n;
       let denominator = 1n;
-      for (const index of candidate.edgeIndexes!) {
+      for (const index of candidate.edgeIndexes) {
         const edge = this.graph.edgeAt(index)!;
         numerator *= edge.rateNumerator;
         denominator *= edge.rateDenominator;
@@ -71,7 +71,7 @@ export class OpportunityEngine {
       const opportunity = this.sizeCandidate(candidate);
       opportunity.observedAt = request.observedAt ?? Date.now();
       const originToken = opportunity.path[0];
-      const token = this.tokenByAddress.get(originToken.toLowerCase());
+      const token = this.tokenByAddress.get(originToken.toLowerCase())!;
       if (splitEnabled) {
         const key = originToken.toLowerCase();
         const gas = splitGasCost(request.splitCosts, originToken);
@@ -79,10 +79,6 @@ export class OpportunityEngine {
           opportunity.netProfit = opportunity.profit - gas;
           if (opportunity.flashPoolAddress && opportunity.netProfit > (baselineNet.get(key) ?? 0n)) baselineNet.set(key, opportunity.netProfit);
         }
-      }
-
-      if (!token) {
-        throw new Error(`No token config found for ${originToken}. Please update TOKENS in constants.ts.`);
       }
 
       if (opportunity.profit <= token.minProfit) continue;
@@ -159,20 +155,18 @@ export class OpportunityEngine {
     let amount = amountIn;
 
     candidate.edgeIds.forEach((edgeId, index) => {
-      const edgeIndex = candidate.edgeIndexes?.[index];
-      const edge = edgeIndex !== undefined ? this.graph.edgeAt(edgeIndex) : this.graph.edge(edgeId);
+      const edgeIndex = candidate.edgeIndexes[index];
+      const edge = this.graph.edgeAt(edgeIndex);
       if (!edge) throw new Error(`Missing market edge ${edgeId}`);
 
       fees.push(edge.fee);
-      routeData.push(edge.protocol === 'carbon' && edgeIndex !== undefined
+      routeData.push(edge.protocol === 'carbon'
         ? this.encodeCarbonRouteData(edgeIndex, amount)
         : edge.protocol === 'v2'
           ? encodeV2RouteData(edge.variant)
           : '0x');
 
-      const quote = edgeIndex !== undefined
-        ? this.graph.quoteEdgeAt(edgeIndex, amount)
-        : this.graph.quote({ path: [], pools: [], edgeIds: [edgeId], protocols: [edge.protocol] }, amount);
+      const quote = this.graph.quoteEdgeAt(edgeIndex, amount);
       amount = quote.amountOut;
     });
 
@@ -191,9 +185,7 @@ export class OpportunityEngine {
     const routeData: `0x${string}`[] = [];
 
     candidate.edgeIds.forEach((edgeId, index) => {
-      const edge = candidate.edgeIndexes
-        ? this.graph.edgeAt(candidate.edgeIndexes[index])
-        : this.graph.edge(edgeId);
+      const edge = this.graph.edgeAt(candidate.edgeIndexes[index]);
       if (!edge) throw new Error(`Missing market edge ${edgeId}`);
       fees.push(edge.fee);
       routeData.push('0x');

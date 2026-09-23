@@ -33,7 +33,6 @@ export function sizeRoute(
 
   for (let i = 0; i < policy.optimizationIterations && high - low > 3n; i++) {
     const third = (high - low) / 3n;
-    if (third === 0n) break;
 
     const mid1 = low + third;
     const mid2 = high - third;

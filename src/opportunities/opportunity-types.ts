@@ -7,11 +7,12 @@ export type CandidateRoute = {
   path: Address[];
   pairs: Address[];
   edgeIds: MarketEdgeId[];
-  edgeIndexes?: number[];
+  edgeIndexes: number[];
   protocols: MarketProtocol[];
 };
 
-export type ArbitrageOpportunity = CandidateRoute & {
+export type ArbitrageOpportunity = Omit<CandidateRoute, 'edgeIndexes'> & {
+  edgeIndexes?: number[];
   profit: bigint;
   optimalInput: bigint;
   fees: number[];

@@ -38,7 +38,7 @@ export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
     maxCandidatesToSize: 64,
     maxSearchExpansions: 50_000,
     // Shadow reports splits without submitting them; linear trading is unaffected.
-    splitRouting: 'off', //splitRouting: 'off', // 'off' | 'shadow' | 'live'
+    splitRouting: 'off', // 'off' | 'shadow' | 'live'
     splitSearchMs: 10,
 } as const;
 
@@ -73,8 +73,6 @@ export const TELEGRAM = {
 } as const;
 
 
-// dexes info
-// & tokens info>
 export const TOKENS: TokenConfig[] = [
     {
         name: 'WSEI',

@@ -41,7 +41,6 @@ import {
 } from './types';
 
 type TokenSlot = {
-  address: Address;
   edgeIndexes: number[];
   incomingEdgeIndexes: number[];
   pools: Map<number, number[]>;
@@ -590,11 +589,6 @@ export class MarketGraph {
     }, 0n);
   }
 
-  getPairAddresses(): Address[] {
-    return this.pairs.filter((pair): pair is PairInfo => pair !== undefined)
-      .map(pair => pair.pairAddress);
-  }
-
   getAllPairs(): PairInfo[] {
     return this.pairs.filter((pair): pair is PairInfo => pair !== undefined);
   }
@@ -814,8 +808,6 @@ export class MarketGraph {
       direction: 'token0ToToken1',
       fee: pool.fee,
       sqrtPriceX96: state.sqrtPriceX96,
-      tickSpacing: pool.tickSpacing,
-      tick: state.tick,
       rateNumerator: priceNumerator * feeMultiplier,
       rateDenominator: Q192 * V3_FEE_DENOMINATOR,
       liquidity: state.liquidity,
@@ -830,8 +822,6 @@ export class MarketGraph {
       direction: 'token1ToToken0',
       fee: pool.fee,
       sqrtPriceX96: state.sqrtPriceX96,
-      tickSpacing: pool.tickSpacing,
-      tick: state.tick,
       rateNumerator: Q192 * feeMultiplier,
       rateDenominator: priceNumerator * V3_FEE_DENOMINATOR,
       liquidity: state.liquidity,
@@ -943,8 +933,6 @@ export class MarketGraph {
     group.orders.push({
       strategyId: strategy.id,
       orderIndex,
-      rawFrom: from,
-      rawTo: to,
       order,
       rateNumerator: rate.numerator,
       rateDenominator: rate.denominator,
@@ -979,7 +967,6 @@ export class MarketGraph {
       direction: orderIndex === 0 ? 'token1ToToken0' : 'token0ToToken1',
       fee: strategy.feePpm,
       strategyId: strategy.id,
-      orderIndex,
       rawFrom: from,
       rawTo: to,
       order,
@@ -1194,7 +1181,7 @@ export class MarketGraph {
 
   private tokenIndex(token: Address): number {
     const index = this.tokenRegistry.getOrAdd(token);
-    this.tokens[index] ??= { address: token, edgeIndexes: [], incomingEdgeIndexes: [], pools: new Map() };
+    this.tokens[index] ??= { edgeIndexes: [], incomingEdgeIndexes: [], pools: new Map() };
     return index;
   }
 

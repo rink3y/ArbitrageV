@@ -46,15 +46,12 @@ export type V2MarketEdge = MarketEdge & {
 export type V3MarketEdge = MarketEdge & {
   protocol: 'v3';
   sqrtPriceX96: bigint;
-  tickSpacing: number;
-  tick: number;
 };
 
 export type CarbonSingleMarketEdge = MarketEdge & {
   protocol: 'carbon';
   carbonKind: 'single';
   strategyId: bigint;
-  orderIndex: 0 | 1;
   rawFrom: Address;
   rawTo: Address;
   order: CarbonOrder;
@@ -63,8 +60,6 @@ export type CarbonSingleMarketEdge = MarketEdge & {
 export type CarbonGroupOrder = {
   strategyId: bigint;
   orderIndex: 0 | 1;
-  rawFrom: Address;
-  rawTo: Address;
   order: CarbonOrder;
 };
 

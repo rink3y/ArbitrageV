@@ -3,6 +3,8 @@ import {
   amountAfterV3Fee,
   getAmount0Delta,
   getAmount1Delta,
+  getNextSqrtPriceFromAmount0RoundingUp,
+  getNextSqrtPriceFromAmount1RoundingDown,
   getSqrtRatioAtTick,
   grossAmountForV3Input,
   MAX_SQRT_RATIO,
@@ -13,6 +15,17 @@ import {
 } from "../src/protocols/v3/quote";
 
 describe("V3 swap math", () => {
+  test('exact-input price helpers preserve rounding and reject invalid inputs', () => {
+    expect(getNextSqrtPriceFromAmount0RoundingUp(Q96, 1000n, 1n)).toBe((1000n * Q96 + 1000n) / 1001n);
+    expect(getNextSqrtPriceFromAmount1RoundingDown(Q96, 1000n, 1n)).toBe(Q96 + Q96 / 1000n);
+    for (const nextPrice of [getNextSqrtPriceFromAmount0RoundingUp, getNextSqrtPriceFromAmount1RoundingDown]) {
+      expect(nextPrice(Q96, 1000n, 0n)).toBe(Q96);
+      expect(() => nextPrice(Q96, 1000n, -1n)).toThrow('amount must be non-negative');
+      expect(() => nextPrice(0n, 1000n, 1n)).toThrow('sqrtPriceX96 must be positive');
+      expect(() => nextPrice(Q96, 0n, 1n)).toThrow('liquidity must be positive');
+    }
+  });
+
   for (const direction of ['token0ToToken1', 'token1ToToken0'] as const) {
     test(`crosses an empty interval only with full coverage: ${direction}`, () => {
       const left = direction === 'token0ToToken1';
