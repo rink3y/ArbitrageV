@@ -4,6 +4,9 @@ import { loadMarketSnapshot, replaceMarketSnapshot, type MarketSnapshot } from '
 import { type MarketProtocol } from './market-graph/types';
 import { assertRpcChain, createReadClient } from './network';
 import { enabledProtocolPlugins, PROTOCOL_PLUGINS } from './protocols/registry';
+import { V2_LIVE_POLICY } from './protocols/v2/config';
+import { getKnownPairsInfo } from './protocols/v2/runtime';
+import { profileV2Transfers } from './protocols/v2/transfer-probes';
 
 export type SyncMarketsOptions = {
   protocols?: readonly MarketProtocol[];
@@ -34,6 +37,7 @@ export async function syncMarkets(options: SyncMarketsOptions = {}): Promise<voi
   }
   const next = mergeSelectedMarkets(existing, filtered, selected);
   replaceMarketSnapshot(next);
+  if (selected.has('v2') && V2_LIVE_POLICY.transferFees) await profileV2Transfers(client, await getKnownPairsInfo(client, next.v2Pools));
 
   console.log(`Synchronized ${plugins.map(plugin => plugin.id).join(', ')}. Database now contains ${next.v2Pools.length} V2 pools, ${next.v3Pools.length} V3 pools, and ${next.carbonPairs.length} Carbon pairs`);
 }

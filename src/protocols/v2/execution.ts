@@ -1,7 +1,8 @@
 import { type Hex } from 'viem';
 import { type V2Variant } from './types';
 
-export function encodeV2RouteData(variant: V2Variant): Hex {
+export function encodeV2RouteData(variant: V2Variant, custody = false): Hex {
+  if (custody) return variant === 'solidly-stable' ? '0x03' : '0x02';
   return variant === 'solidly-stable' ? '0x01' : '0x';
 }
 

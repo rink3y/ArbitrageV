@@ -2,6 +2,7 @@ import { type Address } from 'viem';
 import { type FlashPoolCandidate } from '../market-graph/types';
 import { type ArbitrageOpportunity } from '../opportunities/opportunity-types';
 import { protocolPlugin } from '../protocols/registry';
+import { EXECUTION_POLICY } from '../constants';
 
 export type ExecutableOpportunity = Pick<
   ArbitrageOpportunity,
@@ -27,6 +28,7 @@ export type ArbContractParams = {
   protocols: number[];
   fees: bigint[];
   data: `0x${string}`[];
+  minSurplusAfterRepayment: bigint;
 };
 
 export type SplitContractParams = Pick<ArbContractParams, 'flashProtocol' | 'flashPool' | 'borrowToken' | 'borrowAmount' | 'v2RepayFee'> & {
@@ -106,6 +108,8 @@ export function createExecutionPlan(graph: FlashPoolLookup, opportunity: Executa
       protocols: opportunity.protocols.map(protocol => protocolPlugin(protocol).contractId),
       fees: opportunity.fees.map(fee => BigInt(fee)),
       data: opportunity.routeData,
+      minSurplusAfterRepayment: opportunity.profit > 0n
+        ? (opportunity.profit * BigInt(10_000 - EXECUTION_POLICY.slippageBps) + 9_999n) / 10_000n : 1n,
     },
   };
 }

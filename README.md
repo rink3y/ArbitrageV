@@ -104,6 +104,8 @@ Edit `V2_FACTORIES` in [src/protocols/v2/config.ts](src/protocols/v2/config.ts).
 
 The fee uses basis points: `30` means 0.30%. For Solidly pools, discovery reads the stable and volatile fees from the factory.
 
+Optional [V2 transfer-fee profiling](docs/transfer-fees.md) measures pool-specific buy, sell and owner-transfer deductions during sync/startup and refreshes them in the background. It requires updated NArb and FlashQuery deployments. Read the deployment warning before starting this bot against an older executor: the linear execution ABI has changed.
+
 V2 discovery does not scan historical blocks. It reads each factory's current pair count and fetches only indexes after the saved checkpoint. The complete discovered catalog and the per-factory pair count are stored in SQLite. If the checkpoint block changes in a reorg, or the factory configuration changes, that factory is rebuilt from index zero.
 
 ### V3

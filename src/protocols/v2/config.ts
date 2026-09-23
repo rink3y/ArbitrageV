@@ -17,6 +17,14 @@ export const V2_DISCOVERY_POLICY = {
 
 export const V2_LIVE_POLICY = {
   recoveryLogsPerPool: 2_048,
+  // Requires the updated NArb and FlashQuery deployments. No probe RPCs during search.
+  transferFees: true,
+  transferRefreshMs: 60 * 60 * 1000,
+  transferBatchSize: 8,
+  transferConcurrency: 4,
+  transferProbeGas: 600_000,
+  // Probe 0.000001%, 0.001%, 0.1%, and 25% of each reserve, without committing swaps.
+  transferSampleDivisors: [100_000_000n, 100_000n, 1_000n, 4n],
 } as const;
 
 export const V2_FACTORIES: readonly DexFactoryConfig[] = [

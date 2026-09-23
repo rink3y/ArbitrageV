@@ -6,6 +6,7 @@ import { V2Store } from './store';
 import { FactoryDiscoveryAdapter } from '../../runtime/factory-discovery-adapter';
 import { RUNTIME } from '../../constants';
 import { V2_FACTORIES } from './config';
+import { profileV2Transfers } from './transfer-probes';
 
 export const v2Plugin: ProtocolPlugin = {
   id: 'v2',
@@ -19,7 +20,7 @@ export const v2Plugin: ProtocolPlugin = {
     finally { store.close(); }
   },
   async hydrate({ client, catalog, graph }) {
-    const pairs = await getKnownPairsInfo(client, catalog.v2Pools);
+    const pairs = await profileV2Transfers(client, await getKnownPairsInfo(client, catalog.v2Pools));
     for (const pair of pairs) graph.addPair(pair);
   },
   events: context => {

@@ -1,5 +1,6 @@
 import { feeMultiplier } from '../../values';
 import { type V2QuoteState } from './types';
+import { receivedAfterTransfer } from './transfer-fees';
 
 export const FEE_DENOMINATOR = 10000n;
 const ONE = 10n ** 18n;
@@ -10,9 +11,12 @@ export function swapV2(amountIn: bigint, reserveIn: bigint, reserveOut: bigint, 
 }
 
 export function quoteV2ExactInput(amountIn: bigint, state: V2QuoteState): bigint {
-  return state.variant === 'solidly-stable'
+  if (state.transferFees) amountIn = receivedAfterTransfer(amountIn, state.transferFees.input.sell, state.transferFees.input.validUntil);
+  if (amountIn <= 0n) return 0n;
+  const output = state.variant === 'solidly-stable'
     ? swapSolidlyStable(amountIn, state)
     : swapV2(amountIn, state.reserveIn, state.reserveOut, state.fee);
+  return state.transferFees ? receivedAfterTransfer(output, state.transferFees.output.buy, state.transferFees.output.validUntil) : output;
 }
 
 export function swapSolidlyStable(amountIn: bigint, state: V2QuoteState): bigint {
@@ -28,6 +32,12 @@ export function swapSolidlyStable(amountIn: bigint, state: V2QuoteState): bigint
 }
 
 export function v2MarginalRate(state: V2QuoteState): { numerator: bigint; denominator: bigint } {
+  if (state.transferFees) {
+    const { input, output } = state.transferFees;
+    if (input.validUntil <= Date.now() || output.validUntil <= Date.now() || input.sell.status !== 'measured' || output.buy.status !== 'measured') return { numerator: 0n, denominator: 1n };
+    const base = v2MarginalRate({ ...state, transferFees: undefined });
+    return { numerator: base.numerator * BigInt(10000 - input.sell.feeBps) * BigInt(10000 - output.buy.feeBps), denominator: base.denominator * 100_000_000n };
+  }
   if (state.variant !== 'solidly-stable') {
     return {
       numerator: state.reserveOut * feeMultiplier(state.fee),

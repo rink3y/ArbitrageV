@@ -40,16 +40,16 @@ export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
     maxCandidatesToSize: 64,
     maxSearchExpansions: 50_000,
     // Shadow reports splits without submitting them; linear trading is unaffected.
-    splitRouting: 'off', // 'off' | 'shadow' | 'live'
+    splitRouting: 'shadow', // 'off' | 'shadow' | 'live'
     splitSearchMs: 10,
 } as const;
 
 export const EXECUTION_POLICY = {
-    executeTrades: true,
+    executeTrades: false,
     nonceRefreshIntervalMs: 12 * 60 * 60 * 1000,
     nonceRetryIntervalMs: 5_000,
     gasLimit: 2500000n,
-    // Minimum-output haircut for each split branch.
+    // Split-output haircut and maximum haircut on quoted linear surplus.
     slippageBps: 5,
     // Fees refresh away from the submission path. A failed refresh pauses trading.
     feeRefreshIntervalMs: 5 * 60 * 1000,

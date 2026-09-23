@@ -1,6 +1,7 @@
 import { type Address } from 'viem';
 import { type CarbonOrder } from '../protocols/carbon/types';
 import { type SwapDirection, type V2Variant } from '../protocols/v2/types';
+import { type EdgeTransferFees } from '../protocols/v2/transfer-fees';
 
 export type MarketProtocol = 'v2' | 'v3' | 'carbon';
 
@@ -35,6 +36,7 @@ export type MarketEdge = {
 };
 
 export type V2MarketEdge = MarketEdge & {
+  transferFees?: EdgeTransferFees;
   protocol: 'v2';
   reserveIn: bigint;
   reserveOut: bigint;

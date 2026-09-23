@@ -17,6 +17,8 @@ import {
 } from '../protocols/v3/types';
 import { compareFractions } from '../fractions';
 import { quoteV2ExactInput, v2MarginalRate } from '../protocols/v2/quote';
+import { compactTransferProfiles, profilesCurrent, receivedAfterTransfer } from '../protocols/v2/transfer-fees';
+import { V2_LIVE_POLICY } from '../protocols/v2/config';
 import {
   carbonMarginalRate,
   carbonSourceAmountForFullOrder,
@@ -94,6 +96,7 @@ class AddressRegistry {
 export class MarketGraph {
   private readonly versions = new Map<string, number>();
   private readonly dirtyPairs = new Set<string>();
+  private readonly dirtyTransferProfiles = new Set<string>();
   private readonly removedPairs = new Set<string>();
   private readonly dirtyV3 = new Map<string, Set<number> | null>();
   private readonly removedV3 = new Set<string>();
@@ -114,7 +117,11 @@ export class MarketGraph {
   }
 
   matchesVersions(versions: MarketVersions): boolean {
-    return this.feedReady && Object.entries(versions).every(([key, value]) => (this.versions.get(key) ?? 0) === value);
+    return this.feedReady && Object.entries(versions).every(([key, value]) => {
+      const index = this.poolRegistry.get(key);
+      const pair = index === undefined ? undefined : this.pairs[index];
+      return (this.versions.get(key) ?? 0) === value && (!pair?.transferProfiles || profilesCurrent(pair.transferProfiles));
+    });
   }
 
   // One full transfer at startup. Thereafter send absolute pool states and only
@@ -122,7 +129,10 @@ export class MarketGraph {
   takeChanges(full = false): GraphChanges {
     const pairs = (full ? this.getAllPairs() : [...this.dirtyPairs]
       .map(key => this.pairs[this.poolRegistry.get(key)!])
-      .filter((pair): pair is PairInfo => pair !== undefined)).map(pair => ({ ...pair }));
+      .filter((pair): pair is PairInfo => pair !== undefined)).map(pair => ({ ...pair,
+        transferProfiles: pair.transferProfiles && (full || this.dirtyTransferProfiles.has(pair.pairAddress.toLowerCase()))
+          ? compactTransferProfiles(pair.transferProfiles) : undefined,
+      }));
     const v3 = (full ? this.getV3Pools() : [...this.dirtyV3.keys()]
       .map(key => this.getV3Pool(key as Address))
       .filter((pool): pool is V3PoolInfo => pool !== null)).map(pool => {
@@ -149,6 +159,7 @@ export class MarketGraph {
       changes.carbon = { kind: 'delta', upserts, removed };
     }
     this.dirtyPairs.clear();
+    this.dirtyTransferProfiles.clear();
     this.removedPairs.clear();
     this.dirtyV3.clear();
     this.removedV3.clear();
@@ -161,7 +172,7 @@ export class MarketGraph {
     for (const address of changes.removedV3) this.removeV3Pool(address);
     for (const pair of changes.pairs) {
       const index = this.poolRegistry.get(pair.pairAddress);
-      if (index !== undefined && this.pairs[index]) this.updateReserves([pair]);
+      if (index !== undefined && this.pairs[index] && !pair.transferProfiles) this.updateReserves([pair]);
       else this.addPair(pair);
     }
     for (const change of changes.v3) {
@@ -175,6 +186,7 @@ export class MarketGraph {
     if (changes.carbon?.kind === 'snapshot') this.setCarbonStrategies(changes.carbon.strategies);
     else if (changes.carbon) this.updateCarbonStrategies(changes.carbon);
     this.dirtyPairs.clear(); this.removedPairs.clear(); this.dirtyV3.clear(); this.removedV3.clear();
+    this.dirtyTransferProfiles.clear();
     this.dirtyCarbon.clear(); this.carbonSnapshotDirty = false;
     for (const [key, version] of Object.entries(changes.versions)) this.versions.set(key, version);
   }
@@ -215,6 +227,9 @@ export class MarketGraph {
   addPair(pair: PairInfo): void {
     if ((pair.reserve0 === 0n || pair.reserve1 === 0n) && this.poolRegistry.get(pair.pairAddress) === undefined) return;
     const poolIndex = this.poolIndex(pair.pairAddress);
+    if (pair.transferProfiles && pair.transferProfiles !== this.pairs[poolIndex]?.transferProfiles) this.dirtyTransferProfiles.add(pair.pairAddress.toLowerCase());
+    // Absolute reserve events do not replace transfer observations.
+    if (!pair.transferProfiles && this.pairs[poolIndex]?.transferProfiles) pair = { ...pair, transferProfiles: this.pairs[poolIndex]!.transferProfiles };
     this.pairs[poolIndex] = pair;
     this.upsertV2Edges(pair, poolIndex);
     this.touch(pair.pairAddress);
@@ -231,6 +246,7 @@ export class MarketGraph {
     this.disablePoolEdge('v2', poolIndex, 'token1ToToken0');
     const key = pairAddress.toLowerCase();
     this.dirtyPairs.delete(key);
+    this.dirtyTransferProfiles.delete(key);
     this.removedPairs.add(key);
     this.touch(pairAddress);
   }
@@ -585,7 +601,10 @@ export class MarketGraph {
   maxInputForEdges(edgeIndexes: readonly number[]): bigint {
     return edgeIndexes.reduce((total, index) => {
       const edge = this.edgeAt(index);
-      return total + (edge ? this.edgeInputCapacity(edge) / this.policy.maxInputReserveFraction : 0n);
+      if (!edge) return total;
+      let capacity = this.edgeInputCapacity(edge) / this.policy.maxInputReserveFraction;
+      if (edge.protocol === 'v2' && edge.transferFees && capacity > edge.transferFees.input.sell.maxAmount) capacity = edge.transferFees.input.sell.maxAmount;
+      return total + capacity;
     }, 0n);
   }
 
@@ -643,6 +662,14 @@ export class MarketGraph {
       if (!protocolPlugin(edge.protocol).flashLoanFee) continue;
       if (edge.protocol === 'v2' && edge.variant !== 'uniswap-v2') continue;
       if (edge.protocol === 'v2' && edge.reserveIn <= amountIn) continue;
+      if (edge.protocol === 'v2' && V2_LIVE_POLICY.transferFees && !edge.transferFees) continue;
+      if (edge.protocol === 'v2' && edge.transferFees) {
+        const profile = edge.transferFees.input;
+        const repay = amountIn + this.flashFee('v2', edge.fee, amountIn);
+        if (profile.buy.feeBps !== 0 || profile.sell.feeBps !== 0 ||
+            receivedAfterTransfer(amountIn, profile.buy, profile.validUntil) !== amountIn ||
+            receivedAfterTransfer(repay, profile.sell, profile.validUntil) !== repay) continue;
+      }
       const inputCapacity = this.edgeInputCapacity(edge);
       if (edge.protocol === 'v3' && inputCapacity <= amountIn) continue;
 
@@ -666,7 +693,7 @@ export class MarketGraph {
   }
 
   private quoteV2Edge(edge: Extract<AnyMarketEdge, { protocol: 'v2' }>, amountIn: bigint): MarketRouteQuote {
-    if (amountIn >= edge.reserveIn) {
+    if (amountIn >= edge.reserveIn || (V2_LIVE_POLICY.transferFees && !edge.transferFees)) {
       return { amountIn, amountOut: 0n, profit: -1n, complete: false };
     }
 
@@ -733,6 +760,7 @@ export class MarketGraph {
     const token0Index = this.tokenIndex(pair.token0);
     const token1Index = this.tokenIndex(pair.token1);
     const forward = {
+      transferFees: pair.transferProfiles ? { input: pair.transferProfiles.token0, output: pair.transferProfiles.token1 } : undefined,
       variant: pair.variant,
       reserveIn: pair.reserve0,
       reserveOut: pair.reserve1,
@@ -741,6 +769,7 @@ export class MarketGraph {
       fee: pair.fee,
     };
     const reverse = {
+      transferFees: pair.transferProfiles ? { input: pair.transferProfiles.token1, output: pair.transferProfiles.token0 } : undefined,
       variant: pair.variant,
       reserveIn: pair.reserve1,
       reserveOut: pair.reserve0,
@@ -750,6 +779,7 @@ export class MarketGraph {
     };
     const forwardRate = v2MarginalRate(forward);
     const reverseRate = v2MarginalRate(reverse);
+    if (V2_LIVE_POLICY.transferFees && !pair.transferProfiles) { forwardRate.numerator = 0n; reverseRate.numerator = 0n; }
 
     this.upsertEdge({
       id: this.edgeId('v2', poolIndex, 'token0ToToken1'),

@@ -5,6 +5,7 @@ pragma solidity ^0.8.0;
 import "./interfaces/Withdrawable.sol";
 import "./interfaces/IBaseV1Pair.sol";
 import "./interfaces/IUniswapV2Pair.sol";
+import "./TransferProbe.sol";
 
 interface IUniswapV3Pool {
     function token0() external view returns (address);
@@ -62,7 +63,7 @@ error SplitMinimumNotMet();
 error ExecutionInProgress();
 error InvalidWrappedNativeToken();
 
-contract ArbitrageExecutor is Withdrawable {
+contract ArbitrageExecutor is Withdrawable, TransferProbe {
     uint8 private constant V2 = 0;
     uint8 private constant V3 = 1;
     uint8 private constant CARBON = 2;
@@ -132,6 +133,7 @@ contract ArbitrageExecutor is Withdrawable {
         uint8[] protocols;
         uint256[] fees;
         bytes[] data;
+        uint256 minSurplusAfterRepayment;
     }
 
     struct StablePairState {
@@ -154,6 +156,13 @@ contract ArbitrageExecutor is Withdrawable {
         executing = true;
         _;
         executing = false;
+    }
+
+    // Permissionless but always reverts. FlashQuery catches the measured result in eth_call.
+    function probeV2Transfer(address pool, address token, uint256 amount, address recipient) external {
+        if (executing) revert ExecutionInProgress();
+        executing = true;
+        _probeTransfer(pool, token, amount, recipient);
     }
 
     function executeArbitrage(ArbParams calldata params) external onlyOwner executionLock {
@@ -276,6 +285,7 @@ contract ArbitrageExecutor is Withdrawable {
 
     // ponytail: one generic fallback handles callback name variants instead of dozens of wrappers.
     fallback() external payable {
+        if (_isTransferProbe()) _transferProbeCallback();
         if (msg.sender == pendingV3Pool && pendingV3Pool != address(0)) {
             (int256 amount0Delta, int256 amount1Delta, ) =
                 abi.decode(msg.data[4:], (int256, int256, bytes));
@@ -353,7 +363,9 @@ contract ArbitrageExecutor is Withdrawable {
 
     function _finishFlashLoan(FlashData memory loan, uint256 repayAmount) internal {
         if (IERC20(loan.borrowedToken).balanceOf(address(this)) < loan.startBalance + loan.borrowedAmount) revert InvalidFlashLoanCallback();
-        uint256 finalAmount = loan.stages.length == 0 ? _executeCircularRoute(loan) : _executeSplitRoute(loan);
+        if (loan.stages.length == 0) _executeCircularRoute(loan);
+        else _executeSplitRoute(loan);
+        uint256 finalAmount = IERC20(loan.borrowedToken).balanceOf(address(this)) - loan.startBalance;
 
         if (finalAmount < repayAmount + loan.minSurplusAfterRepayment) revert InsufficientFlashLoanRepayment();
         if (!IERC20(loan.borrowedToken).transfer(msg.sender, repayAmount)) {
@@ -398,6 +410,7 @@ contract ArbitrageExecutor is Withdrawable {
                 bool forwardToNextV2 =
                     i + 1 < loan.pools.length &&
                     loan.protocols[i + 1] == V2 &&
+                    !_custodyV2(loan.data[i]) && !_custodyV2(loan.data[i + 1]) &&
                     loan.pools[i + 1] != loan.pools[i];
                 (token, amount) = _swapV2(
                     token,
@@ -406,7 +419,8 @@ contract ArbitrageExecutor is Withdrawable {
                     loan.fees[i],
                     loan.data[i],
                     forwardToNextV2 ? loan.pools[i + 1] : address(this),
-                    i > 0 && loan.protocols[i - 1] == V2 && loan.pools[i - 1] != loan.pools[i]
+                    i > 0 && loan.protocols[i - 1] == V2 && loan.pools[i - 1] != loan.pools[i] &&
+                    !_custodyV2(loan.data[i - 1]) && !_custodyV2(loan.data[i])
                 );
             } else if (loan.protocols[i] == V3) {
                 (token, amount) = _swapV3(token, amount, loan.pools[i]);
@@ -433,16 +447,29 @@ contract ArbitrageExecutor is Withdrawable {
         bool inputAlreadySent
     ) internal returns (address tokenOut, uint256 amountOut) {
         IUniswapV2Pair pair = IUniswapV2Pair(pairAddr);
+        (uint112 reserve0, uint112 reserve1, ) = pair.getReserves();
+        uint256 reserveIn = tokenIn == pair.token0() ? reserve0 : reserve1;
+        if (!inputAlreadySent) {
+            uint256 beforeInput = IERC20(tokenIn).balanceOf(address(this));
+            _safeTransfer(tokenIn, pairAddr, amountIn);
+            if (IERC20(tokenIn).balanceOf(address(this)) + amountIn != beforeInput) revert TokenTransferFailed();
+        }
+        // A forwarded or taxed transfer may deliver less than the previous nominal output.
+        amountIn = IERC20(tokenIn).balanceOf(pairAddr) - reserveIn;
         bool zeroForOne;
         (tokenOut, amountOut, zeroForOne) = _quoteV2(pair, tokenIn, amountIn, fee, quoteData);
-
-        if (!inputAlreadySent) _safeTransfer(tokenIn, pairAddr, amountIn);
+        uint256 beforeOutput = IERC20(tokenOut).balanceOf(recipient);
         pair.swap(
             zeroForOne ? 0 : amountOut,
             zeroForOne ? amountOut : 0,
             recipient,
             hex""
         );
+        amountOut = IERC20(tokenOut).balanceOf(recipient) - beforeOutput;
+    }
+
+    function _custodyV2(bytes memory data) private pure returns (bool) {
+        return data.length == 1 && (data[0] == 0x02 || data[0] == 0x03);
     }
 
     function _quoteV2(
@@ -453,8 +480,8 @@ contract ArbitrageExecutor is Withdrawable {
         bytes memory quoteData
     ) internal view returns (address tokenOut, uint256 amountOut, bool zeroForOne) {
         if (quoteData.length != 0) {
-            if (quoteData.length != 1 || quoteData[0] != 0x01) revert UnsupportedV2QuoteMode();
-            return _quoteStableV2(address(pair), tokenIn, amountIn, fee);
+            if (quoteData.length != 1 || uint8(quoteData[0]) > 3 || quoteData[0] == 0x00) revert UnsupportedV2QuoteMode();
+            if (quoteData[0] == 0x01 || quoteData[0] == 0x03) return _quoteStableV2(address(pair), tokenIn, amountIn, fee);
         }
 
         address token0 = pair.token0();
@@ -633,7 +660,7 @@ contract ArbitrageExecutor is Withdrawable {
             fees: params.fees,
             data: params.data,
             stages: new SplitStage[](0),
-            minSurplusAfterRepayment: 0,
+            minSurplusAfterRepayment: params.minSurplusAfterRepayment,
             startBalance: IERC20(params.borrowToken).balanceOf(address(this))
         }));
     }

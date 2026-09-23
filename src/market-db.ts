@@ -103,7 +103,7 @@ export function marketDbPath(): string {
   return process.env.MARKET_DB_PATH || `data/markets-${NETWORK.chain.id}.sqlite`;
 }
 
-function openMarketDb(path = marketDbPath()): Database {
+export function openMarketDb(path = marketDbPath()): Database {
   mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
   try {

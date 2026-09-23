@@ -2,6 +2,7 @@ import { type MarketGraph } from '../market-graph/market-graph';
 import { type ArbitrageOpportunity } from './opportunity-types';
 import { quoteV2ExactInput } from '../protocols/v2/quote';
 import { flashLoanFee } from '../execution/execution-planner';
+import { receivedAfterTransfer } from '../protocols/v2/transfer-fees';
 
 /** Local V2-only fill model, not a transaction simulator. Null leaves the graph unchanged. */
 export type V2ReplayPlan = Pick<ArbitrageOpportunity, 'path' | 'optimalInput' | 'flashPoolAddress'> & {
@@ -30,18 +31,28 @@ export function applyV2SplitFill(graph: MarketGraph, opportunity: V2ReplayPlan):
       const forward = pair.token0.toLowerCase() === token;
       if ((!forward && pair.token1.toLowerCase() !== token) ||
           (forward ? pair.token1 : pair.token0).toLowerCase() !== stage.tokenOut.toLowerCase()) return null;
-      const output = quoteV2ExactInput(branch.amountIn, { variant: pair.variant, reserveIn: forward ? pair.reserve0 : pair.reserve1,
+      const inputProfile = forward ? pair.transferProfiles?.token0 : pair.transferProfiles?.token1;
+      const outputProfile = forward ? pair.transferProfiles?.token1 : pair.transferProfiles?.token0;
+      const actualInput = inputProfile ? receivedAfterTransfer(branch.amountIn, inputProfile.sell, inputProfile.validUntil) : branch.amountIn;
+      const nominalOutput = quoteV2ExactInput(actualInput, { variant: pair.variant, reserveIn: forward ? pair.reserve0 : pair.reserve1,
         reserveOut: forward ? pair.reserve1 : pair.reserve0, scaleIn: forward ? pair.scale0 : pair.scale1,
         scaleOut: forward ? pair.scale1 : pair.scale0, fee: pair.fee });
+      const output = outputProfile ? receivedAfterTransfer(nominalOutput, outputProfile.buy, outputProfile.validUntil) : nominalOutput;
       if (output <= 0n || output < branch.minAmountOut) return null;
       spent += branch.amountIn; received += output;
-      if (forward) { pair.reserve0 += branch.amountIn; pair.reserve1 -= output; }
-      else { pair.reserve1 += branch.amountIn; pair.reserve0 -= output; }
+      if (forward) { pair.reserve0 += actualInput; pair.reserve1 -= nominalOutput; }
+      else { pair.reserve1 += actualInput; pair.reserve0 -= nominalOutput; }
     }
     if (spent > available || (stageIndex === 0 && spent !== available)) return null;
     available = received; token = stage.tokenOut.toLowerCase();
   }
   const fee = flashLoanFee({ protocol: 'v2', poolAddress: funding.pairAddress, fee: funding.fee, liquidity: 0n }, opportunity.optimalInput);
+  if (funding.transferProfiles) {
+    const profile = funding.token0.toLowerCase() === start ? funding.transferProfiles.token0 : funding.transferProfiles.token1;
+    const repayment = opportunity.optimalInput + fee;
+    if (receivedAfterTransfer(opportunity.optimalInput, profile.buy, profile.validUntil) !== opportunity.optimalInput ||
+        receivedAfterTransfer(repayment, profile.sell, profile.validUntil) !== repayment) return null;
+  }
   const surplus = available - opportunity.optimalInput - fee;
   if (token !== start || surplus < opportunity.split.minSurplusAfterRepayment) return null;
   if (funding.token0.toLowerCase() === start) funding.reserve0 += fee;

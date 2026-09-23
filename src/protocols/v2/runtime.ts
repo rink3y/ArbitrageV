@@ -11,6 +11,7 @@ import UniswapFlashQueryABI from '../../ABI/UniswapFlashQuery.json';
 import { type PairInfo as MarketPairInfo } from './types';
 import { type V2PoolMetadata } from './metadata';
 import { compareChainLogs } from '../../runtime/chain-cursor';
+import { profileV2Transfers } from './transfer-probes';
 
 type V2Client = {
     readContract(parameters: any): Promise<unknown>;
@@ -202,6 +203,9 @@ export async function refreshKnownPairsInfo(
 }
 
 export class V2EventAdapter implements ProtocolEventAdapter {
+  private transferTimer: ReturnType<typeof setTimeout> | undefined;
+  private transferStopped = true;
+  private transferGeneration = 0;
   readonly id = 'v2';
   private readonly pools = new Map<string, V2PoolMetadata>();
   private readonly pendingLogs = new Map<string, { logs: any[] | null }>();
@@ -234,6 +238,8 @@ export class V2EventAdapter implements ProtocolEventAdapter {
     this.onError = onError;
     try {
       await this.subscribe(this.addresses());
+      this.transferStopped = false;
+      this.scheduleTransferRefresh();
       return [() => this.stopWatching()];
     } catch (error) {
       await this.stopWatching();
@@ -375,12 +381,41 @@ export class V2EventAdapter implements ProtocolEventAdapter {
   }
 
   private async stopWatching(): Promise<void> {
+    this.transferStopped = true;
+    this.transferGeneration++;
+    clearTimeout(this.transferTimer);
     for (const stop of this.unwatch) await stop();
     this.unwatch.clear();
     this.subscribed.clear();
     this.watchClient = undefined;
     this.onLogs = undefined;
     this.onError = undefined;
+  }
+
+  private scheduleTransferRefresh(): void {
+    if (!V2_LIVE_POLICY.transferFees || this.transferStopped) return;
+    const generation = this.transferGeneration;
+    this.transferTimer = setTimeout(async () => {
+      try {
+        const pairs = this.graph.getAllPairs();
+        if (pairs.every(pair => pair.transferProfiles && Math.min(pair.transferProfiles.token0.validUntil, pair.transferProfiles.token1.validUntil) > Date.now())) return;
+        const profiled = await profileV2Transfers(this.client, pairs);
+        if (this.transferStopped || generation !== this.transferGeneration) return;
+        const current = new Map(this.graph.getAllPairs().map(pair => [pair.pairAddress.toLowerCase(), pair]));
+        const changed: Address[] = [];
+        for (const pair of profiled) {
+          const live = current.get(pair.pairAddress.toLowerCase());
+          if (!live || !pair.transferProfiles ||
+              (live.transferProfiles && live.transferProfiles.token0.observedAt >= pair.transferProfiles.token0.observedAt &&
+               live.transferProfiles.token1.observedAt >= pair.transferProfiles.token1.observedAt)) continue;
+          // Only update profiles. Events may have changed reserves while probes were running.
+          this.graph.addPair({ ...live, transferProfiles: pair.transferProfiles });
+          changed.push(pair.pairAddress);
+        }
+        if (changed.length) await this.scan(changed, changed);
+      } catch (error) { console.error('V2 transfer refresh failed; expired profiles remain ineligible:', error); }
+      finally { if (generation === this.transferGeneration) this.scheduleTransferRefresh(); }
+    }, Math.min(60_000, V2_LIVE_POLICY.transferRefreshMs));
   }
 }
 

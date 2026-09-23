@@ -5,6 +5,10 @@ import "./interfaces/IBaseV1Pair.sol";
 import "./interfaces/IUniswapV2Pair.sol";
 import "./interfaces/UniswapV2Factory.sol";
 
+interface ITransferProbe {
+    function probeV2Transfer(address pool, address token, uint256 amount, address recipient) external;
+}
+
 interface IUniswapV3Pool {
 	function factory() external view returns (address);
 	function token0() external view returns (address);
@@ -64,6 +68,39 @@ error InvalidRange();
 
 // In order to quickly load up data from Uniswap-like market, this contract allows easy iteration with a single eth_call
 contract FlashUniswapQueryV1 {
+    struct TransferRequest { address pool; address token; uint256 amount; address recipient; }
+    struct TransferResult { bool measured; uint256[9] amounts; bytes4 error; }
+
+    // Call through eth_call, not STATICCALL. Each executor call reverts its own state.
+    function probeV2Transfers(address executor, TransferRequest[] calldata requests, uint256 gasPerProbe)
+        external returns (TransferResult[] memory results)
+    {
+        require(requests.length <= 16 && gasPerProbe >= 50000 && gasPerProbe <= 2000000, "probe bounds");
+        results = new TransferResult[](requests.length);
+        for (uint256 i; i < requests.length; ++i) {
+            TransferRequest calldata r = requests[i];
+            bytes memory input = abi.encodeCall(ITransferProbe.probeV2Transfer, (r.pool, r.token, r.amount, r.recipient));
+            bytes memory output = new bytes(292);
+            bool ok;
+            uint256 size;
+            assembly {
+                ok := call(gasPerProbe, executor, 0, add(input, 32), mload(input), add(output, 32), 292)
+                size := returndatasize()
+            }
+            bytes4 selector;
+            assembly { selector := mload(add(output, 32)) }
+            results[i].error = selector;
+            if (!ok && size == 292 && selector == bytes4(keccak256("TransferProbeResult(uint256[9])"))) {
+                results[i].measured = true;
+                results[i].error = bytes4(0);
+                for (uint256 j; j < 9; ++j) {
+                    uint256 value;
+                    assembly { value := mload(add(add(output, 36), mul(j, 32))) }
+                    results[i].amounts[j] = value;
+                }
+            }
+        }
+    }
 	struct V3PoolMetadata {
 		address pool;
 		address factory;

@@ -56,6 +56,7 @@ describe("createExecutionPlan", () => {
       protocols: [0, 1, 0],
       fees: [30n, 500n, 30n],
       data: ["0x", "0x", "0x"],
+      minSurplusAfterRepayment: 100n,
     });
   });
 
@@ -115,6 +116,7 @@ describe("createExecutionPlan", () => {
       protocols: [2, 0],
       fees: [4000n, 30n],
       data: [carbonData, "0x"],
+      minSurplusAfterRepayment: 100n,
     });
   });
 

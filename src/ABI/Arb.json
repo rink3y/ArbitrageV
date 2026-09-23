@@ -76,6 +76,11 @@
             "name": "data",
             "type": "bytes[]",
             "internalType": "bytes[]"
+          },
+          {
+            "name": "minSurplusAfterRepayment",
+            "type": "uint256",
+            "internalType": "uint256"
           }
         ]
       }
@@ -199,6 +204,34 @@
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "probeV2Transfer",
+    "inputs": [
+      {
+        "name": "pool",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -432,6 +465,22 @@
     "type": "error",
     "name": "TokenTransferFailed",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TransferProbeFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TransferProbeResult",
+    "inputs": [
+      {
+        "name": "amounts",
+        "type": "uint256[9]",
+        "internalType": "uint256[9]"
+      }
+    ]
   },
   {
     "type": "error",

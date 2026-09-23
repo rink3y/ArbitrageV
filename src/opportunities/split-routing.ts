@@ -79,7 +79,7 @@ export function quoteSplitStages(
       if (!quote.complete) return null;
       const minAmountOut = quote.amountOut * BigInt(10_000 - slippageBps) / 10_000n;
       if (minAmountOut <= 0n) return null;
-      let data: Hex = edge.protocol === 'v2' ? encodeV2RouteData(edge.variant) : '0x';
+      let data: Hex = edge.protocol === 'v2' ? encodeV2RouteData(edge.variant, !!edge.transferFees) : '0x';
       if (edge.protocol === 'carbon') {
         const execution = graph.carbonExecution(allocation.edgeIndex, allocation.amountIn);
         if (!execution) return null;

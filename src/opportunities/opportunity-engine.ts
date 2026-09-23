@@ -169,7 +169,7 @@ export class OpportunityEngine {
       routeData.push(edge.protocol === 'carbon'
         ? this.encodeCarbonRouteData(edgeIndex, amount)
         : edge.protocol === 'v2'
-          ? encodeV2RouteData(edge.variant)
+          ? encodeV2RouteData(edge.variant, !!edge.transferFees)
           : '0x');
 
       const quote = this.graph.quoteEdgeAt(edgeIndex, amount);

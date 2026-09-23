@@ -6,6 +6,7 @@ import { type ProtocolEventAdapter } from '../runtime/protocol-event-adapter';
 import { type LiveMarketRegistry } from '../runtime/live-market-registry';
 
 export type MarketReadClient = {
+  simulateContract?(parameters: any): Promise<{ result: unknown }>;
   readContract(parameters: any): Promise<unknown>;
   getBlockNumber(): Promise<bigint>;
   getBlock(parameters: any): Promise<{ number: bigint | null; hash: `0x${string}` | null }>;
