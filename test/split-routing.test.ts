@@ -16,8 +16,8 @@ import { tickWordBounds } from '../src/protocols/v3/coverage';
 const [a, b] = TOKENS.map(token => token.address);
 const address = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const;
 const tokens = TOKENS.map(token => ({ ...token, minProfit: 1n }));
-const fees = { type: 'eip1559', maxFeePerGas: EXECUTION_POLICY.maxFeePerGas,
-  maxPriorityFeePerGas: EXECUTION_POLICY.maxPriorityFeePerGas, validUntil: Number.MAX_SAFE_INTEGER } as const;
+const fees = { type: 'eip1559', maxFeePerGas: 1_000_000_000n,
+  maxPriorityFeePerGas: 0n, validUntil: Number.MAX_SAFE_INTEGER } as const;
 function searchPolicy(): ArbitrageSearchPolicy {
   return { ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2', 'v3', 'carbon'], splitRouting: 'shadow' as const, splitSearchMs: 1000,
     maxCandidatesToSize: 24, maxSearchExpansions: 100000, maxInputReserveFraction: 5n };

@@ -85,7 +85,8 @@ export class OpportunityManager {
         ) => Promise<boolean>,
         gasFees?: GasFees,
     ) {
-        this.gasFees = gasFees ?? new GasFees(async () => { throw new Error('No automatic fee reader configured'); });
+        this.gasFees = gasFees ?? new GasFees(type =>
+            networkConfig.client.estimateFeesPerGas({ type, chain: networkConfig.client.chain }));
         this.receipts = new ReceiptTracker(hash => networkConfig.client.getTransactionReceipt({ hash }));
         this.nonces = new LocalNonces(
             () => networkConfig.client.getTransactionCount({ address: networkConfig.account.address, blockTag: 'pending' }),
@@ -95,6 +96,7 @@ export class OpportunityManager {
     }
 
     async start(): Promise<void> {
+        await this.gasFees.start();
         await this.nonces.start();
     }
 
@@ -103,6 +105,7 @@ export class OpportunityManager {
         this.notifications.stop();
         this.receipts.stop();
         this.nonces.stop();
+        this.gasFees.stop();
     }
 
     // Unlock only pools whose new state has already been applied locally.

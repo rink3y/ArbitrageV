@@ -1,12 +1,13 @@
-import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, TOKENS } from '../src/constants';
+import { ARBITRAGE_SEARCH_POLICY, TOKENS } from '../src/constants';
 import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
 import { WorkerSearch } from '../src/opportunities/worker-search';
 import { splitCostsFromSnapshot } from '../src/opportunities/split-costs';
 import { applyV2SplitFill } from '../src/opportunities/split-replay';
 
 const [a, b] = TOKENS.map(token => token.address);
-const fees = { type: 'eip1559', maxFeePerGas: EXECUTION_POLICY.maxFeePerGas,
-  maxPriorityFeePerGas: EXECUTION_POLICY.maxPriorityFeePerGas, validUntil: Number.MAX_SAFE_INTEGER } as const;
+// Synthetic fee fixture: this benchmark never reads the network.
+const fees = { type: 'eip1559', maxFeePerGas: 1_000_000_000n,
+  maxPriorityFeePerGas: 0n, validUntil: Number.MAX_SAFE_INTEGER } as const;
 const costs = () => splitCostsFromSnapshot(TOKENS, fees);
 const unit = 10n ** 18n;
 const policy = { ...ARBITRAGE_SEARCH_POLICY, splitRouting: 'shadow' as const, maxRouteEdges: 3 };

@@ -2,13 +2,9 @@ import { formatGwei } from 'viem';
 import { EXECUTION_POLICY } from '../constants';
 
 type FeePolicy = {
-  feeMode: 'manual' | 'auto';
   feeRefreshIntervalMs: number;
-  autoMaxFeePerGas: bigint;
+  feeCeilingPerGas: bigint;
   legacy: boolean;
-  legacyGasPrice: bigint;
-  maxFeePerGas: bigint;
-  maxPriorityFeePerGas: bigint;
 };
 
 type FeeEstimate = { gasPrice?: bigint; maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint };
@@ -22,9 +18,9 @@ export function gasPriceCeiling(fees: GasFeeSnapshot): bigint {
   return fees.type === 'legacy' ? fees.gasPrice : fees.maxFeePerGas;
 }
 
-// One fee source for search and signing. Auto refreshes never run on the trade path.
+// One fee source for search and signing. Refreshes never run on the trade path.
 export class GasFees {
-  private value: GasFeeSnapshot | null;
+  private value: GasFeeSnapshot | null = null;
   private timer?: ReturnType<typeof setInterval>;
   private refreshing = false;
   private stopped = false;
@@ -34,12 +30,11 @@ export class GasFees {
     private readonly policy: FeePolicy = EXECUTION_POLICY,
   ) {
     if (!Number.isSafeInteger(policy.feeRefreshIntervalMs) || policy.feeRefreshIntervalMs < 1 ||
-        policy.autoMaxFeePerGas <= 0n) throw new Error('Invalid gas fee policy');
-    this.value = policy.feeMode === 'manual' ? this.manualFees() : null;
+        policy.feeCeilingPerGas <= 0n) throw new Error('Invalid gas fee policy');
   }
 
   async start(): Promise<void> {
-    if (this.policy.feeMode !== 'auto' || this.timer || this.stopped) return;
+    if (this.timer || this.stopped) return;
     await this.refresh();
     if (this.stopped) return;
     this.timer = setInterval(() => { void this.refresh(); }, this.policy.feeRefreshIntervalMs);
@@ -60,17 +55,6 @@ export class GasFees {
     this.value = null;
   }
 
-  private manualFees(): GasFeeSnapshot {
-    if (this.policy.legacy) {
-      if (this.policy.legacyGasPrice <= 0n) throw new Error('Invalid manual gas price');
-      return { type: 'legacy', gasPrice: this.policy.legacyGasPrice, validUntil: Number.MAX_SAFE_INTEGER };
-    }
-    if (this.policy.maxFeePerGas <= 0n || this.policy.maxPriorityFeePerGas < 0n ||
-        this.policy.maxPriorityFeePerGas > this.policy.maxFeePerGas) throw new Error('Invalid manual EIP-1559 fees');
-    return { type: 'eip1559', maxFeePerGas: this.policy.maxFeePerGas,
-      maxPriorityFeePerGas: this.policy.maxPriorityFeePerGas, validUntil: Number.MAX_SAFE_INTEGER };
-  }
-
   private async refresh(): Promise<void> {
     if (this.refreshing || this.stopped) return;
     this.refreshing = true;
@@ -88,21 +72,21 @@ export class GasFees {
             maxPriorityFeePerGas: estimate.maxPriorityFeePerGas, validUntil } : null;
       if (!next) {
         this.value = null;
-        console.warn('Auto gas fee estimate was invalid; submissions paused.');
+        console.warn('Gas fee estimate was invalid; submissions paused.');
         return;
       }
-      if (gasPriceCeiling(next) > this.policy.autoMaxFeePerGas) {
+      if (gasPriceCeiling(next) > this.policy.feeCeilingPerGas) {
         this.value = null;
-        console.warn(`Auto gas estimate ${formatGwei(gasPriceCeiling(next))} gwei exceeds ceiling ` +
-          `${formatGwei(this.policy.autoMaxFeePerGas)} gwei; submissions paused.`);
+        console.warn(`Gas estimate ${formatGwei(gasPriceCeiling(next))} gwei exceeds ceiling ` +
+          `${formatGwei(this.policy.feeCeilingPerGas)} gwei; submissions paused.`);
         return;
       }
       this.value = next;
-      console.log(`Auto gas fees refreshed: ${formatGwei(gasPriceCeiling(next))} gwei ceiling`);
+      console.log(`Gas fees refreshed: ${formatGwei(gasPriceCeiling(next))} gwei ceiling`);
     } catch {
       if (!this.stopped) {
         this.value = null;
-        console.warn('Auto gas fee refresh failed; submissions paused until a refresh succeeds.');
+        console.warn('Gas fee refresh failed; submissions paused until a refresh succeeds.');
       }
     } finally {
       this.refreshing = false;

@@ -6,9 +6,8 @@ import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
 import { createOpportunityScanner } from '../src/opportunities/opportunity-workflow';
 
 const originalExecution = EXECUTION_POLICY.executeTrades;
-const originalFeeMode = EXECUTION_POLICY.feeMode;
 afterEach(() => {
-  Object.assign(EXECUTION_POLICY, { executeTrades: originalExecution, feeMode: originalFeeMode });
+  Object.assign(EXECUTION_POLICY, { executeTrades: originalExecution });
   mock.restore();
 });
 
@@ -19,14 +18,14 @@ test('scanner creation waits for the pending nonce and owns timer cleanup', asyn
   const stop = spyOn(LocalNonces.prototype, 'stop');
   const network = {
     account: { address: '0x0000000000000000000000000000000000000001' },
-    client: { getTransactionCount: read },
+    client: { getTransactionCount: read, estimateFeesPerGas: async () => ({ maxFeePerGas: 500n * 10n ** 9n, maxPriorityFeePerGas: 3n * 10n ** 9n }) },
   } as unknown as NetworkConfig;
   let ready = false;
   const creation = createOpportunityScanner(new OpportunityEngine(), network).then(scanner => {
     ready = true;
     return scanner;
   });
-  await Promise.resolve();
+  while (read.mock.calls.length === 0) await new Promise(resolve => setImmediate(resolve));
   expect(ready).toBe(false);
   expect(read).toHaveBeenCalledWith({ address: network.account.address, blockTag: 'pending' });
   resolve(7);
@@ -39,13 +38,14 @@ test('scanner creation waits for the pending nonce and owns timer cleanup', asyn
 test('watch-only mode does not start a nonce allocator', async () => {
   Object.assign(EXECUTION_POLICY, { executeTrades: false });
   const start = spyOn(LocalNonces.prototype, 'start');
-  const scanner = await createOpportunityScanner(new OpportunityEngine(), {} as NetworkConfig);
+  const network = { client: { estimateFeesPerGas: async () => ({ maxFeePerGas: 500n * 10n ** 9n, maxPriorityFeePerGas: 3n * 10n ** 9n }) } } as unknown as NetworkConfig;
+  const scanner = await createOpportunityScanner(new OpportunityEngine(), network);
   scanner.stop();
   expect(start).not.toHaveBeenCalled();
 });
 
-test('auto fee refresh happens at startup, not on each search', async () => {
-  Object.assign(EXECUTION_POLICY, { executeTrades: false, feeMode: 'auto' });
+test('fee refresh happens at startup, not on each search', async () => {
+  Object.assign(EXECUTION_POLICY, { executeTrades: false });
   const estimate = mock(async () => ({ maxFeePerGas: 500n * 10n ** 9n, maxPriorityFeePerGas: 3n * 10n ** 9n }));
   const network = { client: { estimateFeesPerGas: estimate } } as unknown as NetworkConfig;
   const scanner = await createOpportunityScanner(new OpportunityEngine(), network);
@@ -61,7 +61,8 @@ test('a failed nonce warmup rejects startup and cancels background retries', asy
   const stop = spyOn(LocalNonces.prototype, 'stop');
   const network = {
     account: { address: '0x0000000000000000000000000000000000000001' },
-    client: { getTransactionCount: async () => { throw new Error('RPC offline'); } },
+    client: { getTransactionCount: async () => { throw new Error('RPC offline'); },
+      estimateFeesPerGas: async () => ({ maxFeePerGas: 500n * 10n ** 9n, maxPriorityFeePerGas: 3n * 10n ** 9n }) },
   } as unknown as NetworkConfig;
   await expect(createOpportunityScanner(new OpportunityEngine(), network)).rejects.toThrow('RPC offline');
   expect(stop).toHaveBeenCalledTimes(1);

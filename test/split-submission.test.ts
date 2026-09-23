@@ -9,13 +9,15 @@ import { GasFees } from '../src/execution/gas-fees';
 import ArbABI from '../src/ABI/Arb.json';
 
 const addr = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const;
-test('a live split signs one staged transaction with one local nonce and locks every branch', async () => {
+for (const legacy of [false, true]) test(`a live split signs one ${legacy ? 'legacy' : 'EIP-1559'} transaction with one local nonce`, async () => {
   const old = { mode: ARBITRAGE_SEARCH_POLICY.splitRouting, contract: CONTRACTS.arbitrage, telegram: TELEGRAM.botToken };
   const submitted: Hex[] = [];
   let nonceReads = 0;
   let feeReads = 0;
-  const gasFees = new GasFees(async () => { feeReads++; return { maxFeePerGas: 500n, maxPriorityFeePerGas: 3n }; },
-    { ...EXECUTION_POLICY, feeMode: 'auto', feeRefreshIntervalMs: 300_000, autoMaxFeePerGas: 1_000n });
+  const gasFees = new GasFees(async type => {
+    feeReads++;
+    return type === 'legacy' ? { gasPrice: 500n } : { maxFeePerGas: 500n, maxPriorityFeePerGas: 3n };
+  }, { ...EXECUTION_POLICY, legacy, feeRefreshIntervalMs: 300_000, feeCeilingPerGas: 1_000n });
   const manager = new OpportunityManager({ account: privateKeyToAccount(`0x${'1'.padStart(64, '0')}`),
     client: { getTransactionCount: async () => { nonceReads++; return 7; } },
     walletClient: { sendRawTransaction: async ({ serializedTransaction }: { serializedTransaction: Hex }) => {
@@ -43,8 +45,12 @@ test('a live split signs one staged transaction with one local nonce and locks e
     const transaction = parseTransaction(submitted[0]);
     expect(transaction.nonce).toBe(7);
     expect(transaction.gas).toBe(EXECUTION_POLICY.gasLimit);
-    expect(transaction.maxFeePerGas).toBe(500n);
-    expect(transaction.maxPriorityFeePerGas).toBe(3n);
+    expect(transaction.type).toBe(legacy ? 'legacy' : 'eip1559');
+    if (legacy) expect(transaction.gasPrice).toBe(500n);
+    else {
+      expect(transaction.maxFeePerGas).toBe(500n);
+      expect(transaction.maxPriorityFeePerGas).toBe(3n);
+    }
     const decoded = decodeFunctionData({ abi: ArbABI, data: transaction.data! });
     expect(decoded.functionName).toBe('executeSplitArbitrage');
     expect((decoded.args![0] as any).stages[0].branches.map((branch: any) => branch.amountIn)).toEqual([100n, 100n]);

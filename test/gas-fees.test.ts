@@ -2,30 +2,36 @@ import { expect, spyOn, test } from 'bun:test';
 import { EXECUTION_POLICY } from '../src/constants';
 import { GasFees, gasPriceCeiling } from '../src/execution/gas-fees';
 
-const policy = { ...EXECUTION_POLICY, feeMode: 'auto' as const,
-  feeRefreshIntervalMs: 10, autoMaxFeePerGas: 1_000n };
+const policy = { ...EXECUTION_POLICY, feeRefreshIntervalMs: 10, feeCeilingPerGas: 1_000n };
 
 async function until(check: () => boolean): Promise<void> {
   for (let i = 0; i < 100 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 2));
   expect(check()).toBe(true);
 }
 
-test('manual fees do not read the network and remain the same snapshot', async () => {
+test('legacy fees start empty, then use the estimated gas price', async () => {
   let reads = 0;
-  const fees = new GasFees(async () => { reads++; throw new Error('must not read'); },
-    { ...policy, feeMode: 'manual' });
+  const fees = new GasFees(async type => {
+    expect(type).toBe('legacy');
+    reads++;
+    return { gasPrice: 450n };
+  }, { ...policy, legacy: true });
   try {
+    expect(fees.current()).toBeNull();
     await fees.start();
-    expect(reads).toBe(0);
-    expect(fees.current()?.type).toBe('eip1559');
-    expect(gasPriceCeiling(fees.current()!)).toBe(EXECUTION_POLICY.maxFeePerGas);
+    expect(reads).toBe(1);
+    expect(fees.current()?.type).toBe('legacy');
+    expect(gasPriceCeiling(fees.current()!)).toBe(450n);
     expect(fees.current()).toBe(fees.current());
   } finally { fees.stop(); }
 });
 
-test('auto fees warm once, reuse the cached quote, and reject an old snapshot after refresh', async () => {
+test('EIP-1559 fees warm once, reuse the cached quote, and reject an old snapshot after refresh', async () => {
   let reads = 0;
-  const fees = new GasFees(async () => ({ maxFeePerGas: BigInt(500 + ++reads), maxPriorityFeePerGas: 3n }), policy);
+  const fees = new GasFees(async type => {
+    expect(type).toBe('eip1559');
+    return { maxFeePerGas: BigInt(500 + ++reads), maxPriorityFeePerGas: 3n };
+  }, policy);
   try {
     await fees.start();
     const first = fees.current()!;
@@ -38,7 +44,7 @@ test('auto fees warm once, reuse the cached quote, and reject an old snapshot af
   } finally { fees.stop(); }
 });
 
-test('auto fees pause on an estimate above the ceiling or a failed refresh, then recover', async () => {
+test('fees pause on an estimate above the ceiling or a failed refresh, then recover', async () => {
   let reads = 0;
   const fees = new GasFees(async () => {
     reads++;
@@ -56,7 +62,7 @@ test('auto fees pause on an estimate above the ceiling or a failed refresh, then
   } finally { fees.stop(); warn.mockRestore(); }
 });
 
-test('auto fee snapshot expires if periodic refresh does not complete', async () => {
+test('fee snapshot expires if periodic refresh does not complete', async () => {
   const fees = new GasFees(async () => ({ maxFeePerGas: 500n, maxPriorityFeePerGas: 3n }),
     { ...policy, feeRefreshIntervalMs: 300_000 });
   try {

@@ -51,15 +51,11 @@ export const EXECUTION_POLICY = {
     gasLimit: 2500000n,
     // Minimum-output haircut for each split branch.
     slippageBps: 5,
-    feeMode: 'manual' as 'manual' | 'auto',
-    // Auto fees refresh away from the submission path. A failed refresh pauses trading.
+    // Fees refresh away from the submission path. A failed refresh pauses trading.
     feeRefreshIntervalMs: 5 * 60 * 1000,
-    // Auto mode refuses estimates above this ceiling instead of clamping them.
-    autoMaxFeePerGas: gasPrice('1000'),
+    // Applies to legacy gasPrice or EIP-1559 maxFeePerGas; never clamps estimates.
+    feeCeilingPerGas: gasPrice('1000'),
     legacy: false,
-    legacyGasPrice: gasPrice('50.9'),
-    maxFeePerGas: gasPrice('60'),
-    maxPriorityFeePerGas: gasPrice('3'),
 } as const;
 
 export const RUNTIME = {

@@ -3,6 +3,7 @@ import { type Address } from "viem";
 import { OpportunityManager } from "../src/execute";
 import { type ExecutableOpportunity } from "../src/execution/execution-planner";
 import { RUNTIME, ARBITRAGE_SEARCH_POLICY } from '../src/constants';
+import { startedTestGasFees } from './helpers/gas-fees';
 
 const pair = "0x0000000000000000000000000000000000000001" as Address;
 
@@ -19,24 +20,28 @@ const opportunity: ExecutableOpportunity = {
 test("locks pools before an overlapping fire-and-forget submission", async () => {
   let submissions = 0;
   let releaseFirst!: () => void;
+  const gasFees = await startedTestGasFees();
   const manager = new OpportunityManager({} as never, async () => {
     submissions++;
     await new Promise<void>(resolve => { releaseFirst = resolve; });
     return true;
-  });
+  }, gasFees);
 
-  const first = manager.processOpportunities({} as never, [opportunity]);
-  await Promise.resolve();
-  await manager.processOpportunities({} as never, [opportunity]);
+  try {
+    const first = manager.processOpportunities({} as never, [opportunity]);
+    await Promise.resolve();
+    await manager.processOpportunities({} as never, [opportunity]);
 
-  expect(submissions).toBe(1);
-  releaseFirst();
-  await first;
+    expect(submissions).toBe(1);
+    releaseFirst();
+    await first;
+  } finally { releaseFirst?.(); manager.stop(); }
 });
 
 test('stale and expired queued opportunities are skipped before reserving or submitting', async () => {
   let submissions = 0;
-  const manager = new OpportunityManager({} as never, async () => { submissions++; return true; });
+  const gasFees = await startedTestGasFees();
+  const manager = new OpportunityManager({} as never, async () => { submissions++; return true; }, gasFees);
   const graph = { matchesVersions: () => false } as never;
   await manager.processOpportunities(graph, [{ ...opportunity, marketVersions: { [pair]: 1 } }]);
   await manager.processOpportunities(graph, [{ ...opportunity, observedAt: Date.now() - RUNTIME.candidateMaxAgeMs - 1000 }]);
@@ -46,7 +51,8 @@ test('stale and expired queued opportunities are skipped before reserving or sub
 
 test('off and shadow split candidates never reach submission, even through an injected submitter', async () => {
   let submissions = 0;
-  const manager = new OpportunityManager({} as never, async () => { submissions++; return true; });
+  const gasFees = await startedTestGasFees();
+  const manager = new OpportunityManager({} as never, async () => { submissions++; return true; }, gasFees);
   const before = ARBITRAGE_SEARCH_POLICY.splitRouting;
   const split: ExecutableOpportunity = { ...opportunity, split: { mode: 'shadow', stages: [], resources: [],
     minSurplusAfterRepayment: 1n, deadline: BigInt(Math.floor(Date.now() / 1000) + 60), gasLimit: 1n, gasPriceWei: 1n, costsValidUntil: Date.now() + 60000 } };

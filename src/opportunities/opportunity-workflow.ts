@@ -33,7 +33,7 @@ export async function createOpportunityScanner(
   const gasFees = new GasFees(type => networkConfig.client.estimateFeesPerGas({ type, chain: networkConfig.client.chain }));
   const manager = EXECUTION_POLICY.executeTrades ? new OpportunityManager(networkConfig, undefined, gasFees) : null;
   try {
-    if (EXECUTION_POLICY.feeMode === 'auto') await gasFees.start();
+    await gasFees.start();
     await manager?.start();
   } catch (error) {
     manager?.stop();

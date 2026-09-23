@@ -8,6 +8,9 @@ import { type NetworkConfig } from '../src/network';
 
 const originalDebug = RUNTIME.debug;
 const originalExecution = EXECUTION_POLICY.executeTrades;
+const network = { client: { estimateFeesPerGas: async () => ({
+  maxFeePerGas: 500n * 10n ** 9n, maxPriorityFeePerGas: 3n * 10n ** 9n,
+}) } } as unknown as NetworkConfig;
 
 afterEach(() => {
   Object.assign(RUNTIME, { debug: originalDebug });
@@ -31,7 +34,7 @@ test('reports a profitable worker result that aged out without treating it as ex
   const messages: string[] = [];
   spyOn(console, 'log').mockImplementation((...args) => { messages.push(args.map(String).join(' ')); });
 
-  const scanner = await createOpportunityScanner(engine, {} as NetworkConfig);
+  const scanner = await createOpportunityScanner(engine, network);
   try {
     expect(await scanner.scan()).toEqual([]);
   } finally {
@@ -60,7 +63,7 @@ test('keeps a fresh quote eligible and separately reports a changed market', asy
   const messages: string[] = [];
   spyOn(console, 'log').mockImplementation((...args) => { messages.push(args.map(String).join(' ')); });
 
-  const scanner = await createOpportunityScanner(engine, {} as NetworkConfig);
+  const scanner = await createOpportunityScanner(engine, network);
   try {
     expect(await scanner.scan()).toEqual([result]);
     engine.graph.setFeedReady(false);

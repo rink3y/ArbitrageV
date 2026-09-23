@@ -6,6 +6,7 @@ import { CONTRACTS, NETWORK, TELEGRAM } from '../src/constants';
 import { OpportunityManager } from '../src/execute';
 import { type ExecutableOpportunity, type FlashPoolLookup } from '../src/execution/execution-planner';
 import { initializeNetwork, type NetworkConfig } from '../src/network';
+import { startedTestGasFees } from './helpers/gas-fees';
 
 for (const explorer of ['https://explorer.invalid/', undefined]) {
 test(`notifications use the configured explorer ${explorer ?? 'or no link'} without holding up submissions`, async () => {
@@ -25,10 +26,11 @@ test(`notifications use the configured explorer ${explorer ?? 'or no link'} with
     return new Promise<Response>(resolve => { release = resolve; });
   });
   let submissions = 0;
+  const gasFees = await startedTestGasFees();
   const manager = new OpportunityManager({ account: privateKeyToAccount(`0x${'1'.padStart(64, '0')}`),
     client: { getTransactionCount: async () => 7 },
     walletClient: { sendRawTransaction: async () => `0x${(++submissions).toString(16).padStart(64, '0')}` },
-  } as unknown as NetworkConfig);
+  } as unknown as NetworkConfig, undefined, gasFees);
   const lookup: FlashPoolLookup = { findBestFlashPoolForToken: () => ({ protocol: 'v2', poolAddress: token, fee: 30, liquidity: 1000n }) };
   const opportunity: ExecutableOpportunity = { path: [token, token], pairs: [token], protocols: ['v2'], fees: [30], routeData: ['0x'], optimalInput: 1n, profit: 1n };
   try {
@@ -77,8 +79,10 @@ test('a market change during signing prevents broadcast and returns only the uns
     }
     throw new Error('Unexpected RPC ' + method);
   } });
+  const gasFees = await startedTestGasFees();
   const manager = new OpportunityManager({ account,
-    client: createPublicClient({ chain: sei, transport }), walletClient: createWalletClient({ account, chain: sei, transport }) });
+    client: createPublicClient({ chain: sei, transport }), walletClient: createWalletClient({ account, chain: sei, transport }) },
+    undefined, gasFees);
   const lookup: FlashPoolLookup = {
     matchesVersions: () => fresh,
     findBestFlashPoolForToken: () => ({ protocol: 'v2', poolAddress: token, fee: 30, liquidity: 1000n }),
@@ -162,7 +166,8 @@ test('execution warms once and submits concurrent and later trades without nonce
       path: [token, token], pairs: [firstPool], protocols: ['v2'], fees: [30],
       routeData: ['0x'], optimalInput: 1n, profit: 1n,
     };
-    manager = new OpportunityManager(network);
+    const gasFees = await startedTestGasFees();
+    manager = new OpportunityManager(network, undefined, gasFees);
     await manager.start();
     expect(nonceBlocks).toEqual(['pending']);
     expect(methods).toEqual(['eth_getTransactionCount']);
@@ -203,11 +208,12 @@ for (const synchronous of [false, true]) {
       }
       return Promise.resolve(`0x${'0'.repeat(64)}`);
     });
+    const gasFees = await startedTestGasFees();
     const manager = new OpportunityManager({
       account: privateKeyToAccount(`0x${'1'.padStart(64, '0')}`),
       client: { getTransactionCount: read },
       walletClient: { sendRawTransaction: write },
-    } as unknown as NetworkConfig);
+    } as unknown as NetworkConfig, undefined, gasFees);
     Object.assign(CONTRACTS, { arbitrage: token });
     Object.assign(TELEGRAM, { botToken: '' });
     try {
