@@ -1,0 +1,75 @@
+import { afterEach, expect, mock, spyOn, test } from 'bun:test';
+import { EXECUTION_POLICY, RUNTIME, TOKENS } from '../src/constants';
+import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
+import { createOpportunityScanner } from '../src/opportunities/opportunity-workflow';
+import { WorkerSearch } from '../src/opportunities/worker-search';
+import { backgroundLogs } from '../src/runtime/background-queue';
+import { type NetworkConfig } from '../src/network';
+
+const originalDebug = RUNTIME.debug;
+const originalExecution = EXECUTION_POLICY.executeTrades;
+
+afterEach(() => {
+  Object.assign(RUNTIME, { debug: originalDebug });
+  Object.assign(EXECUTION_POLICY, { executeTrades: originalExecution });
+  mock.restore();
+});
+
+test('reports a profitable worker result that aged out without treating it as executable', async () => {
+  Object.assign(RUNTIME, { debug: true });
+  Object.assign(EXECUTION_POLICY, { executeTrades: false });
+  const engine = new OpportunityEngine();
+  const token = TOKENS[0].address;
+  spyOn(Date, 'now').mockReturnValue(1_000);
+  const result = {
+    path: [token, token], pairs: [], edgeIds: [], protocols: [], fees: [], routeData: [],
+    profit: 10n ** 18n, optimalInput: 10n ** 18n,
+    marketVersions: engine.graph.marketVersions([]), observedAt: 1_000 - RUNTIME.candidateMaxAgeMs - 100,
+  };
+  spyOn(WorkerSearch.prototype, 'search').mockResolvedValue([result]);
+  spyOn(backgroundLogs, 'enqueue').mockImplementation((_key, work) => { void work(); });
+  const messages: string[] = [];
+  spyOn(console, 'log').mockImplementation((...args) => { messages.push(args.map(String).join(' ')); });
+
+  const scanner = await createOpportunityScanner(engine, {} as NetworkConfig);
+  try {
+    expect(await scanner.scan()).toEqual([]);
+  } finally {
+    scanner.stop();
+  }
+  const output = messages.join('\n');
+  expect(output).toContain('1 expired');
+  expect(output).toContain('Quoted profit:');
+  expect(output).toContain('Age at check:');
+  expect(output).not.toContain('No profitable arbitrage opportunities found');
+});
+
+test('keeps a fresh quote eligible and separately reports a changed market', async () => {
+  Object.assign(RUNTIME, { debug: true });
+  Object.assign(EXECUTION_POLICY, { executeTrades: false });
+  spyOn(Date, 'now').mockReturnValue(1_000);
+  const engine = new OpportunityEngine();
+  const token = TOKENS[0].address;
+  const result = {
+    path: [token, token], pairs: [], edgeIds: [], protocols: [], fees: [], routeData: [],
+    profit: 10n ** 18n, optimalInput: 10n ** 18n,
+    marketVersions: engine.graph.marketVersions([]), observedAt: 900,
+  };
+  spyOn(WorkerSearch.prototype, 'search').mockResolvedValue([result]);
+  spyOn(backgroundLogs, 'enqueue').mockImplementation((_key, work) => { void work(); });
+  const messages: string[] = [];
+  spyOn(console, 'log').mockImplementation((...args) => { messages.push(args.map(String).join(' ')); });
+
+  const scanner = await createOpportunityScanner(engine, {} as NetworkConfig);
+  try {
+    expect(await scanner.scan()).toEqual([result]);
+    engine.graph.setFeedReady(false);
+    expect(await scanner.scan()).toEqual([]);
+  } finally {
+    scanner.stop();
+  }
+  const output = messages.join('\n');
+  expect(output).toContain('1 eligible, 0 expired, 0 invalidated');
+  expect(output).toContain('0 eligible, 0 expired, 1 invalidated');
+  expect(output).toContain('market changed or feed unavailable; not executable');
+});

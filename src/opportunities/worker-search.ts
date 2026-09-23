@@ -27,6 +27,8 @@ export class WorkerSearch {
         if (event.data.error) { this.reset(); pending.reject(new Error(event.data.error)); return; }
         latency.observe('worker.apply', event.data.applyMs);
         latency.observe('search', event.data.searchMs);
+        latency.observe('search.visit', event.data.stats.visitMs);
+        latency.observe('search.sizing', event.data.stats.sizingMs);
         latency.increment('search.candidates', event.data.stats.candidates);
         latency.increment('search.sized', event.data.stats.sized);
         latency.observe('split.search', event.data.splitStats.elapsedMs);

@@ -21,7 +21,7 @@ export class OpportunityEngine {
   private readonly tokenByAddress: Map<string, TokenConfig>;
   readonly startTokens: TokenConfig['address'][];
   private readonly strategy: CircularArbitrageStrategy;
-  lastSearchStats = { candidates: 0, sized: 0 };
+  lastSearchStats = { candidates: 0, sized: 0, visitMs: 0, sizingMs: 0 };
   lastSplitStats = { work: 0, evaluated: 0, exhausted: false, elapsedMs: 0, winners: 0 };
 
   constructor(
@@ -46,7 +46,8 @@ export class OpportunityEngine {
     const limit = this.policy.maxCandidatesToSize ?? 64;
     const splitPaths = new Map<string, CandidateRoute['path']>();
     const baselineNet = new Map<string, bigint>();
-    this.lastSearchStats = { candidates: 0, sized: 0 };
+    this.lastSearchStats = { candidates: 0, sized: 0, visitMs: 0, sizingMs: 0 };
+    const visitStarted = performance.now();
     this.strategy.visitCandidates(request, candidate => {
       this.lastSearchStats.candidates++;
       if (splitEnabled && splitPaths.size < limit && candidate.path.length <= Math.min(this.policy.maxRouteEdges, 3) + 1) {
@@ -65,7 +66,9 @@ export class OpportunityEngine {
       shortlist.splice(index, 0, { candidate, numerator, denominator });
       if (shortlist.length > limit) shortlist.pop();
     });
+    this.lastSearchStats.visitMs = performance.now() - visitStarted;
 
+    const sizingStarted = performance.now();
     for (const { candidate } of shortlist) {
       this.lastSearchStats.sized++;
       const opportunity = this.sizeCandidate(candidate);
@@ -84,6 +87,7 @@ export class OpportunityEngine {
       if (opportunity.profit <= token.minProfit) continue;
       this.insertRankedOpportunity(opportunities, opportunity);
     }
+    this.lastSearchStats.sizingMs = performance.now() - sizingStarted;
 
     const started = performance.now();
     const splitResults = searchSplitRoutes(this.graph, [...splitPaths.values()], this.tokens, request.splitCosts, baselineNet);

@@ -198,7 +198,7 @@ export class MarketGraph {
   private readonly edgeIndexes = new Map<MarketEdgeId, number>();
   private readonly edges: EdgeSlot[] = [];
   private readonly rankedEdgesCache = new Map<number, IndexedEdgeCache>();
-  private readonly flashEdgesCache = new Map<number, number[]>();
+  private readonly flashEdgesCache = new Map<number, { edgeIndexes: number[]; v2Only: boolean }>();
   private readonly hopDistancesCache = new Map<number, Int32Array>();
   private readonly pairs: Array<PairInfo | undefined> = [];
   private readonly v3Pools: Array<V3PoolInfo | undefined> = [];
@@ -634,8 +634,9 @@ export class MarketGraph {
 
     let best: FlashPoolCandidate | null = null;
     let bestEdge: AnyMarketEdge | undefined;
+    const cachedEdges = spendWork ? undefined : this.flashEdgeIndexes(tokenIndex);
 
-    for (const edgeIndex of spendWork ? this.tokens[tokenIndex].edgeIndexes : this.flashEdgeIndexes(tokenIndex)) {
+    for (const edgeIndex of spendWork ? this.tokens[tokenIndex].edgeIndexes : cachedEdges!.edgeIndexes) {
       if (spendWork && !spendWork()) return null;
       if (excluded.has(this.edges[edgeIndex].poolIndex)) continue;
       const edge = this.edges[edgeIndex].edge;
@@ -655,6 +656,9 @@ export class MarketGraph {
           fee: edge.fee,
           liquidity: inputCapacity,
         };
+        // Cached V2 flash edges are fee-ordered. Once one can fund the amount,
+        // later V2 edges cannot offer a lower fee for that same amount.
+        if (cachedEdges?.v2Only) return best;
       }
     }
 
@@ -1119,7 +1123,7 @@ export class MarketGraph {
     return protocolPlugin(protocol).flashLoanFee?.(fee, amount) ?? 0n;
   }
 
-  private flashEdgeIndexes(tokenIndex: number): number[] {
+  private flashEdgeIndexes(tokenIndex: number): { edgeIndexes: number[]; v2Only: boolean } {
     const cached = this.flashEdgesCache.get(tokenIndex);
     if (cached) return cached;
     const edgeIndexes = this.tokens[tokenIndex].edgeIndexes
@@ -1129,8 +1133,9 @@ export class MarketGraph {
           (edge.protocol !== 'v2' || edge.variant === 'uniswap-v2');
       })
       .sort((aIndex, bIndex) => this.compareFlashEdges(this.edges[aIndex].edge, this.edges[bIndex].edge));
-    this.flashEdgesCache.set(tokenIndex, edgeIndexes);
-    return edgeIndexes;
+    const result = { edgeIndexes, v2Only: edgeIndexes.every(index => this.edges[index].edge.protocol === 'v2') };
+    this.flashEdgesCache.set(tokenIndex, result);
+    return result;
   }
 
   private compareFlashEdges(a: AnyMarketEdge, b: AnyMarketEdge): number {
