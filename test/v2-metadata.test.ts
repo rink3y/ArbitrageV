@@ -6,6 +6,10 @@ import { type DexFactoryConfig } from '../src/protocols/v2/config';
 
 const address = (value: number) => `0x${value.toString(16).padStart(40, '0')}` as Address;
 const blockHash = (value: bigint) => `0x${value.toString(16).padStart(64, '0')}` as `0x${string}`;
+const factories: DexFactoryConfig[] = [
+  { name: 'v2 fixture', address: address(901), fee: 30, kind: 'uniswap-v2' },
+  { name: 'solidly fixture', address: address(902), fee: 30, kind: 'solidly' },
+];
 
 test('V2 discovery splits a reverted range without using the Solidly filter for Dragon', async () => {
   const ranges: Array<[number, number]> = [];
@@ -35,7 +39,7 @@ test('V2 discovery splits a reverted range without using the Solidly filter for 
   };
 
   const store = new V2Store(':memory:');
-  const pools = await discoverV2PoolMetadata(client, store);
+  const pools = await discoverV2PoolMetadata(client, store, factories);
   store.close();
   expect(pools).toHaveLength(4);
   expect(ranges).toEqual([[0, 4], [0, 2], [2, 4]]);
@@ -73,7 +77,7 @@ test('Solidly discovery reads factory fees once and persists stable metadata', a
   };
 
   const store = new V2Store(':memory:');
-  const pools = await discoverV2PoolMetadata(client, store);
+  const pools = await discoverV2PoolMetadata(client, store, factories);
   store.close();
   expect(feeCalls).toEqual([true, false]);
   expect(pools.map(pool => [pool.variant, pool.fee, pool.scale0])).toEqual([

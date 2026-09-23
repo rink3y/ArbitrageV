@@ -7,7 +7,8 @@ import { address, hash, pool } from './helpers/v3-fixture';
 import { tickWordBounds } from '../src/protocols/v3/coverage';
 import { type CarbonStrategy } from '../src/protocols/carbon/types';
 
-const policy = { ...ARBITRAGE_SEARCH_POLICY, beamWidth: 8, maxRouteEdges: 3, maxCandidatesToSize: 4 };
+const policy = { ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2', 'v3', 'carbon'] as const,
+  beamWidth: 8, maxRouteEdges: 3, maxCandidatesToSize: 4 };
 const [a, b, c] = TOKENS.map(token => token.address);
 function market() {
   const engine = new OpportunityEngine(policy);

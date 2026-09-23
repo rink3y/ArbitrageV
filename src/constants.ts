@@ -1,5 +1,5 @@
 import { type Address, type Chain } from 'viem';
-import { sei } from 'viem/chains';
+import { cronos } from 'viem/chains';
 import { type ArbitrageSearchPolicy } from './market-graph/types';
 import { gasPrice, tokenAmount } from './values';
 
@@ -14,8 +14,8 @@ export type TokenConfig = {
 };
 
 export const NETWORK = {
-    chain: sei as Chain,
-    wrappedNativeToken: '0xE30feDd158A2e3b13e9badaeABaFc5516e95e8C7' as Address,
+    chain: cronos as Chain,
+    wrappedNativeToken: '0x5C7F8A570d578ED84E63fdFA7b1eE72dEae1AE23' as Address,
     rpcUrl: process.env.RPC_URL,
     wsUrl: process.env.WSS_URL,
     privateKey: process.env.PRIVATE_KEY,
@@ -29,7 +29,7 @@ export const CONTRACTS = {
 export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
     topTokens: 10,
     // Controls discovery, live loading, event monitoring, and route searches. Use ['v2'] for V2 only.
-    allowedProtocols: ['v2', 'v3', 'carbon'],
+    allowedProtocols: ['v2'],
     allowProtocolMixing: true,
     maxRouteEdges: 5,
     beamWidth: 25,
@@ -78,73 +78,80 @@ export const TELEGRAM = {
 
 export const TOKENS: TokenConfig[] = [
     {
-        name: 'WSEI',
-        address: '0xE30feDd158A2e3b13e9badaeABaFc5516e95e8C7',
+        name: 'WCRO',
+        address: '0x5C7F8A570d578ED84E63fdFA7b1eE72dEae1AE23',
         liquidityAmount: tokenAmount('100'),
-        minProfit: tokenAmount('0.05'),
+        minProfit: tokenAmount('0.09'),
         decimals: 18,
     },
     {
+        name: 'WCRO1',
+        address: '0xca2503482e5D6D762b524978f400f03E38d5F962',
+        liquidityAmount: tokenAmount('100'),
+        minProfit: tokenAmount('0.09'),
+        decimals: 18,
+    },
+    {
+        name: 'USDC.e',
+        address: '0xc21223249CA28397B4B6541dfFaEcC539BfF0c59',
+        liquidityAmount: tokenAmount('10', 6),
+        minProfit: tokenAmount('0.10', 6),
+        decimals: 6,
+    },
+    {
         name: 'USDC',
-        address: '0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392',
-        liquidityAmount: tokenAmount('30', 6),
-        minProfit: tokenAmount('0.09', 6),
+        address: '0x3D7F2C478aAfdB65542BCB44bCeeC05849999d2D',
+        liquidityAmount: tokenAmount('10', 6),
+        minProfit: tokenAmount('0.10', 6),
         decimals: 6,
     },
     {
-        name: 'USDC.n',
-        address: '0x3894085Ef7Ff0f0aeDf52E2A2704928d1Ec074F1',
-        liquidityAmount: tokenAmount('30', 6),
-        minProfit: tokenAmount('0.09', 6),
-        decimals: 6,
-    },
-    {
-        name: 'USDT0',
-        address: '0x9151434b16b9763660705744891fA906F660EcC5',
-        liquidityAmount: tokenAmount('30', 6),
-        minProfit: tokenAmount('0.09', 6),
+        name: 'USDT',
+        address: '0x66e428c3f67a68878562e79A0234c1F83c208770',
+        liquidityAmount: tokenAmount('10', 6),
+        minProfit: tokenAmount('0.10', 6),
         decimals: 6,
     },
         {
-        name: 'USDT.Kava',
-        address: '0xB75D0B03c06A926e488e2659DF1A861F860bD3d1',
-        liquidityAmount: tokenAmount('20', 6),
-        minProfit: tokenAmount('0.09', 6),
-        decimals: 6,
+        name: 'VVS',
+        address: '0x2D03bECE6747ADC00E1a131BBA1469C15fD11e03',
+        liquidityAmount: tokenAmount('1000000', 18),
+        minProfit: tokenAmount('99000', 18),
+        decimals: 18,
     },
     {
         name: 'WBTC',
-        address: '0x0555E30da8f98308EdB960aa94C0Db47230d2B9c',
-        liquidityAmount: tokenAmount('0.0003324', 8),
-        minProfit: tokenAmount('0.000001662', 8),
+        address: '0x062E66477Faf219F25D27dCED647BF57C3107d52',
+        liquidityAmount: tokenAmount('0.0001196', 8),
+        minProfit: tokenAmount('0.000001196', 8),
         decimals: 8,
     },
     {
         name: 'WETH',
-        address: '0x160345fC359604fC6e70E3c5fAcbdE5F7A9342d8',
-        liquidityAmount: tokenAmount('0.01238'),
-        minProfit: tokenAmount('0.00006190'),
+        address: '0xe44Fd7fCb2b1581822D0c862B68222998a0c299a',
+        liquidityAmount: tokenAmount('0.003782', 18),
+        minProfit: tokenAmount('0.00003782', 18),
         decimals: 18,
     },
         {
-        name: 'DRG',
-        address: '0x0a526e425809aEA71eb279d24ae22Dee6C92A4Fe',
-        liquidityAmount: tokenAmount('2100'),
-        minProfit: tokenAmount('10.50'),
+        name: 'USC',
+        address: '0xD42E078ceA2bE8D03cd9dFEcC1f0d28915Edea78',
+        liquidityAmount: tokenAmount('10', 18),
+        minProfit: tokenAmount('0.10', 18),
         decimals: 18,
     },
-    {
-        name: 'ISEI',
-        address: '0x5Cf6826140C1C56Ff49C808A1A75407Cd1DF9423',
-        liquidityAmount: tokenAmount('668'),
-        minProfit: tokenAmount('3.34'),
-        decimals: 18,
-    },
-    {
-        name: 'SEIYAN',
-        address: '0x5f0E07dFeE5832Faa00c63F2D33A0D79150E8598',
-        liquidityAmount: tokenAmount('128820', 6),
-        minProfit: tokenAmount('644', 6),
-        decimals: 6,
-    }
+    // {
+    //     name: 'ISEI',
+    //     address: '0x5Cf6826140C1C56Ff49C808A1A75407Cd1DF9423',
+    //     liquidityAmount: tokenAmount('668'),
+    //     minProfit: tokenAmount('3.34'),
+    //     decimals: 18,
+    // },
+    // {
+    //     name: 'SEIYAN',
+    //     address: '0x5f0E07dFeE5832Faa00c63F2D33A0D79150E8598',
+    //     liquidityAmount: tokenAmount('128820', 6),
+    //     minProfit: tokenAmount('644', 6),
+    //     decimals: 6,
+    // }
 ];

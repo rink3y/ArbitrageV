@@ -7,6 +7,7 @@ import { tickWordBounds } from '../src/protocols/v3/coverage';
 import { type V3Snapshot } from '../src/protocols/v3/types';
 
 const [tokenA, tokenB, tokenC] = TOKENS.map(({ address }) => address);
+const policy = { ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2', 'v3', 'carbon'] as const };
 
 function poolAddress(id: number): Address {
   return `0x${(5_000_000 + id).toString(16).padStart(40, "0")}` as Address;
@@ -33,7 +34,7 @@ function pool(
 describe("MarketGraph V3 pools", () => {
   test('snapshot replacement removes stale ticks and rejects partial publication', () => {
     const selected = pool(1, tokenA, tokenB, 3000);
-    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, [selected]);
+    const graph = new MarketGraph(policy, [selected]);
     const snapshot: V3Snapshot = {
       poolAddress: selected.address, sqrtPriceX96: 2n ** 96n, tick: 0, liquidity: 1000n,
       blockNumber: 10n, blockHash: `0x${'0'.repeat(64)}`, complete: true,
@@ -56,7 +57,7 @@ describe("MarketGraph V3 pools", () => {
   test("loads only explicitly configured enabled pools", () => {
     const enabledPool = pool(1, tokenA, tokenB, 3000);
     const disabledPool = pool(2, tokenA, tokenC, 500, false);
-    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, [enabledPool, disabledPool]);
+    const graph = new MarketGraph(policy, [enabledPool, disabledPool]);
 
     expect(graph.getV3PoolAddresses()).toEqual([enabledPool.address]);
     expect(graph.getV3Pools().some(pool => pool.address === disabledPool.address)).toBe(false);
@@ -64,7 +65,7 @@ describe("MarketGraph V3 pools", () => {
 
   test("updates configured pool state and exposes directional edges", () => {
     const configuredPool = pool(1, tokenA, tokenB, 3000);
-    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, [configuredPool]);
+    const graph = new MarketGraph(policy, [configuredPool]);
 
     graph.updateV3PoolStates([{
       poolAddress: configuredPool.address,
@@ -91,7 +92,7 @@ describe("MarketGraph V3 pools", () => {
     const lowLiquidityPool = pool(1, tokenA, tokenB, 3000);
     const noStatePool = pool(2, tokenA, tokenC, 500);
     const highLiquidityPool = pool(3, tokenA, tokenC, 500);
-    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, [lowLiquidityPool, noStatePool, highLiquidityPool]);
+    const graph = new MarketGraph(policy, [lowLiquidityPool, noStatePool, highLiquidityPool]);
 
     graph.updateV3PoolStates([
       {
@@ -119,7 +120,7 @@ describe("MarketGraph V3 pools", () => {
 
   test("updates initialized ticks and removes empty ticks", () => {
     const configuredPool = pool(1, tokenA, tokenB, 3000);
-    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY, [configuredPool]);
+    const graph = new MarketGraph(policy, [configuredPool]);
 
     graph.updateV3Ticks([{
       poolAddress: configuredPool.address,
