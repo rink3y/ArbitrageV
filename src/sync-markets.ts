@@ -1,9 +1,8 @@
-import { createPublicClient, http } from 'viem';
-import { sei } from 'viem/chains';
-import { CONTRACTS, NETWORK, RUNTIME } from './constants';
+import { CONTRACTS, RUNTIME } from './constants';
 import { filterDiscoveredMarkets } from './market-filter';
 import { loadMarketSnapshot, replaceMarketSnapshot, type MarketSnapshot } from './market-db';
 import { type MarketProtocol } from './market-graph/types';
+import { createReadClient } from './network';
 import { enabledProtocolPlugins, PROTOCOL_PLUGINS } from './protocols/registry';
 
 export type SyncMarketsOptions = {
@@ -13,13 +12,8 @@ export type SyncMarketsOptions = {
 export async function syncMarkets(options: SyncMarketsOptions = {}): Promise<void> {
   const plugins = enabledProtocolPlugins(options.protocols);
   const selected = new Set(plugins.map(plugin => plugin.id));
-  if (!NETWORK.rpcUrl) throw new Error('RPC_URL is required');
+  const client = createReadClient();
   if (!CONTRACTS.flashQuery) throw new Error('UNISWAP_FLASH_QUERY_CONTRACT_ADDRESS is required');
-
-  const client = createPublicClient({
-    chain: { ...sei, id: NETWORK.chainId },
-    transport: http(NETWORK.rpcUrl),
-  });
 
   const existing = loadMarketSnapshot();
   const catalog: MarketSnapshot = {

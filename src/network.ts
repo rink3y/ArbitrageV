@@ -10,22 +10,20 @@ export type NetworkConfig = {
   account: Account;
 };
 
-export async function initializeNetwork(): Promise<NetworkConfig> {
-  if (!NETWORK.rpcUrl || !NETWORK.privateKey) {
-    throw new Error('Missing required environment variables: RPC_URL or PRIVATE_KEY');
-  }
-
-  const account = privateKeyToAccount(NETWORK.privateKey as `0x${string}`);
-
-  const chainConfig = {
-    ...sei,
-    id: NETWORK.chainId,
-  };
-
-  const client = createPublicClient({
-    chain: chainConfig,
+export function createReadClient() {
+  if (!NETWORK.rpcUrl) throw new Error('RPC_URL is required');
+  return createPublicClient({
+    chain: { ...sei, id: NETWORK.chainId },
     transport: http(NETWORK.rpcUrl),
   });
+}
+
+export async function initializeNetwork(): Promise<NetworkConfig> {
+  const client = createReadClient();
+  if (!NETWORK.privateKey) throw new Error('PRIVATE_KEY is required');
+
+  const account = privateKeyToAccount(NETWORK.privateKey as `0x${string}`);
+  const chainConfig = client.chain;
 
   const walletClient = createWalletClient({
     chain: chainConfig,

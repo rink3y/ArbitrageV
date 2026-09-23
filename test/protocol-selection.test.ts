@@ -104,12 +104,29 @@ test('empty protocol configuration fails before network initialization', async (
   expect(initialize).not.toHaveBeenCalled();
 });
 
-test('V2-only market sync refreshes V2 and preserves stored V3 and Carbon markets', async () => {
+test('read clients require an RPC URL but no private key', async () => {
+  const previousNetwork = { ...NETWORK };
+  try {
+    Object.assign(NETWORK, { rpcUrl: undefined, privateKey: undefined });
+    expect(() => network.createReadClient()).toThrow('RPC_URL is required');
+    Object.assign(NETWORK, { rpcUrl: 'http://127.0.0.1:1', chainId: 713715 });
+    const client = network.createReadClient();
+    expect<number>(client.chain.id).toBe(713715);
+    expect(client.transport.type).toBe('http');
+    expect(client.transport.url).toBe('http://127.0.0.1:1');
+    expect(client.account).toBeUndefined();
+    await expect(network.initializeNetwork()).rejects.toThrow('PRIVATE_KEY is required');
+  } finally {
+    Object.assign(NETWORK, previousNetwork);
+  }
+});
+
+test('V2-only market sync needs no private key and preserves stored V3 and Carbon markets', async () => {
   const { catalog } = prepareRuntime();
-  const previousRpc = NETWORK.rpcUrl;
+  const previousNetwork = { ...NETWORK };
   const previousFlashQuery = CONTRACTS.flashQuery;
   // Discovery is stubbed, so no RPC calls or database writes occur.
-  Object.assign(NETWORK, { rpcUrl: 'http://127.0.0.1:1' });
+  Object.assign(NETWORK, { rpcUrl: 'http://127.0.0.1:1', privateKey: undefined });
   Object.assign(CONTRACTS, { flashQuery: v2Address });
   const pools = [catalog.v2Pools[0], {
     ...catalog.v2Pools[0],
@@ -132,7 +149,7 @@ test('V2-only market sync refreshes V2 and preserves stored V3 and Carbon market
       carbonPairs: catalog.carbonPairs,
     });
   } finally {
-    Object.assign(NETWORK, { rpcUrl: previousRpc });
+    Object.assign(NETWORK, previousNetwork);
     Object.assign(CONTRACTS, { flashQuery: previousFlashQuery });
   }
 });
