@@ -1,4 +1,5 @@
-import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, TOKENS, type TokenConfig } from '../constants';
+import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, RUNTIME, TOKENS, type TokenConfig } from '../constants';
+import { latency } from '../runtime/latency';
 import { searchSplitRoutes, splitGasCost } from './split-routing';
 import { compareFractions } from '../fractions';
 import { encodeCarbonRouteData } from '../protocols/carbon/execution';
@@ -23,6 +24,7 @@ export class OpportunityEngine {
   private readonly strategy: CircularArbitrageStrategy;
   lastSearchStats = { candidates: 0, sized: 0, visitMs: 0, sizingMs: 0 };
   lastSplitStats = { work: 0, evaluated: 0, exhausted: false, elapsedMs: 0, winners: 0 };
+  diagnostics: Array<{ path: readonly string[]; pairs: readonly string[]; input: bigint; profit: bigint; netProfit?: bigint; rejection?: string }> = [];
 
   constructor(
     readonly policy: ArbitrageSearchPolicy = ARBITRAGE_SEARCH_POLICY,
@@ -39,6 +41,8 @@ export class OpportunityEngine {
   }
 
   findOpportunities(request: FindOpportunitiesRequest): ArbitrageSearchResult {
+    const measured = latency.enabled;
+    this.diagnostics = [];
     request = { ...request, startTokens: request.startTokens.filter(token => this.tokenByAddress.has(token.toLowerCase())) };
     const splitEnabled = !!this.policy.splitRouting && this.policy.splitRouting !== 'off';
     const opportunities: ArbitrageOpportunity[] = [];
@@ -47,9 +51,9 @@ export class OpportunityEngine {
     const splitPaths = new Map<string, CandidateRoute['path']>();
     const baselineNet = new Map<string, bigint>();
     this.lastSearchStats = { candidates: 0, sized: 0, visitMs: 0, sizingMs: 0 };
-    const visitStarted = performance.now();
+    const visitStarted = latency.now();
     this.strategy.visitCandidates(request, candidate => {
-      this.lastSearchStats.candidates++;
+      if (measured) this.lastSearchStats.candidates++;
       if (splitEnabled && splitPaths.size < limit && candidate.path.length <= Math.min(this.policy.maxRouteEdges, 3) + 1) {
         splitPaths.set(candidate.path.map(token => token.toLowerCase()).join(':'), candidate.path);
       }
@@ -66,11 +70,11 @@ export class OpportunityEngine {
       shortlist.splice(index, 0, { candidate, numerator, denominator });
       if (shortlist.length > limit) shortlist.pop();
     });
-    this.lastSearchStats.visitMs = performance.now() - visitStarted;
+    this.lastSearchStats.visitMs = latency.now() - visitStarted;
 
-    const sizingStarted = performance.now();
+    const sizingStarted = latency.now();
     for (const { candidate } of shortlist) {
-      this.lastSearchStats.sized++;
+      if (measured) this.lastSearchStats.sized++;
       const opportunity = this.sizeCandidate(candidate);
       opportunity.observedAt = request.observedAt ?? Date.now();
       const originToken = opportunity.path[0];
@@ -85,16 +89,23 @@ export class OpportunityEngine {
         }
       }
 
-      if (opportunity.profit <= token.minProfit ||
-          (request.splitCosts && (opportunity.netProfit === undefined || opportunity.netProfit <= token.minProfit))) continue;
+      const rejected = opportunity.profit <= token.minProfit ||
+          (!!request.splitCosts && (opportunity.netProfit === undefined || opportunity.netProfit <= token.minProfit));
+      if (RUNTIME.logLevel === 'debug' && this.diagnostics.length < 64) this.diagnostics.push({
+        path: opportunity.path, pairs: opportunity.pairs, input: opportunity.optimalInput,
+        profit: opportunity.profit, netProfit: opportunity.netProfit,
+        rejection: opportunity.profit <= token.minProfit ? 'gross-profit-floor'
+          : rejected ? opportunity.netProfit === undefined ? 'missing-gas-conversion' : 'net-profit-floor' : undefined,
+      });
+      if (rejected) continue;
       this.insertRankedOpportunity(opportunities, opportunity);
     }
-    this.lastSearchStats.sizingMs = performance.now() - sizingStarted;
+    this.lastSearchStats.sizingMs = latency.now() - sizingStarted;
 
-    const started = performance.now();
+    const started = latency.now();
     const splitResults = searchSplitRoutes(this.graph, [...splitPaths.values()], this.tokens, request.splitCosts, baselineNet);
     this.lastSplitStats = { work: splitResults.work, evaluated: splitResults.evaluated, exhausted: splitResults.exhausted,
-      elapsedMs: performance.now() - started, winners: splitResults.candidates.length };
+      elapsedMs: latency.now() - started, winners: splitResults.candidates.length };
     for (const candidate of splitResults.candidates) {
       const branches = candidate.quote.stages.flatMap(stage => stage.branches);
       const pairs = branches.map(branch => branch.pool);

@@ -1,3 +1,4 @@
+import { logger } from '../../reporting/logger';
 import { type Address } from 'viem';
 import { type PublicClient } from 'viem';
 import { type MarketGraph } from '../../market-graph/market-graph';
@@ -5,7 +6,7 @@ import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter'
 import { decodeV2SyncEvent, V2_SYNC_EVENT_ABI } from './events';
 import { type ReserveUpdate } from './types';
 
-import { CONTRACTS, RUNTIME, TOKENS } from '../../constants';
+import { CONTRACTS, TOKENS } from '../../constants';
 import { V2_DISCOVERY_POLICY as PAIR_DISCOVERY_POLICY, V2_FACTORIES as DEX_FACTORIES, V2_LIVE_POLICY } from './config';
 import UniswapFlashQueryABI from '../../ABI/UniswapFlashQuery.json';
 import { type PairInfo as MarketPairInfo } from './types';
@@ -35,17 +36,17 @@ function hasEnoughLiquidity(pair: DiscoveredPairInfo): boolean {
     for (const { address, liquidityAmount } of TOKENS) {
         if (pair.token0 === address) {
             hasMonitoredToken = true;
-            if (RUNTIME.debug) console.log(`Checking liquidity for monitored token ${address} in pair ${pair.pairAddress} (token0)`);
+            if (logger.debugEnabled) logger.debug(`Checking liquidity for monitored token ${address} in pair ${pair.pairAddress} (token0)`);
             if (pair.reserve0 < liquidityAmount) {
-                if (RUNTIME.debug) console.log(`Insufficient liquidity for monitored token ${address}: ${pair.reserve0} < ${liquidityAmount}`);
+                if (logger.debugEnabled) logger.debug(`Insufficient liquidity for monitored token ${address}: ${pair.reserve0} < ${liquidityAmount}`);
                 return false;
             }
         }
         if (pair.token1 === address) {
             hasMonitoredToken = true;
-            if (RUNTIME.debug) console.log(`Checking liquidity for monitored token ${address} in pair ${pair.pairAddress} (token1)`);
+            if (logger.debugEnabled) logger.debug(`Checking liquidity for monitored token ${address} in pair ${pair.pairAddress} (token1)`);
             if (pair.reserve1 < liquidityAmount) {
-                if (RUNTIME.debug) console.log(`Insufficient liquidity for monitored token ${address}: ${pair.reserve1} < ${liquidityAmount}`);
+                if (logger.debugEnabled) logger.debug(`Insufficient liquidity for monitored token ${address}: ${pair.reserve1} < ${liquidityAmount}`);
                 return false;
             }
         }
@@ -58,8 +59,8 @@ function hasEnoughLiquidity(pair: DiscoveredPairInfo): boolean {
     const hasEnoughLiquidity = pair.reserve0 >= PAIR_DISCOVERY_POLICY.minOtherTokenLiquidity ||
                               pair.reserve1 >= PAIR_DISCOVERY_POLICY.minOtherTokenLiquidity;
                               
-    if (RUNTIME.debug && !hasEnoughLiquidity) {
-        console.log(`Insufficient liquidity for non-monitored pair ${pair.pairAddress}: ` +
+    if (logger.debugEnabled && !hasEnoughLiquidity) {
+        logger.debug(`Insufficient liquidity for non-monitored pair ${pair.pairAddress}: ` +
                    `reserve0=${pair.reserve0}, reserve1=${pair.reserve1}, ` +
                    `required=${PAIR_DISCOVERY_POLICY.minOtherTokenLiquidity}`);
     }
@@ -88,8 +89,8 @@ async function getReservesForPairs(
             lastTimestamp: Number(reserves[i][2])
         }));
     } catch (error) {
-        if (RUNTIME.debug) {
-            console.error('Error fetching reserves:', error);
+        if (logger.debugEnabled) {
+            logger.error('Error fetching reserves:', error);
         }
         throw error;
     }
@@ -120,15 +121,15 @@ async function getReservesWithRetry(
             ? PAIR_DISCOVERY_POLICY.solidlyReserveBatchSize
             : PAIR_DISCOVERY_POLICY.batchSize;
         
-        if (RUNTIME.debug) {
-            console.log(`Processing ${factoryPairs.length} pairs from ${factory} with batch size ${batchSize}`);
+        if (logger.debugEnabled) {
+            logger.debug(`Processing ${factoryPairs.length} pairs from ${factory} with batch size ${batchSize}`);
         }
         
         for (let i = 0; i < factoryPairs.length; i += batchSize) {
             const batch = factoryPairs.slice(i, i + batchSize);
             try {
-                if (RUNTIME.debug) {
-                    console.log(`Fetching reserves for ${batch.length} pairs from ${factory} (${i + 1} to ${i + batch.length})`);
+                if (logger.debugEnabled) {
+                    logger.debug(`Fetching reserves for ${batch.length} pairs from ${factory} (${i + 1} to ${i + batch.length})`);
                 }
 
                 const pairsWithReserves = await getReservesForPairs(client, batch);
@@ -139,8 +140,8 @@ async function getReservesWithRetry(
                 );
                 
                 const skippedCount = batch.length - validPairs.length;
-                if (skippedCount > 0 && RUNTIME.debug) {
-                    console.log(`Skipped ${skippedCount} pairs (${
+                if (skippedCount > 0 && logger.debugEnabled) {
+                    logger.debug(`Skipped ${skippedCount} pairs (${
                         batch.length - validPairs.length - pairsWithReserves.filter(p => !isPairActive(p.lastTimestamp)).length
                     } with zero reserves, ${
                         pairsWithReserves.filter(p => !isPairActive(p.lastTimestamp)).length
@@ -151,7 +152,7 @@ async function getReservesWithRetry(
                 
                 result.push(...validPairs);
             } catch (error) {
-                console.error(`Failed to fetch reserves for batch ${i} to ${i + batch.length}${RUNTIME.debug ? `, skipping these pairs: ${
+                logger.error(`Failed to fetch reserves for batch ${i} to ${i + batch.length}${logger.debugEnabled ? `, skipping these pairs: ${
                     batch.map(p => p.pairAddress).join(', ')
                 }` : ''}`);
                 continue;
@@ -173,7 +174,7 @@ export async function getKnownPairsInfo(
         lastTimestamp: 0,
     }));
     const pairsWithReserves = await getReservesWithRetry(client, discovered);
-    console.log(`Successfully fetched reserves for ${pairsWithReserves.length} pairs`);
+    logger.info(`Successfully fetched reserves for ${pairsWithReserves.length} pairs`);
     return pairsWithReserves;
 }
 
@@ -413,7 +414,7 @@ export class V2EventAdapter implements ProtocolEventAdapter {
           changed.push(pair.pairAddress);
         }
         if (changed.length) await this.scan(changed, changed);
-      } catch (error) { console.error('V2 transfer refresh failed; expired profiles remain ineligible:', error); }
+      } catch (error) { logger.error('V2 transfer refresh failed; expired profiles remain ineligible:', error); }
       finally { if (generation === this.transferGeneration) this.scheduleTransferRefresh(); }
     }, Math.min(60_000, V2_LIVE_POLICY.transferRefreshMs));
   }

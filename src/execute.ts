@@ -4,7 +4,6 @@ import {
     EXECUTION_POLICY,
     RUNTIME,
     NETWORK,
-    TELEGRAM,
     TOKENS,
     ARBITRAGE_SEARCH_POLICY,
 } from './constants';
@@ -17,54 +16,11 @@ import {
 import { type NetworkConfig } from './network';
 import { LocalNonces } from './execution/local-nonces';
 import { GasFees, gasPriceCeiling, type GasFeeSnapshot } from './execution/gas-fees';
-import { formatTokenAmountWithSymbol } from './values';
-import { BackgroundQueue, backgroundLogs } from './runtime/background-queue';
+import { logger } from './reporting/logger';
 import { latency } from './runtime/latency';
 import { ReceiptTracker } from './execution/receipt-tracker';
 
 const TOKEN_PROFIT_SCALE = new Map(TOKENS.map(token => [token.address.toLowerCase(), token.minProfit]));
-
-async function sendTransactionNotification(
-    hash: string,
-    expectedProfit: bigint,
-    tokenAddress?: Address
-): Promise<void> {
-    if (!TELEGRAM.botToken || !TELEGRAM.chatId) return;
-
-    const token = resolveToken(tokenAddress);
-    const status = expectedProfit > 0n ? 'PROFIT' : 'WARNING';
-    const explorer = NETWORK.chain.blockExplorers?.default.url;
-    const message =
-        `<b>${status}: Arbitrage Transaction</b>\n\n` +
-        '<b>Type:</b> Flash Swap\n' +
-        `<b>Expected Profit:</b> ${formatTokenAmountWithSymbol(expectedProfit, token)}\n\n` +
-        `<b>Transaction:</b>\n` +
-        `<code>${hash}</code>\n\n` +
-        (explorer ? `<a href="${explorer.replace(/\/$/, '')}/tx/${hash}">View on Explorer</a>` : '');
-
-    try {
-        await fetch(`https://api.telegram.org/bot${TELEGRAM.botToken}/sendMessage`, {
-            signal: AbortSignal.timeout(RUNTIME.notificationTimeoutMs),
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-                chat_id: TELEGRAM.chatId,
-                text: message,
-                parse_mode: 'HTML',
-                disable_web_page_preview: true,
-            }),
-        });
-    } catch (error) {
-        console.error('Failed to send Telegram notification:', error);
-    }
-}
-
-function resolveToken(tokenAddress?: Address): Pick<(typeof TOKENS)[number], 'name' | 'decimals'> {
-    if (!tokenAddress) return TOKENS[0] || { name: 'Unknown', decimals: 18 };
-
-    const token = TOKENS.find(addr => addr.address.toLowerCase() === tokenAddress.toLowerCase());
-    return token || { name: 'Unknown', decimals: 18 };
-}
 
 const PAIR_LOCK_TIMEOUT_MS = 30_000;
 
@@ -72,7 +28,6 @@ const PAIR_LOCK_TIMEOUT_MS = 30_000;
 export class OpportunityManager {
     private lockedPairs: Map<string, number> = new Map();
     private readonly nonces: LocalNonces;
-    private readonly notifications = new BackgroundQueue(128);
     private stopped = false;
     private readonly receipts: ReceiptTracker;
     private readonly gasFees: GasFees;
@@ -102,7 +57,6 @@ export class OpportunityManager {
 
     stop(): void {
         this.stopped = true;
-        this.notifications.stop();
         this.receipts.stop();
         this.nonces.stop();
         this.gasFees.stop();
@@ -144,9 +98,7 @@ export class OpportunityManager {
             return 0;
         });
 
-        if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
-            console.log(`Processing ${sortedOpps.length} opportunities in profit order`);
-        });
+        if (logger.debugEnabled) logger.debug('Processing opportunities in profit order', sortedOpps.length);
 
         for (const opp of sortedOpps) {
             if (!this.gasFees.isCurrent(feeSnapshot)) return;
@@ -155,12 +107,7 @@ export class OpportunityManager {
             if (!this.isFresh(graph, opp, feeSnapshot)) { latency.increment('execution.stale'); continue; }
             // Skip if any pairs conflict
             if (!this.tryLockPairs(opp.pairs)) {
-                if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
-                    console.log('Skipping opportunity due to pair conflict:', {
-                        pairs: opp.pairs,
-                        lockedPairs: Array.from(this.lockedPairs.keys())
-                    });
-                });
+                if (logger.debugEnabled) logger.debug('Skipping pair conflict', { pairs: opp.pairs });
                 continue;
             }
 
@@ -174,17 +121,10 @@ export class OpportunityManager {
                     continue;
                 }
 
-                if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
-                    console.log('Submitted opportunity:', {
-                        profit: opp.profit.toString(),
-                        pairs: opp.pairs
-                    });
-                });
+                if (logger.debugEnabled) logger.debug('Submitted opportunity', { profit: opp.profit, pairs: opp.pairs });
             } catch (error) {
                 this.releasePairs(opp.pairs);
-                if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
-                    console.error('Failed to execute opportunity:', error);
-                });
+                logger.alert('execution.failed', 'error', 'Failed to execute opportunity', error);
             }
         }
     }
@@ -200,27 +140,17 @@ export class OpportunityManager {
 
         const plan = createExecutionPlan(graph, opportunity);
         if (!plan) {
-            if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
-                console.log('Skipping opportunity without executable plan:', {
+            if (logger.debugEnabled) {
+                logger.debug('Skipping opportunity without executable plan:', {
                     path: opportunity.path,
                     pairs: opportunity.pairs,
                     protocols: opportunity.protocols,
                 });
-            });
+            }
             return false;
         }
 
-        if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
-            console.log('Executing arbitrage:', {
-                params: {
-                    ...plan.params,
-                    borrowAmount: plan.params.borrowAmount.toString(),
-                    v2RepayFee: plan.params.v2RepayFee.toString(),
-                    ...(plan.kind === 'flash' ? { fees: plan.params.fees.map(fee => fee.toString()) } : {}),
-                },
-                expectedProfit: opportunity.profit.toString()
-            });
-        });
+        if (logger.debugEnabled) logger.debug('Executing arbitrage', { params: plan.params, expectedProfit: opportunity.profit });
 
         if (!this.isFresh(graph, opportunity, feeSnapshot)) return false;
         const account = this.networkConfig.account;
@@ -229,7 +159,7 @@ export class OpportunityManager {
         const nonce = this.nonces.reserve();
         let serializedTransaction: Hex;
         try {
-            const signingStarted = performance.now();
+            const signingStarted = latency.now();
             // All transaction fields are known locally. No fill, estimation,
             // chain-ID, or nonce RPC belongs between detection and submission.
             serializedTransaction = await account.signTransaction({
@@ -249,7 +179,7 @@ export class OpportunityManager {
                         type: 'eip1559' as const,
                     }),
             }, { serializer: this.networkConfig.walletClient.chain?.serializers?.transaction });
-            latency.observe('sign', performance.now() - signingStarted);
+            latency.elapsed('sign', signingStarted);
         } catch (error) {
             this.nonces.releaseUnsubmitted(nonce);
             throw error;
@@ -260,30 +190,20 @@ export class OpportunityManager {
             return false;
         }
         let hash: Hex;
-        const submittedAt = performance.now();
+        const submittedAt = latency.now();
         try {
             hash = await this.networkConfig.walletClient.sendRawTransaction({ serializedTransaction });
         } catch (error) {
             this.nonces.submissionFailed(nonce);
             throw error;
         }
-        latency.observe('submit.rpc', performance.now() - submittedAt);
-        if (opportunity.observedAt) latency.observe('event.toSubmissionAck', Date.now() - opportunity.observedAt);
+        latency.elapsed('submit.rpc', submittedAt);
+        if (latency.enabled && opportunity.observedAt) latency.observe('event.toSubmissionAck', Date.now() - opportunity.observedAt);
         this.receipts.track(hash, opportunity.observedAt);
         
-        if (RUNTIME.debug) backgroundLogs.enqueue('execution-debug', () => {
-            console.log('Transaction sent:', {
-                hash,
-                nonce,
-                type: 'flashswap',
-            });
+        logger.alert(`submitted:${hash}`, 'info', 'Transaction submitted, not yet confirmed', {
+            hash, nonce, expectedProfitRaw: opportunity.profit, token: opportunity.path[0],
         });
-
-        this.notifications.enqueue(hash, () => sendTransactionNotification(
-            hash,
-            opportunity.profit,
-            opportunity.path[opportunity.path.length - 1]
-        ));
 
         return true;
     }

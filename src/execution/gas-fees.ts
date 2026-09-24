@@ -1,4 +1,4 @@
-import { formatGwei } from 'viem';
+import { logger } from '../reporting/logger';
 import { EXECUTION_POLICY } from '../constants';
 
 type FeePolicy = {
@@ -24,6 +24,7 @@ export class GasFees {
   private timer?: ReturnType<typeof setInterval>;
   private refreshing = false;
   private stopped = false;
+  private paused = false;
 
   constructor(
     private readonly estimate: (type: 'legacy' | 'eip1559') => Promise<FeeEstimate>,
@@ -72,24 +73,29 @@ export class GasFees {
             maxPriorityFeePerGas: estimate.maxPriorityFeePerGas, validUntil } : null;
       if (!next) {
         this.value = null;
-        console.warn('Gas fee estimate was invalid; submissions paused.');
+        this.pause('Gas fee estimate was invalid; submissions paused.');
         return;
       }
       if (gasPriceCeiling(next) > this.policy.feeCeilingPerGas) {
         this.value = null;
-        console.warn(`Gas estimate ${formatGwei(gasPriceCeiling(next))} gwei exceeds ceiling ` +
-          `${formatGwei(this.policy.feeCeilingPerGas)} gwei; submissions paused.`);
+        this.pause('Gas estimate exceeds configured ceiling; submissions paused.');
         return;
       }
       this.value = next;
-      console.log(`Gas fees refreshed: ${formatGwei(gasPriceCeiling(next))} gwei ceiling`);
-    } catch {
+      if (this.paused) logger.alert('fees.recovered', 'info', 'Gas fees recovered; fee gate reopened');
+      this.paused = false;
+      if (logger.enabled) logger.info('Gas fees refreshed', next);
+    } catch (error) {
       if (!this.stopped) {
         this.value = null;
-        console.warn('Gas fee refresh failed; submissions paused until a refresh succeeds.');
+        this.pause('Gas fee refresh failed; submissions paused until a refresh succeeds.', error);
       }
     } finally {
       this.refreshing = false;
     }
+  }
+  private pause(message: string, error?: unknown): void {
+    this.paused = true;
+    logger.alert('fees.paused', 'error', message, error);
   }
 }

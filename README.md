@@ -60,7 +60,6 @@ With no command-line selection, sync refreshes the protocols in `ARBITRAGE_SEARC
 | `UNISWAP_FLASH_QUERY_CONTRACT_ADDRESS` | Deployed query contract used for market discovery and batch reads. |
 | `ARB_CONTRACT_ADDRESS` | Deployed contract used to execute trades. |
 | `MARKET_DB_PATH` | Overrides `data/markets-<chainId>.sqlite`. Each catalog file is bound to one chain. |
-| `DEBUG` | Set to `true` to see detailed market, opportunity, and transaction logs. |
 | `TELEGRAM_BOT_TOKEN` | Bot token for transaction notifications. |
 | `TELEGRAM_CHAT_ID` | Chat receiving those notifications. Leave both Telegram fields blank to disable them. |
 
@@ -180,7 +179,7 @@ The fee snapshot used to score a search is also used to sign its transaction. Th
 
 The new NArb implementation makes both execution entry points owner-only, validates callbacks and exact branch spending, and enforces a final profit floor for splits. Its ABI is generated with `bun run abi:arb` after `forge build`. See [split routing](docs/split-routing.md) for configuration, amount accounting, gas assumptions, rollout requirements and offline replay commands.
 
-Execution sends a transaction through `ARB_CONTRACT_ADDRESS`. Submission logs and Telegram messages mean the transaction was sent; they don't confirm that it succeeded or earned the quoted profit.
+Execution sends a transaction through `ARB_CONTRACT_ADDRESS`. Reports distinguish submission, successful receipts, reverts and receipt timeouts. A successful receipt does not establish realized profit; the quoted profit is still an estimate.
 
 ### The live path
 
@@ -192,9 +191,27 @@ Candidates carry revisions for their route pools and funding pool, plus the feed
 
 Transaction data, cached gas fees, gas limit, chain ID, and nonce are supplied locally. The account signs locally, then the wallet sends the signed bytes. There is no transaction-fill, gas-estimation, chain-ID, fee, or nonce lookup on that normal submission path. If signing fails, fees change, or the market changes before broadcast, only that known-unsubmitted nonce can be reused. Once a submission has been attempted, the conservative uncertain-nonce policy below still applies.
 
-Opportunity/debug logs and Telegram notifications use bounded background queues. A slow Telegram request does not delay the next trade; requests time out after `RUNTIME.notificationTimeoutMs`. Queues can coalesce or drop diagnostics under load, so these messages are not a durable trade ledger. Checkpoint reads/writes run outside live event handling, but SQLite writes still share the main process and can briefly occupy its event loop.
+Set `RUNTIME.logLevel` in [src/constants.ts](src/constants.ts) and restart. It replaces the old `DEBUG` environment variable.
 
-Every `RUNTIME.metricsIntervalMs` (60 seconds), the bot prints bounded latency samples and counters. Timings cover dispatch, V3 application, worker transfer/application, search, signing, submission acknowledgment, and receipt observation. Percentiles use the latest 512 samples per stage; counts are cumulative. Receipt tracking polls in the background, at most eight requests per batch, and expires after two minutes. Receipt-observation time includes polling and RPC delay, not just chain inclusion time. A successful receipt does not establish realized profit.
+| Level | Output |
+| --- | --- |
+| `'off'` | No routine logs or latency collection. Configured Telegram alerts still work. |
+| `'info'` | Startup progress, quote counts, transaction outcomes, warnings, errors and a compact latency summary. This is the default. |
+| `'debug'` | Adds loading details, up to 64 sized candidates per search, profit-filter rejections, quote paths/amounts, split allocations, execution plans, error stacks and all latency stages. |
+
+The reporting worker formats and writes output. [src/reporting/telegram.ts](src/reporting/telegram.ts) owns Telegram, separate from execution. The trading thread copies small, bounded records and never waits for output or Telegram. Debug argument construction is gated; saturated debug queues discard new records before copying them. Enabled logging still has a cost, including allocations and worker CPU contention. Debug is for investigation, not a promise of the same latency as off.
+
+The main queues hold at most 256 log records and 32 alerts, with one outstanding batch of up to 16 records per lane. The Telegram worker queue holds at most 32 waiting alerts and sends one request at a time, pacing new messages at least a second apart. Critical alerts have priority. Repeated incidents are throttled to one alert per key per minute; separate transaction hashes are not coalesced. Requests time out after `RUNTIME.notificationTimeoutMs`, with at most one retry. HTTP and Telegram API failures are both checked, including rate-limit cooldowns. `Reporting health` includes dropped records and delivery failures.
+
+Full debug means more detail, not lossless recording. Strings, records, sample counts and queues have limits; overload drops diagnostics rather than delaying trades. Sensitive fields, RPC URLs and signed payloads are redacted. These logs are not a durable trade ledger. Never deliberately pass secrets to the logger.
+
+Fatal errors stop new submissions first, then allow up to `RUNTIME.reportingShutdownMs`, two seconds by default, for best-effort reporting and cleanup. Gas/nonce pauses, feed interruptions, execution errors, reverts and receipt timeouts can alert even in off mode when both existing Telegram environment fields are configured. A killed process, machine failure or dead reporting worker cannot guarantee an alert. An external supervisor is needed to detect those cases. A reporting-worker failure disables reporting without stopping trading; it does not loop through worker restarts.
+
+Checkpoint reads/writes run outside live event handling, but SQLite writes still share the main process and can briefly occupy its event loop.
+
+In info/debug mode, every `RUNTIME.metricsIntervalMs`, 60 seconds by default, the bot sends numeric latency samples to the reporting worker. That worker sorts and formats them. Percentiles use the latest 512 samples per stage; counts are cumulative. p95 appears after 20 samples and p99 after 100, so a two-sample startup snapshot no longer pretends to describe a tail distribution. Freshness checks, search budgets and receipt tracking still run with logging off. Receipt tracking polls in the background, at most eight requests per batch, and expires after two minutes. Receipt-observation time includes polling and RPC delay, not just chain inclusion time.
+
+`bun run bench:reporting` measures off/info/debug with the real reporting worker, Telegram disabled, and no RPC or signing. It runs steady and saturated workloads, reports tail latency, queue drops and heap/forced-GC observations. Those are local reporting measurements, not end-to-end trading latency. See [reporting verification](docs/reporting-verification.md) for the measured results and limitations.
 
 The worker has a `RUNTIME.searchTimeoutMs` deadline. A failed or timed-out job produces no trades; the next scan rebuilds the worker from current state. Changing search limits or timeouts requires a restart. These limits bound work and reject stale results; they do not guarantee profitable execution or eliminate competition, RPC delay, or garbage-collection pauses.
 
@@ -218,7 +235,7 @@ Startup buffers market events while loading state, reconciles those events, then
 
 If startup reports `No markets for enabled protocols`, run sync with the protocol list you intend to use. Check that sync and startup point to the same `MARKET_DB_PATH`.
 
-For a missing pool, check its factory or controller, the enabled protocols, and the filters described above. For V3, also check `fromBlock`, the deployed query contract's methods, and whether the RPC can read the required history. `V3 snapshot unavailable` means the pool was excluded, not loaded with a partial range. Set `DEBUG=true` in `.env` for loading details.
+For a missing pool, check its factory or controller, the enabled protocols, and the filters described above. For V3, also check `fromBlock`, the deployed query contract's methods, and whether the RPC can read the required history. `V3 snapshot unavailable` means the pool was excluded, not loaded with a partial range. Set `RUNTIME.logLevel` to `'debug'` in `src/constants.ts` for loading details.
 
 If opportunities appear but no transaction is sent, check `executeTrades` and the arbitrage contract address. A route also needs a separate pool that can lend the starting token. Finding a profitable swap route alone isn't enough to execute it.
 

@@ -1,4 +1,6 @@
-import { CONTRACTS, RUNTIME } from './constants';
+import { logger } from './reporting/logger';
+import { installLifecycle } from './reporting/lifecycle';
+import { CONTRACTS } from './constants';
 import { filterDiscoveredMarkets } from './market-filter';
 import { loadMarketSnapshot, replaceMarketSnapshot, type MarketSnapshot } from './market-db';
 import { type MarketProtocol } from './market-graph/types';
@@ -28,8 +30,8 @@ export async function syncMarkets(options: SyncMarketsOptions = {}): Promise<voi
   for (const plugin of plugins) await plugin.discover({ client, catalog });
 
   const filtered = filterDiscoveredMarkets(catalog.v2Pools, catalog.v3Pools, catalog.carbonPairs);
-  if (RUNTIME.debug) {
-    console.log('Shared market filter:', {
+  if (logger.debugEnabled) {
+    logger.info('Shared market filter:', {
       v2: `${catalog.v2Pools.length} -> ${filtered.v2Pools.length}`,
       v3: `${catalog.v3Pools.length} -> ${filtered.v3Pools.length}`,
       carbon: `${catalog.carbonPairs.length} -> ${filtered.carbonPairs.length}`,
@@ -39,7 +41,7 @@ export async function syncMarkets(options: SyncMarketsOptions = {}): Promise<voi
   replaceMarketSnapshot(next);
   if (selected.has('v2') && V2_LIVE_POLICY.transferFees) await profileV2Transfers(client, await getKnownPairsInfo(client, next.v2Pools));
 
-  console.log(`Synchronized ${plugins.map(plugin => plugin.id).join(', ')}. Database now contains ${next.v2Pools.length} V2 pools, ${next.v3Pools.length} V3 pools, and ${next.carbonPairs.length} Carbon pairs`);
+  logger.info(`Synchronized ${plugins.map(plugin => plugin.id).join(', ')}. Database now contains ${next.v2Pools.length} V2 pools, ${next.v3Pools.length} V3 pools, and ${next.carbonPairs.length} Carbon pairs`);
 }
 
 export function parseSyncProtocols(args: readonly string[]): MarketProtocol[] | undefined {
@@ -80,15 +82,12 @@ function mergeSelectedMarkets(
 }
 
 if (import.meta.main) {
+  const lifecycle = installLifecycle();
   let protocols: MarketProtocol[] | undefined;
   try {
     protocols = parseSyncProtocols(process.argv.slice(2));
   } catch (error) {
-    console.error('Error:', error);
-    process.exit(1);
+    await lifecycle.finish(error);
   }
-  syncMarkets({ protocols }).catch(error => {
-    console.error('Error:', error);
-    process.exit(1);
-  });
+  syncMarkets({ protocols }).then(() => lifecycle.finish(), lifecycle.finish);
 }

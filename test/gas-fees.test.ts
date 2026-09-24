@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from 'bun:test';
 import { EXECUTION_POLICY } from '../src/constants';
 import { GasFees, gasPriceCeiling } from '../src/execution/gas-fees';
+import { logger } from '../src/reporting/logger';
 
 const policy = { ...EXECUTION_POLICY, feeRefreshIntervalMs: 10, feeCeilingPerGas: 1_000n };
 
@@ -52,13 +53,14 @@ test('fees pause on an estimate above the ceiling or a failed refresh, then reco
     if (reads === 2) throw new Error('RPC unavailable');
     return { maxFeePerGas: 500n, maxPriorityFeePerGas: 3n };
   }, policy);
-  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  const warn = spyOn(logger, 'alert').mockImplementation(() => {});
   try {
     await fees.start();
     expect(fees.current()).toBeNull();
     await until(() => reads >= 3 && fees.current() !== null);
     expect(gasPriceCeiling(fees.current()!)).toBe(500n);
-    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls.filter(([key]) => key === 'fees.paused')).toHaveLength(2);
+    expect(warn.mock.calls.filter(([key]) => key === 'fees.recovered')).toHaveLength(1);
   } finally { fees.stop(); warn.mockRestore(); }
 });
 

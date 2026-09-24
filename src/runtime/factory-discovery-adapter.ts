@@ -1,5 +1,5 @@
 import { type Address, type PublicClient } from 'viem';
-import { backgroundLogs } from './background-queue';
+import { logger } from '../reporting/logger';
 import { type ProtocolEventAdapter } from './protocol-event-adapter';
 
 type Subscribe = (
@@ -74,7 +74,7 @@ export class FactoryDiscoveryAdapter implements ProtocolEventAdapter {
     if (this.stopped || this.factories.length === 0 || this.intervalMs <= 0) return;
     this.timer = setTimeout(() => {
       void this.requestRefresh()
-        .catch(error => backgroundLogs.enqueue(this.id, () => console.warn(`${this.id}:`, error)))
+        .catch(error => logger.alert(this.id, 'warn', 'Factory discovery failed', this.id, error))
         .finally(() => this.schedule());
     }, this.intervalMs);
     this.timer.unref();

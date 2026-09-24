@@ -1,3 +1,4 @@
+import { logger } from '../reporting/logger';
 import { type Address, type PublicClient } from 'viem';
 import { RUNTIME } from '../constants';
 import { advanceCursor, chainLogBlockNumber, type ChainCursor, compareChainLogs, isLogAfterCursor } from './chain-cursor';
@@ -29,6 +30,7 @@ export class EventMonitor {
   private shutdown = false;
   private activated = false;
   private recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  private reportingRecovery = false;
 
   constructor(
     network: any,
@@ -63,7 +65,7 @@ export class EventMonitor {
       }
       this.reconnectAttempts = 0;
       if (!this.buffering) this.activated = true;
-      console.log(`Market event feed started for ${this.adapters.map(adapter => adapter.id).join(', ')}`);
+      logger.info(`Market event feed started for ${this.adapters.map(adapter => adapter.id).join(', ')}`);
     } catch (error) {
       this.running = false;
       if (!this.usingWebSocket || this.reconnecting) throw error;
@@ -93,10 +95,12 @@ export class EventMonitor {
     }
     this.buffering = false;
     this.feedReady(true);
+    if (this.reportingRecovery) logger.alert('feed.recovered', 'info', 'Market feed recovered; feed gate reopened');
+    this.reportingRecovery = false;
     const range = this.firstBufferedBlock === null
       ? 'no market events arrived during hydration'
       : `${this.bufferedLogCount} events observed across blocks ${this.firstBufferedBlock}-${this.lastBufferedBlock}`;
-    console.log(`Market event feed caught up and is now live (${range})`);
+    logger.info(`Market event feed caught up and is now live (${range})`);
   }
 
   async reconcileMarkets(addresses: readonly Address[]): Promise<bigint> {
@@ -124,7 +128,7 @@ export class EventMonitor {
 
   private async route(adapter: ProtocolEventAdapter, logs: any[]): Promise<void> {
     if (!this.running) return;
-    const receivedAt = performance.now();
+    const receivedAt = latency.now();
     latency.increment('events.received', logs.length);
     const receiptTime = Date.now();
     for (const log of logs) if (log.address && adapter.owns(log.address)) recordMarketReceipt(log.address, receiptTime);
@@ -143,7 +147,7 @@ export class EventMonitor {
     const fresh = adapter.managesOwnCursors ? logs : this.freshLogs(adapter, logs);
     if (fresh.length > 0) {
       const applied = adapter.apply(fresh);
-      latency.observe(`${adapter.id}.dispatch`, performance.now() - receivedAt);
+      latency.elapsed(`${adapter.id}.dispatch`, receivedAt);
       await applied;
     }
   }
@@ -189,7 +193,7 @@ export class EventMonitor {
   private async stopInternal(preserveCursors: boolean): Promise<void> {
     this.running = false;
     for (const unwatch of this.unwatchFns) {
-      try { await unwatch(); } catch (error) { console.error('Error unsubscribing from market events:', error); }
+      try { await unwatch(); } catch (error) { logger.error('Error unsubscribing from market events:', error); }
     }
     this.unwatchFns.length = 0;
     this.buffered.clear();
@@ -207,6 +211,8 @@ export class EventMonitor {
   private async recover(reason: string): Promise<void> {
     if (this.reconnecting || this.shutdown) return;
     this.reconnecting = true;
+    this.reportingRecovery = true;
+    logger.alert('feed.paused', 'warn', 'Market feed interrupted; trading paused', reason);
     this.feedReady(false);
     this.buffering = true;
     for (const adapter of this.adapters) adapter.suspend?.();
@@ -220,14 +226,14 @@ export class EventMonitor {
         await new Promise(resolve => setTimeout(resolve, this.reconnectAttempts * 2_000));
       }
       if (this.shutdown) return;
-      console.log(`${reason}; restarting market event feed`);
+      logger.info(`${reason}; restarting market event feed`);
       await this.stopInternal(true);
       if (this.shutdown) return;
       await this.start();
       await this.reconcileMarkets(this.adapters.flatMap(adapter => adapter.addresses()));
       if (this.activated) await this.activate();
     } catch (error) {
-      console.error('Market feed recovery failed; trading remains paused:', error);
+      logger.alert('feed.recoveryFailed', 'error', 'Market feed recovery failed; trading remains paused', error);
       if (!this.shutdown) {
         this.recoveryTimer = setTimeout(() => void this.recover(reason), 2_000);
         this.recoveryTimer.unref();

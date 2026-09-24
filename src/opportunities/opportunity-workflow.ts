@@ -4,12 +4,10 @@ import { OpportunityManager } from '../execute';
 import { type ExecutableOpportunity } from '../execution/execution-planner';
 import { type NetworkConfig } from '../network';
 import { GasFees } from '../execution/gas-fees';
-import { basisPoints, formatBasisPoints, formatTokenAmountWithSymbol } from '../values';
-import { type MarketProtocol } from '../market-graph/types';
 import { type OpportunityEngine } from './opportunity-engine';
 import { WorkerSearch } from './worker-search';
 import { splitCostsFromSnapshot } from './split-costs';
-import { backgroundLogs } from '../runtime/background-queue';
+import { logger } from '../reporting/logger';
 import { latency } from '../runtime/latency';
 import {
   type ArbitrageSearchResult,
@@ -48,7 +46,6 @@ export async function createOpportunityScanner(
     stop: () => { stopped = true; search.stop(); manager?.stop(); gasFees.stop(); },
   };
 }
-
 async function scanAndExecuteOpportunities(
   engine: OpportunityEngine,
   search: WorkerSearch,
@@ -58,11 +55,11 @@ async function scanAndExecuteOpportunities(
 ): Promise<ArbitrageSearchResult> {
   if (manager && request.releasedPairs) manager.releasePairs(request.releasedPairs);
 
-  const started = performance.now();
+  const started = latency.now();
   const feeSnapshot = gasFees.current();
   if (!feeSnapshot) { latency.increment('fees.unavailable'); return []; }
   const searchRequest = createSearchRequest(engine, request);
-  latency.observe('scan.inputAge', Math.max(0, Date.now() - searchRequest.observedAt!));
+  if (latency.enabled) latency.observe('scan.inputAge', Math.max(0, Date.now() - searchRequest.observedAt!));
   const results = await search.search({
     ...searchRequest,
     splitCosts: splitCostsFromSnapshot(engine.tokens, feeSnapshot),
@@ -80,7 +77,7 @@ async function scanAndExecuteOpportunities(
       opportunities.push(opportunity);
     }
   }
-  latency.observe('scan.roundTrip', performance.now() - started);
+  latency.elapsed('scan.roundTrip', started);
   if (results[0]?.observedAt !== undefined) latency.observe('scan.resultAge', Math.max(0, checkedAt - results[0].observedAt));
   latency.increment('search.stale', expired.length + invalidated.length);
   latency.increment('search.expired', expired.length);
@@ -95,11 +92,11 @@ async function scanAndExecuteOpportunities(
       );
 
     manager.processOpportunities(engine.graph, executableOpportunities, feeSnapshot).catch(error => {
-      backgroundLogs.enqueue('execution-error', () => console.error('Error processing opportunities:', error));
+      logger.alert('execution.processing', 'error', 'Error processing opportunities', error);
     });
   }
 
-  backgroundLogs.enqueue('opportunities', () => logOpportunities(results, opportunities, expired, invalidated, checkedAt));
+  if (logger.enabled) logOpportunities(results, opportunities, expired, invalidated, checkedAt);
 
   return opportunities;
 }
@@ -122,45 +119,32 @@ function logOpportunities(
   checkedAt: number
 ): void {
   if (results.length === 0) {
-    if (RUNTIME.debug) console.log('No profitable arbitrage opportunities found');
+    if (logger.debugEnabled) logger.debug('No profitable arbitrage opportunities found');
     return;
   }
 
-  console.log(`\nFound ${results.length} profitable quotes: ${eligible.length} eligible, ${expired.length} expired, ${invalidated.length} invalidated`);
-  if (!RUNTIME.debug) return;
+  logger.info(`Found ${results.length} profitable quotes: ${eligible.length} eligible, ${expired.length} expired, ${invalidated.length} invalidated`);
+  if (!logger.debugEnabled) return;
   const expiredSet = new Set(expired);
   const invalidatedSet = new Set(invalidated);
 
   results.forEach((opportunity, index) => {
     const { path, profit, pairs, fees, optimalInput } = opportunity;
-    const routeKind = routeKindFromProtocols(opportunity.protocols);
-    const profitBps = basisPoints(profit, optimalInput);
     const startToken = path[0];
     const startTokenInfo = TOKENS.find(addr => addr.address === startToken);
-    if (!startTokenInfo) throw new Error(`Token info not found for ${startToken}`);
 
     const lastToken = path[path.length - 1];
     const lastTokenInfo = TOKENS.find(addr => addr.address === lastToken);
-    if (!lastTokenInfo) throw new Error(`Token info not found for ${lastToken}`);
 
     const status = invalidatedSet.has(opportunity) ? 'market changed or feed unavailable; not executable'
       : expiredSet.has(opportunity) ? 'expired; not executable' : null;
-    console.log(status ? `\nQuote #${index + 1} (${status}):` : `\nOpportunity #${index + 1}:`);
-    console.log(`Path: ${path.join(' -> ')}`);
-    console.log(`${status ? 'Quoted' : 'Expected'} profit: ${formatTokenAmountWithSymbol(profit, lastTokenInfo)}`);
-    if (opportunity.netProfit !== undefined) console.log(`Conservative net after gas: ${formatTokenAmountWithSymbol(opportunity.netProfit, lastTokenInfo)}`);
-    if (expiredSet.has(opportunity)) console.log(`Age at check: ${opportunity.observedAt === undefined ? 'unknown' : `${checkedAt - opportunity.observedAt} ms`} (limit ${RUNTIME.candidateMaxAgeMs} ms)`);
-    console.log(`Route type: ${routeKind}`);
-    if (opportunity.split) console.log(`Split ${opportunity.split.mode}: ${opportunity.split.stages.map(stage => stage.branches.length).join(' -> ')} branches; conservative net ${opportunity.netProfit}`);
-    console.log(`Optimal input amount: ${optimalInput.toString()} wei || ${formatTokenAmountWithSymbol(optimalInput, startTokenInfo)}`);
-    console.log(`Profit percentage: ${formatBasisPoints(profitBps)}%`);
-    console.log(`Pairs used: ${pairs.join(', ')}`);
-    console.log(`Fees: ${fees.map(fee => fee.toString()).join(', ')}`);
+    logger.debug('Opportunity', { index: index + 1, status, path, profit, netProfit: opportunity.netProfit,
+      optimalInput, pairs, fees, protocols: opportunity.protocols,
+      inputToken: startTokenInfo && { name: startTokenInfo.name, decimals: startTokenInfo.decimals },
+      profitToken: lastTokenInfo && { name: lastTokenInfo.name, decimals: lastTokenInfo.decimals },
+      ageMs: opportunity.observedAt === undefined ? undefined : checkedAt - opportunity.observedAt,
+      ageLimitMs: RUNTIME.candidateMaxAgeMs,
+    });
+    if (opportunity.split) logger.debug('Split allocation', opportunity.split);
   });
 }
-
-function routeKindFromProtocols(protocols: MarketProtocol[]): MarketProtocol | 'mixed' {
-  if (protocols.length === 0) return 'mixed';
-  return protocols.every(protocol => protocol === protocols[0]) ? protocols[0] : 'mixed';
-}
-

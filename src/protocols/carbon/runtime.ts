@@ -1,6 +1,7 @@
+import { logger } from '../../reporting/logger';
 import { type Address, type PublicClient } from 'viem';
 import UniswapFlashQueryABI from '../../ABI/UniswapFlashQuery.json';
-import { CONTRACTS, RUNTIME, TOKENS } from '../../constants';
+import { CONTRACTS, TOKENS } from '../../constants';
 import { CARBON_CONTROLLERS, CARBON_STARTUP_POLICY } from './config';
 import { graphToken } from '../../tokens';
 import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter';
@@ -83,7 +84,7 @@ export class CarbonStrategyStore {
 
     await this.refetchPairsInBatches();
 
-    if (RUNTIME.debug) console.log(`Carbon loaded ${this.strategiesById.size} live strategies`);
+    if (logger.debugEnabled) logger.debug(`Carbon loaded ${this.strategiesById.size} live strategies`);
     await this.onChange?.({ kind: 'snapshot', strategies: [...this.strategiesById.values()] }, []);
   }
 
@@ -112,15 +113,15 @@ export class CarbonStrategyStore {
 
   private async refetchPairsInBatches(): Promise<void> {
     for (const [controller, pairs] of this.pairsByController()) {
-      if (RUNTIME.debug) {
+      if (logger.debugEnabled) {
         const batchCount = Math.ceil(pairs.length / CARBON_STARTUP_POLICY.batchSize);
-        console.log(`Loading ${pairs.length} Carbon pairs from ${controller} in ${batchCount} batches of up to ${CARBON_STARTUP_POLICY.batchSize}`);
+        logger.debug(`Loading ${pairs.length} Carbon pairs from ${controller} in ${batchCount} batches of up to ${CARBON_STARTUP_POLICY.batchSize}`);
       }
 
       for (let start = 0; start < pairs.length; start += CARBON_STARTUP_POLICY.batchSize) {
         const batch = pairs.slice(start, start + CARBON_STARTUP_POLICY.batchSize);
-        if (RUNTIME.debug) {
-          console.log(`Carbon strategy batch ${Math.floor(start / CARBON_STARTUP_POLICY.batchSize) + 1}: ${batch.length} pairs`);
+        if (logger.debugEnabled) {
+          logger.debug(`Carbon strategy batch ${Math.floor(start / CARBON_STARTUP_POLICY.batchSize) + 1}: ${batch.length} pairs`);
         }
         await this.refetchPairBatch(batch);
       }
@@ -185,8 +186,8 @@ export class CarbonStrategyStore {
     this.strategyIdsByPair.set(key, ids);
     this.setPairActive(key, ids.size > 0);
 
-    if (RUNTIME.debug) {
-      console.log(`Carbon pair ${pair.token0}/${pair.token1}: loaded ${rawStrategies.length}, kept ${ids.size}, filtered ${filtered}`);
+    if (logger.debugEnabled) {
+      logger.debug(`Carbon pair ${pair.token0}/${pair.token1}: loaded ${rawStrategies.length}, kept ${ids.size}, filtered ${filtered}`);
     }
   }
 

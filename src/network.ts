@@ -1,3 +1,4 @@
+import { logger } from './reporting/logger';
 import { createPublicClient, http, webSocket, createWalletClient, isAddress, zeroAddress, type Account } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { NETWORK, RUNTIME } from './constants';
@@ -54,14 +55,14 @@ export async function initializeNetwork(): Promise<NetworkConfig> {
         transport: webSocket(NETWORK.wsUrl),
       });
       await assertRpcChain(wsClient);
-      console.log('WebSocket client initialized successfully');
+      logger.info('WebSocket client initialized successfully');
       return {
         ...config,
         wsClient,
       };
     } catch (error) {
-      console.error('Failed to initialize WebSocket client:', error);
-      console.warn('Falling back to HTTP client for events');
+      logger.error('Failed to initialize WebSocket client:', error);
+      logger.warn('Falling back to HTTP client for events');
     }
   }
 

@@ -7,6 +7,8 @@ import { OpportunityManager } from '../src/execute';
 import { type ExecutableOpportunity, type FlashPoolLookup } from '../src/execution/execution-planner';
 import { initializeNetwork, type NetworkConfig } from '../src/network';
 import { startedTestGasFees } from './helpers/gas-fees';
+import { logger } from '../src/reporting/logger';
+import { formatAlert } from '../src/reporting/telegram';
 
 for (const explorer of ['https://explorer.invalid/', undefined]) {
 test(`notifications use the configured explorer ${explorer ?? 'or no link'} without holding up submissions`, async () => {
@@ -19,12 +21,11 @@ test(`notifications use the configured explorer ${explorer ?? 'or no link'} with
   Object.assign(NETWORK, { chain: { ...previousChain,
     blockExplorers: explorer ? { default: { name: 'Test explorer', url: explorer } } : undefined,
   } });
-  let release!: (response: Response) => void;
   let text = '';
-  const notify = spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
-    text = JSON.parse(String(init?.body)).text;
-    return new Promise<Response>(resolve => { release = resolve; });
+  const notify = spyOn(logger, 'alert').mockImplementation((_key, level, ...args) => {
+    text = formatAlert({ at: 0, level, args }, { ...TELEGRAM, timeoutMs: 1, explorer });
   });
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() => { throw new Error('Execution must not send Telegram directly'); });
   let submissions = 0;
   const gasFees = await startedTestGasFees();
   const manager = new OpportunityManager({ account: privateKeyToAccount(`0x${'1'.padStart(64, '0')}`),
@@ -38,14 +39,15 @@ test(`notifications use the configured explorer ${explorer ?? 'or no link'} with
     await manager.processOpportunities(lookup, [opportunity]);
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(notify).toHaveBeenCalledTimes(1);
-    if (explorer) expect(text).toContain('href="https://explorer.invalid/tx/0x');
-    else expect(text).not.toContain('<a href=');
+    if (explorer) expect(text).toContain('https://explorer.invalid/tx/0x');
+    else expect(text).not.toContain('https://');
     manager.releasePairs([token]);
     await manager.processOpportunities(lookup, [opportunity]);
     expect(submissions).toBe(2);
-    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).not.toHaveBeenCalled();
   } finally {
-    manager.stop(); release?.(new Response('{}')); notify.mockRestore();
+    manager.stop(); notify.mockRestore(); fetchSpy.mockRestore();
     Object.assign(NETWORK, { chain: previousChain });
     Object.assign(CONTRACTS, { arbitrage: previousContract }); Object.assign(TELEGRAM, previousTelegram);
   }

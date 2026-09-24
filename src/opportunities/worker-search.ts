@@ -2,6 +2,7 @@ import { RUNTIME, TOKENS, type TokenConfig } from '../constants';
 import { type MarketGraph } from '../market-graph/market-graph';
 import { type ArbitrageSearchPolicy } from '../market-graph/types';
 import { latency } from '../runtime/latency';
+import { logger } from '../reporting/logger';
 import { type ArbitrageSearchResult, type FindOpportunitiesRequest } from './opportunity-types';
 
 // The scanner has one running job; its scheduler coalesces subsequent dirty
@@ -35,6 +36,10 @@ export class WorkerSearch {
         latency.increment('split.work', event.data.splitStats.work);
         latency.increment('split.winners', event.data.splitStats.winners);
         if (event.data.splitStats.exhausted) latency.increment('split.budgetStops');
+        if (logger.debugEnabled) {
+          logger.debug('Search completed', { direct: event.data.stats, split: event.data.splitStats });
+          for (const diagnostic of event.data.diagnostics ?? []) logger.debug('Sized candidate', diagnostic);
+        }
         pending.resolve(event.data.opportunities);
       };
       this.worker.onerror = event => this.fail(new Error(event.message || 'Search worker failed'));
@@ -45,9 +50,9 @@ export class WorkerSearch {
       const timer = setTimeout(() => this.fail(new Error('Search worker timed out')), RUNTIME.searchTimeoutMs);
       this.pending = { resolve, reject, timer };
       try {
-        const started = performance.now();
-        this.worker!.postMessage({ policy: this.policy, tokens: this.tokens, changes: this.graph.takeChanges(full), request });
-        latency.observe('worker.transfer', performance.now() - started);
+        const started = latency.now();
+        this.worker!.postMessage({ policy: this.policy, tokens: this.tokens, changes: this.graph.takeChanges(full), request, logLevel: RUNTIME.logLevel });
+        latency.elapsed('worker.transfer', started);
       } catch (error) { this.fail(error instanceof Error ? error : new Error(String(error))); }
     });
   }

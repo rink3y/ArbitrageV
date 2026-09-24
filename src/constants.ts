@@ -58,17 +58,29 @@ export const EXECUTION_POLICY = {
     legacy: false,
 } as const;
 
-export const RUNTIME = {
-    debug: process.env.DEBUG === 'true',
+export const RUNTIME: {
+    logLevel: 'off' | 'info' | 'debug';
+    websocketEnabled: boolean;
+    searchTimeoutMs: number;
+    candidateMaxAgeMs: number;
+    metricsIntervalMs: number;
+    notificationTimeoutMs: number;
+    reportingShutdownMs: number;
+    receiptPollIntervalMs: number;
+    receiptTimeoutMs: number;
+    marketDiscoveryIntervalMs: number;
+} = {
+    logLevel: 'info', // 'off' | 'info' | 'debug'
     websocketEnabled: true,
     searchTimeoutMs: 10_000,
     candidateMaxAgeMs: 500,
     metricsIntervalMs: 60_000,
     notificationTimeoutMs: 5_000,
+    reportingShutdownMs: 2_000,
     receiptPollIntervalMs: 1_000,
     receiptTimeoutMs: 120_000,
     marketDiscoveryIntervalMs: 60_000,
-} as const;
+};
 
 export const TELEGRAM = {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',

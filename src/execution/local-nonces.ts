@@ -1,3 +1,4 @@
+import { logger } from '../reporting/logger';
 // One allocator per dedicated trading wallet, in one process.
 export class LocalNonces {
   private nextNonce: number | undefined;
@@ -41,7 +42,7 @@ export class LocalNonces {
 
   submissionFailed(nonce: number): void {
     this.uncertain.add(nonce);
-    console.error(`Submission of nonce ${nonce} failed or is uncertain; new submissions paused until the pending nonce advances past it. Inspect the transaction if this persists.`);
+    logger.alert('nonce.paused', 'error', 'Submission failed or is uncertain; new submissions paused until the pending nonce advances past it.', { nonce });
     this.refreshInBackground();
   }
 
@@ -61,9 +62,11 @@ export class LocalNonces {
       // A slow/stale response must not overwrite reservations made while it was in flight.
       this.nextNonce = Math.max(this.nextNonce ?? pending, pending);
       for (const nonce of this.unsubmitted) if (nonce < pending) this.unsubmitted.delete(nonce);
+      const wasPaused = this.uncertain.size > 0;
       for (const nonce of this.uncertain) {
         if (pending > nonce) this.uncertain.delete(nonce);
       }
+      if (wasPaused && this.uncertain.size === 0 && !this.stopped) logger.alert('nonce.recovered', 'info', 'Nonce reconciled; nonce gate reopened', { pending });
     }).catch(error => {
       failed = true;
       throw error;
@@ -86,6 +89,6 @@ export class LocalNonces {
 
   private refreshInBackground(): void {
     if (this.stopped) return;
-    void this.refresh().catch(error => console.error('Nonce refresh failed; retrying in the background:', error));
+    void this.refresh().catch(error => logger.alert('nonce.refreshFailed', 'error', 'Nonce refresh failed; retrying in the background', error));
   }
 }

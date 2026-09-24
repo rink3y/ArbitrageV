@@ -10,6 +10,7 @@
     "bench:stress": "bun run scripts/bench-stress.ts",
     "bench:carbon": "bun run scripts/bench-carbon.ts",
     "bench:split": "bun run scripts/bench-split.ts",
+    "bench:reporting": "bun run scripts/bench-reporting.ts",
     "replay:split": "bun run scripts/replay-split.ts",
     "abi:arb": "bun run scripts/sync-arb-abi.ts"
   },

@@ -3,23 +3,24 @@ import { EXECUTION_POLICY, RUNTIME, TOKENS } from '../src/constants';
 import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
 import { createOpportunityScanner } from '../src/opportunities/opportunity-workflow';
 import { WorkerSearch } from '../src/opportunities/worker-search';
-import { backgroundLogs } from '../src/runtime/background-queue';
+import { logger } from '../src/reporting/logger';
+import { formatReport } from '../src/reporting/records';
 import { type NetworkConfig } from '../src/network';
 
-const originalDebug = RUNTIME.debug;
+const originalLevel = RUNTIME.logLevel;
 const originalExecution = EXECUTION_POLICY.executeTrades;
 const network = { client: { estimateFeesPerGas: async () => ({
   maxFeePerGas: 500n * 10n ** 9n, maxPriorityFeePerGas: 3n * 10n ** 9n,
 }) } } as unknown as NetworkConfig;
 
 afterEach(() => {
-  Object.assign(RUNTIME, { debug: originalDebug });
+  Object.assign(RUNTIME, { logLevel: originalLevel });
   Object.assign(EXECUTION_POLICY, { executeTrades: originalExecution });
   mock.restore();
 });
 
 test('reports a profitable worker result that aged out without treating it as executable', async () => {
-  Object.assign(RUNTIME, { debug: true });
+  Object.assign(RUNTIME, { logLevel: 'debug' });
   Object.assign(EXECUTION_POLICY, { executeTrades: false });
   const engine = new OpportunityEngine();
   const token = TOKENS[0].address;
@@ -30,9 +31,9 @@ test('reports a profitable worker result that aged out without treating it as ex
     marketVersions: engine.graph.marketVersions([]), observedAt: 1_000 - RUNTIME.candidateMaxAgeMs - 100,
   };
   spyOn(WorkerSearch.prototype, 'search').mockResolvedValue([result]);
-  spyOn(backgroundLogs, 'enqueue').mockImplementation((_key, work) => { void work(); });
   const messages: string[] = [];
-  spyOn(console, 'log').mockImplementation((...args) => { messages.push(args.map(String).join(' ')); });
+  spyOn(logger, 'info').mockImplementation((...args) => { messages.push(formatReport({ at: 0, level: 'info', args })); });
+  spyOn(logger, 'debug').mockImplementation((...args) => { messages.push(formatReport({ at: 0, level: 'debug', args })); });
 
   const scanner = await createOpportunityScanner(engine, network);
   try {
@@ -48,7 +49,7 @@ test('reports a profitable worker result that aged out without treating it as ex
 });
 
 test('keeps a fresh quote eligible and separately reports a changed market', async () => {
-  Object.assign(RUNTIME, { debug: true });
+  Object.assign(RUNTIME, { logLevel: 'debug' });
   Object.assign(EXECUTION_POLICY, { executeTrades: false });
   spyOn(Date, 'now').mockReturnValue(1_000);
   const engine = new OpportunityEngine();
@@ -59,9 +60,9 @@ test('keeps a fresh quote eligible and separately reports a changed market', asy
     marketVersions: engine.graph.marketVersions([]), observedAt: 900,
   };
   spyOn(WorkerSearch.prototype, 'search').mockResolvedValue([result]);
-  spyOn(backgroundLogs, 'enqueue').mockImplementation((_key, work) => { void work(); });
   const messages: string[] = [];
-  spyOn(console, 'log').mockImplementation((...args) => { messages.push(args.map(String).join(' ')); });
+  spyOn(logger, 'info').mockImplementation((...args) => { messages.push(formatReport({ at: 0, level: 'info', args })); });
+  spyOn(logger, 'debug').mockImplementation((...args) => { messages.push(formatReport({ at: 0, level: 'debug', args })); });
 
   const scanner = await createOpportunityScanner(engine, network);
   try {

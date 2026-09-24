@@ -2,7 +2,7 @@ import { type Address, type PublicClient } from 'viem';
 import { type MarketGraph } from '../../market-graph/market-graph';
 import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter';
 import { advanceCursor, compareChainLogs, isLogAfterCursor, type ChainCursor } from '../../runtime/chain-cursor';
-import { backgroundLogs } from '../../runtime/background-queue';
+import { logger } from '../../reporting/logger';
 import { latency } from '../../runtime/latency';
 import { V3_LIVE_POLICY, V3_STARTUP_POLICY } from './config';
 import { decodeV3PoolEvent, V3_POOL_EVENT_ABI } from './events';
@@ -116,7 +116,7 @@ export class V3EventAdapter implements ProtocolEventAdapter {
 
   async apply(logs: any[]): Promise<void> {
     if (this.stopped) return;
-    const started = performance.now();
+    const started = latency.now();
     const changed = new Set<Address>();
     const recover = new Set<Address>();
     for (const log of [...logs].sort(compareChainLogs)) {
@@ -140,7 +140,7 @@ export class V3EventAdapter implements ProtocolEventAdapter {
         changed.delete(address);
       }
     }
-    latency.observe('v3.apply', performance.now() - started);
+    latency.elapsed('v3.apply', started);
     if (recover.size) {
       latency.increment('v3.recovery', recover.size);
       // Healthy pools and log ingestion do not wait for failed-pool RPC recovery.
@@ -280,7 +280,7 @@ export class V3EventAdapter implements ProtocolEventAdapter {
 
   private report(error: unknown): void {
     latency.increment('v3.checkpoint.failed');
-    backgroundLogs.enqueue('v3-recovery', () => console.warn('V3 recovery:', error));
+    logger.alert('v3.recovery', 'warn', 'V3 recovery failed', error);
   }
 }
 

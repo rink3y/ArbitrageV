@@ -1,7 +1,8 @@
+import { logger } from '../../reporting/logger';
 import { parseAbi, type Address } from 'viem';
 import UniswapFlashQueryABI from '../../ABI/UniswapFlashQuery.json';
 import bannedTokens from '../../bannedtax.json';
-import { CONTRACTS, RUNTIME } from '../../constants';
+import { CONTRACTS } from '../../constants';
 import { type DexFactoryConfig, V2_DISCOVERY_POLICY, V2_FACTORIES } from './config';
 import { V2Store, type V2DiscoveryCheckpoint } from './store';
 import { type V2Variant } from './types';
@@ -76,7 +77,7 @@ export async function discoverV2PoolMetadata(
   }
   if ((await blockIdentity(client, head)).blockHash !== identity.blockHash) throw new Error('Chain changed during V2 discovery; retry');
   const pools = store.pools(factories.map(factory => factory.address));
-  console.log(`Found ${pools.length} V2 pools across ${factories.length} factories`);
+  logger.info(`Found ${pools.length} V2 pools across ${factories.length} factories`);
   return pools;
 }
 
@@ -157,7 +158,7 @@ async function getPairsInRange(
     if (!String(error).toLowerCase().includes('revert')) throw error;
     if (stop - start > 1) {
       const middle = start + Math.floor((stop - start) / 2);
-      if (RUNTIME.debug) console.warn(`Retrying ${factory.name} V2 range ${start}-${stop} as smaller calls`);
+      if (logger.debugEnabled) logger.warn(`Retrying ${factory.name} V2 range ${start}-${stop} as smaller calls`);
       return [
         ...await getPairsInRange(client, factory, start, middle, fees, blockNumber),
         ...await getPairsInRange(client, factory, middle, stop, fees, blockNumber),

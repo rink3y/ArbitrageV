@@ -1,3 +1,4 @@
+import { logger } from '../../reporting/logger';
 import { type Address } from 'viem';
 import { ARBITRAGE_SEARCH_POLICY, CONTRACTS } from '../../constants';
 import QueryABI from '../../ABI/UniswapFlashQuery.json';
@@ -79,7 +80,7 @@ export async function profileV2Transfers(client: TransferProbeClient, pairs: rea
         profiles.set(`${item.pair.pairAddress.toLowerCase()}:${item.token.toLowerCase()}`, profile);
       }
       completed += batch.length;
-      if (completed % 100 < batch.length || completed === pending.length) console.log(`V2 transfer profiles: ${completed}/${pending.length} token/pool contexts`);
+      if (completed % 100 < batch.length || completed === pending.length) logger.info(`V2 transfer profiles: ${completed}/${pending.length} token/pool contexts`);
     };
     let next = 0, completed = 0;
     let failure: unknown;
