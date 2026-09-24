@@ -55,7 +55,7 @@ test('off blocks an otherwise eligible split, while live permits submission', as
   const manager = new OpportunityManager({} as never, async () => { submissions++; return true; }, gasFees);
   const before = ARBITRAGE_SEARCH_POLICY.splitRouting;
   const split: ExecutableOpportunity = { ...opportunity, observedAt: Date.now(), marketVersions: { [pair]: 1 },
-    split: { stages: [], resources: [], minSurplusAfterRepayment: 1n,
+    split: { stages: [], resources: [],
       deadline: BigInt(Math.floor(Date.now() / 1000) + 60), gasLimit: EXECUTION_POLICY.gasLimit,
       gasPriceWei: 500n, costsValidUntil: Date.now() + 60000 } };
   const graph = { matchesVersions: () => true } as never;

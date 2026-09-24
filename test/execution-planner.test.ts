@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createExecutionPlan, flashLoanFee } from "../src/execution/execution-planner";
+import { decodeFunctionData, encodeFunctionData } from "viem";
+import ArbABI from "../src/ABI/Arb.json";
 
 type Address = `0x${string}`;
 
@@ -56,8 +58,9 @@ describe("createExecutionPlan", () => {
       protocols: [0, 1, 0],
       fees: [30n, 500n, 30n],
       data: ["0x", "0x", "0x"],
-      minSurplusAfterRepayment: 100n,
     });
+    const encoded = encodeFunctionData({ abi: ArbABI, functionName: 'executeArbitrage', args: [plan!.params] });
+    expect(decodeFunctionData({ abi: ArbABI, data: encoded }).args![0]).toEqual(plan!.params);
   });
 
   test("builds ArbParams with a V3 flash pool when it is the best flash source", () => {
@@ -116,7 +119,6 @@ describe("createExecutionPlan", () => {
       protocols: [2, 0],
       fees: [4000n, 30n],
       data: [carbonData, "0x"],
-      minSurplusAfterRepayment: 100n,
     });
   });
 

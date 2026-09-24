@@ -45,6 +45,8 @@ error StartTokenNotInFlashLoanPair();
 error ArbitrageMustReturnToStart();
 error RepaymentTransferFailed();
 error InsufficientFlashLoanRepayment();
+error NoProfit();
+error InsufficientProfitAfterGas(uint256 profit, uint256 gasCost);
 error SwapPathError();
 error InvalidReserves();
 error OutputExceedsReserve();
@@ -70,6 +72,8 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     address private constant NATIVE_TOKEN = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
     address public immutable wrappedNativeToken;
     uint256 private constant FEE_DENOMINATOR = 10000;
+    // Entry dispatch/owner check before gasleft(), plus the final check and lock cleanup.
+    uint256 private constant GAS_ACCOUNTING_OVERHEAD = 10_000;
     uint256 private constant ONE = 1e18;
     uint160 private constant MIN_SQRT_RATIO_PLUS_ONE = 4295128740;
     uint160 private constant MAX_SQRT_RATIO_MINUS_ONE =
@@ -105,7 +109,6 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         uint256 borrowAmount;
         uint256 v2RepayFee;
         SplitStage[] stages;
-        uint256 minSurplusAfterRepayment;
         uint256 deadline;
     }
 
@@ -119,7 +122,6 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         uint256[] fees;
         bytes[] data;
         SplitStage[] stages;
-        uint256 minSurplusAfterRepayment;
         uint256 startBalance;
     }
 
@@ -133,7 +135,6 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         uint8[] protocols;
         uint256[] fees;
         bytes[] data;
-        uint256 minSurplusAfterRepayment;
     }
 
     struct StablePairState {
@@ -151,11 +152,31 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         wrappedNativeToken = wrappedNativeToken_;
     }
 
-    modifier executionLock() {
+    modifier executionLock(address borrowToken) {
+        uint256 gasStart = gasleft();
         if (executing) revert ExecutionInProgress();
         executing = true;
+        uint256 balanceBefore = IERC20(borrowToken).balanceOf(address(this));
         _;
+        _checkProfit(borrowToken, balanceBefore, gasStart);
         executing = false;
+    }
+
+    function _checkProfit(address token, uint256 balanceBefore, uint256 gasStart) private view {
+        // The lender has returned: repayment and its final checks are already included.
+        uint256 balanceAfter = IERC20(token).balanceOf(address(this));
+        if (balanceAfter <= balanceBefore) revert NoProfit();
+        if (token != wrappedNativeToken) return;
+
+        uint256 profit = balanceAfter - balanceBefore;
+        // Direct transactions from the bot have no access list. Charge all calldata bytes
+        // as nonzero, and do not subtract refunds: both conservatively overestimate cost.
+        uint256 gasUsed = gasStart - gasleft() + 21_000 + msg.data.length * 16 + GAS_ACCOUNTING_OVERHEAD;
+        // Also cover the calldata floor on chains that have adopted EIP-7623.
+        uint256 calldataFloor = 21_000 + msg.data.length * 40;
+        if (gasUsed < calldataFloor) gasUsed = calldataFloor;
+        uint256 gasCost = gasUsed * tx.gasprice;
+        if (profit <= gasCost) revert InsufficientProfitAfterGas(profit, gasCost);
     }
 
     // Permissionless but always reverts. FlashQuery catches the measured result in eth_call.
@@ -165,7 +186,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         _probeTransfer(pool, token, amount, recipient);
     }
 
-    function executeArbitrage(ArbParams calldata params) external onlyOwner executionLock {
+    function executeArbitrage(ArbParams calldata params) external onlyOwner executionLock(params.borrowToken) {
         if (
             params.pools.length != params.protocols.length ||
             params.pools.length != params.fees.length ||
@@ -175,7 +196,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         _startFlashLoan(params, borrowToken0, _flashData(params, borrowToken0));
     }
 
-    function executeSplitArbitrage(SplitParams calldata params) external onlyOwner executionLock {
+    function executeSplitArbitrage(SplitParams calldata params) external onlyOwner executionLock(params.borrowToken) {
         _validateSplit(params);
         bool token0 = _isToken0(params.flashPool, params.borrowToken);
         FlashData memory loan;
@@ -184,14 +205,12 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         loan.borrowedToken0 = token0;
         loan.v2RepayFee = params.v2RepayFee;
         loan.stages = params.stages;
-        loan.minSurplusAfterRepayment = params.minSurplusAfterRepayment;
         loan.startBalance = IERC20(params.borrowToken).balanceOf(address(this));
         ArbParams memory funding;
         funding.flashProtocol = params.flashProtocol;
         funding.flashPool = params.flashPool;
         funding.borrowAmount = params.borrowAmount;
         _startFlashLoan(funding, token0, abi.encode(loan));
-        if (IERC20(params.borrowToken).balanceOf(address(this)) < loan.startBalance + params.minSurplusAfterRepayment) revert SplitMinimumNotMet();
     }
 
     function _validateSplit(SplitParams calldata params) private view {
@@ -365,9 +384,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         if (IERC20(loan.borrowedToken).balanceOf(address(this)) < loan.startBalance + loan.borrowedAmount) revert InvalidFlashLoanCallback();
         if (loan.stages.length == 0) _executeCircularRoute(loan);
         else _executeSplitRoute(loan);
-        uint256 finalAmount = IERC20(loan.borrowedToken).balanceOf(address(this)) - loan.startBalance;
-
-        if (finalAmount < repayAmount + loan.minSurplusAfterRepayment) revert InsufficientFlashLoanRepayment();
+        if (IERC20(loan.borrowedToken).balanceOf(address(this)) < loan.startBalance + repayAmount) revert InsufficientFlashLoanRepayment();
         if (!IERC20(loan.borrowedToken).transfer(msg.sender, repayAmount)) {
             revert RepaymentTransferFailed();
         }
@@ -650,19 +667,17 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     }
 
     function _flashData(ArbParams calldata params, bool borrowedToken0) internal view returns (bytes memory) {
-        return abi.encode(FlashData({
-            borrowedToken: params.borrowToken,
-            borrowedAmount: params.borrowAmount,
-            borrowedToken0: borrowedToken0,
-            v2RepayFee: params.v2RepayFee,
-            pools: params.pools,
-            protocols: params.protocols,
-            fees: params.fees,
-            data: params.data,
-            stages: new SplitStage[](0),
-            minSurplusAfterRepayment: params.minSurplusAfterRepayment,
-            startBalance: IERC20(params.borrowToken).balanceOf(address(this))
-        }));
+        FlashData memory loan;
+        loan.borrowedToken = params.borrowToken;
+        loan.borrowedAmount = params.borrowAmount;
+        loan.borrowedToken0 = borrowedToken0;
+        loan.v2RepayFee = params.v2RepayFee;
+        loan.pools = params.pools;
+        loan.protocols = params.protocols;
+        loan.fees = params.fees;
+        loan.data = params.data;
+        loan.startBalance = IERC20(params.borrowToken).balanceOf(address(this));
+        return abi.encode(loan);
     }
 
     function _v2AmountOut(

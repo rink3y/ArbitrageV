@@ -3,7 +3,7 @@ import { decodeFunctionData, parseTransaction, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { OpportunityManager } from '../src/execute';
 import { CONTRACTS, ARBITRAGE_SEARCH_POLICY, TELEGRAM, EXECUTION_POLICY } from '../src/constants';
-import { type ExecutableOpportunity } from '../src/execution/execution-planner';
+import { createExecutionPlan, type ExecutableOpportunity } from '../src/execution/execution-planner';
 import { type NetworkConfig } from '../src/network';
 import { GasFees } from '../src/execution/gas-fees';
 import ArbABI from '../src/ABI/Arb.json';
@@ -27,7 +27,7 @@ for (const legacy of [false, true]) test(`a live split signs one ${legacy ? 'leg
   const opportunity: ExecutableOpportunity = { path: [addr(1), addr(2), addr(1)], pairs: [addr(3), addr(4), addr(5)],
     protocols: ['v2', 'v2', 'v2'], fees: [0, 0, 0], routeData: ['0x', '0x', '0x'], optimalInput: 200n, profit: 106n,
     netProfit: 100n, observedAt: Date.now(), marketVersions: { [addr(3)]: 1 }, flashPoolAddress: addr(6),
-    split: { resources: [addr(3), addr(4), addr(5)], minSurplusAfterRepayment: 100n,
+    split: { resources: [addr(3), addr(4), addr(5)],
       deadline: BigInt(Math.floor(Date.now() / 1000) + 30), costsValidUntil: Date.now() + 30000,
       gasLimit: EXECUTION_POLICY.gasLimit, gasPriceWei: 500n,
       stages: [
@@ -54,6 +54,11 @@ for (const legacy of [false, true]) test(`a live split signs one ${legacy ? 'leg
     const decoded = decodeFunctionData({ abi: ArbABI, data: transaction.data! });
     expect(decoded.functionName).toBe('executeSplitArbitrage');
     expect((decoded.args![0] as any).stages[0].branches.map((branch: any) => branch.amountIn)).toEqual([100n, 100n]);
+    const boundary = structuredClone(opportunity);
+    boundary.split!.stages[1].branches[0].minAmountOut = 200n;
+    expect(createExecutionPlan(lookup, boundary)).toBeNull();
+    boundary.split!.stages[1].branches[0].minAmountOut = 201n;
+    expect(createExecutionPlan(lookup, boundary)?.kind).toBe('split');
     await manager.processOpportunities(lookup, [{ ...opportunity, split: undefined, pairs: [addr(4)], protocols: ['v2'], fees: [0], routeData: ['0x'] }]);
     expect(submitted.length).toBe(1);
     expect(nonceReads).toBe(1);

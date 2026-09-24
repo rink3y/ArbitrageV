@@ -112,7 +112,7 @@ test('keeps a fresh quote eligible and separately reports a changed market', asy
 test('live search with executeTrades false reports both route types without starting execution or nonces', async () => {
   const f = quotedScanner();
   const split: ArbitrageOpportunity = { ...f.quote, split: { stages: [], resources: [],
-    minSurplusAfterRepayment: 1n, deadline: 60n, gasLimit: EXECUTION_POLICY.gasLimit,
+    deadline: 60n, gasLimit: EXECUTION_POLICY.gasLimit,
     gasPriceWei: 500n, costsValidUntil: 60000 } };
   f.search.mockResolvedValue([f.quote, split]);
   const start = spyOn(OpportunityManager.prototype, 'start').mockResolvedValue();

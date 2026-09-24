@@ -68,7 +68,7 @@ test('engine finds splits before the single-route profit filter and encodes a st
   expect(results.filter(result => !result.split)).toHaveLength(0);
   const split = results.find(result => result.split)!;
   expect(split).toBeDefined();
-  expect(split.split!.minSurplusAfterRepayment).toBe(201n);
+  expect(split.profit).toBeGreaterThan(200n);
   const plan = createExecutionPlan(engine.graph, split);
   expect(plan?.kind).toBe('split');
   if (plan?.kind === 'split') expect(plan.params.stages[0].branches.length).toBeGreaterThan(0);
@@ -224,8 +224,8 @@ test('opening branches share the linear reserve-fraction cap and profit floor', 
       const index = graph.edgeIndexesForTokenPool(graph.tokenIndexOf(a)!, graph.poolIndexOf(branch.pool)!)[0];
       expect(branch.amountIn).toBeLessThanOrEqual(graph.maxInputForEdges([index]));
     }
-    expect(candidate.minSurplusAfterRepayment).toBe(2n);
-    expect(candidate.quote.amountOut - candidate.quote.amountIn).toBeGreaterThanOrEqual(candidate.minSurplusAfterRepayment);
+    expect(candidate.netProfit).toBeGreaterThan(0n);
+    expect(candidate.quote.amountOut - candidate.quote.amountIn).toBeGreaterThan(tokens[0].minProfit);
   }
 });
 

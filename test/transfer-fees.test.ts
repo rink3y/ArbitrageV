@@ -124,7 +124,8 @@ describe('graph integration', () => {
     expect(result).toBeDefined(); expect(result!.profit).toBeGreaterThan(0n);
     expect(result!.routeData).toEqual(['0x02', '0x02']);
     const plan = createExecutionPlan(engine.graph, result!);
-    expect(plan?.params.minSurplusAfterRepayment).toBeGreaterThan(0n);
+    expect(plan?.kind).toBe('flash');
+    if (plan?.kind === 'flash') expect(plan.params.data).toEqual(['0x02', '0x02']);
   });
 });
 

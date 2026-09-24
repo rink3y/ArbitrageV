@@ -20,7 +20,7 @@ export type SplitCosts = {
 };
 export type SplitCandidate = {
   path: Address[]; quote: SplitQuote; flashPool: FlashPoolCandidate;
-  netProfit: bigint; gasCost: bigint; minSurplusAfterRepayment: bigint;
+  netProfit: bigint; gasCost: bigint;
 };
 
 export function splitGasCost(costs: SplitCosts | undefined, token: Address, now = Date.now()): bigint | null {
@@ -197,8 +197,7 @@ export function searchSplitRoutes(
         if (!quote) return;
         const profit = quote.amountOut - amount - flashLoanFee(funding, amount);
         const netProfit = profit - gasCost;
-        const candidate: SplitCandidate = { path, quote, flashPool: funding, netProfit, gasCost,
-          minSurplusAfterRepayment: (token.minProfit > gasCost ? token.minProfit : gasCost) + 1n };
+        const candidate: SplitCandidate = { path, quote, flashPool: funding, netProfit, gasCost };
         if (!localBest || netProfit > localBest.netProfit) localBest = candidate;
         const threshold = baselineNet.get(key) ?? 0n;
         if (profit <= token.minProfit || netProfit <= 0n || netProfit <= threshold) return;

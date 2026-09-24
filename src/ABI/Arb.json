@@ -76,11 +76,6 @@
             "name": "data",
             "type": "bytes[]",
             "internalType": "bytes[]"
-          },
-          {
-            "name": "minSurplusAfterRepayment",
-            "type": "uint256",
-            "internalType": "uint256"
           }
         ]
       }
@@ -175,11 +170,6 @@
                 ]
               }
             ]
-          },
-          {
-            "name": "minSurplusAfterRepayment",
-            "type": "uint256",
-            "internalType": "uint256"
           },
           {
             "name": "deadline",
@@ -383,6 +373,22 @@
   },
   {
     "type": "error",
+    "name": "InsufficientProfitAfterGas",
+    "inputs": [
+      {
+        "name": "profit",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "gasCost",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidCarbonAmount",
     "inputs": []
   },
@@ -424,6 +430,11 @@
   {
     "type": "error",
     "name": "InvalidWrappedNativeToken",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoProfit",
     "inputs": []
   },
   {

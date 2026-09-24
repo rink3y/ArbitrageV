@@ -27,7 +27,7 @@ export const CONTRACTS = {
 } as const;
 
 export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
-    topTokens: 5,
+    topTokens: 6,
     // Controls discovery, live loading, event monitoring, and route searches. Use ['v2'] for V2 only.
     allowedProtocols: ['v2'],
     allowProtocolMixing: true,
@@ -49,7 +49,7 @@ export const EXECUTION_POLICY = {
     nonceRefreshIntervalMs: 12 * 60 * 60 * 1000,
     nonceRetryIntervalMs: 5_000,
     gasLimit: 1500000n,
-    // Split-output haircut and maximum haircut on quoted linear surplus.
+    // Haircut on each split branch's quoted output, used to fund the next stage.
     slippageBps: 5,
     // Fees refresh away from the submission path. A failed refresh pauses trading.
     feeRefreshIntervalMs: 5 * 60 * 1000,
@@ -70,7 +70,7 @@ export const RUNTIME: {
     receiptTimeoutMs: number;
     marketDiscoveryIntervalMs: number;
 } = {
-    logLevel: 'debug', // 'off' | 'info' | 'debug'
+    logLevel: 'info', // 'off' | 'info' | 'debug'
     websocketEnabled: true,
     searchTimeoutMs: 10_000,
     candidateMaxAgeMs: 500,

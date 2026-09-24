@@ -2,7 +2,6 @@ import { type Address } from 'viem';
 import { type FlashPoolCandidate } from '../market-graph/types';
 import { type ArbitrageOpportunity } from '../opportunities/opportunity-types';
 import { protocolPlugin } from '../protocols/registry';
-import { EXECUTION_POLICY } from '../constants';
 
 export type ExecutableOpportunity = Pick<
   ArbitrageOpportunity,
@@ -28,14 +27,13 @@ export type ArbContractParams = {
   protocols: number[];
   fees: bigint[];
   data: `0x${string}`[];
-  minSurplusAfterRepayment: bigint;
 };
 
 export type SplitContractParams = Pick<ArbContractParams, 'flashProtocol' | 'flashPool' | 'borrowToken' | 'borrowAmount' | 'v2RepayFee'> & {
   stages: Array<{ tokenIn: Address; tokenOut: Address; branches: Array<{
     pool: Address; protocol: number; fee: bigint; amountIn: bigint; minAmountOut: bigint; data: `0x${string}`;
   }> }>;
-  minSurplusAfterRepayment: bigint; deadline: bigint;
+  deadline: bigint;
 };
 export type ExecutionPlan = {
   kind: 'flash';
@@ -67,7 +65,7 @@ export function createExecutionPlan(graph: FlashPoolLookup, opportunity: Executa
   if (opportunity.split) {
     const split = opportunity.split;
     if (split.stages.length < 2 || split.stages.length > 3 || split.deadline < BigInt(Math.floor(Date.now() / 1000)) ||
-        split.costsValidUntil <= Date.now() || split.minSurplusAfterRepayment <= 0n || opportunity.optimalInput <= 0n) return null;
+        split.costsValidUntil <= Date.now() || opportunity.optimalInput <= 0n) return null;
     let token = borrowToken.toLowerCase();
     let available = opportunity.optimalInput;
     let index = 0;
@@ -86,13 +84,13 @@ export function createExecutionPlan(graph: FlashPoolLookup, opportunity: Executa
       token = stage.tokenOut.toLowerCase();
     }
     if (token !== borrowToken.toLowerCase() || index !== opportunity.pairs.length || index > 6 ||
-        available < opportunity.optimalInput + flashLoanFee(flashPool, opportunity.optimalInput) + split.minSurplusAfterRepayment) return null;
+        available <= opportunity.optimalInput + flashLoanFee(flashPool, opportunity.optimalInput)) return null;
     return { kind: 'split', params: {
       flashProtocol: flashPlugin.contractId, flashPool: flashPool.poolAddress, borrowToken, borrowAmount: opportunity.optimalInput,
       v2RepayFee: flashPlugin.flashRepayFee?.(flashPool.fee) ?? 0n,
       stages: split.stages.map(stage => ({ ...stage, branches: stage.branches.map(branch => ({ ...branch,
         protocol: protocolPlugin(branch.protocol).contractId, fee: BigInt(branch.fee) })) })),
-      minSurplusAfterRepayment: split.minSurplusAfterRepayment, deadline: split.deadline,
+      deadline: split.deadline,
     } };
   }
 
@@ -108,8 +106,6 @@ export function createExecutionPlan(graph: FlashPoolLookup, opportunity: Executa
       protocols: opportunity.protocols.map(protocol => protocolPlugin(protocol).contractId),
       fees: opportunity.fees.map(fee => BigInt(fee)),
       data: opportunity.routeData,
-      minSurplusAfterRepayment: opportunity.profit > 0n
-        ? (opportunity.profit * BigInt(10_000 - EXECUTION_POLICY.slippageBps) + 9_999n) / 10_000n : 1n,
     },
   };
 }

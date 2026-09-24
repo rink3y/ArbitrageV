@@ -127,7 +127,7 @@ contract NArbSplitTest {
     }
     function plan() private view returns (ArbitrageExecutor.SplitParams memory p) {
         p.flashProtocol = 0; p.flashPool = address(funding); p.borrowToken = address(a); p.borrowAmount = 200;
-        p.deadline = block.timestamp; p.minSurplusAfterRepayment = 100;
+        p.deadline = block.timestamp;
         p.stages = new ArbitrageExecutor.SplitStage[](2);
         p.stages[0].tokenIn = address(a); p.stages[0].tokenOut = address(b);
         p.stages[0].branches = new ArbitrageExecutor.SplitBranch[](2);
@@ -150,7 +150,7 @@ contract NArbSplitTest {
         require(!ok, "accepted invalid plan");
         require(a.balanceOf(address(executor)) == 1000000 && b.balanceOf(address(executor)) == 1000000, "not atomic");
     }
-    function testRejectsLossDespiteOldInventory() public { ArbitrageExecutor.SplitParams memory p = plan(); p.minSurplusAfterRepayment = 107; reject(p); }
+    function testRejectsLossDespiteOldInventory() public { ArbitrageExecutor.SplitParams memory p = plan(); p.v2RepayFee = 3500; reject(p); }
     function testRejectsUnfundedSecondStageDespiteOldInventory() public { ArbitrageExecutor.SplitParams memory p = plan(); p.stages[1].branches[0].amountIn = 363; reject(p); }
     function testRejectsMinimumOutputMiss() public { ArbitrageExecutor.SplitParams memory p = plan(); p.stages[0].branches[0].minAmountOut = 182; reject(p); }
     function testRejectsDuplicatePool() public { ArbitrageExecutor.SplitParams memory p = plan(); p.stages[0].branches[1].pool = address(buy1); reject(p); }
@@ -262,11 +262,13 @@ contract NArbSplitTest {
         p.protocols = new uint8[](2); p.fees = new uint256[](2); p.data = new bytes[](2);
         executor.executeArbitrage(p); require(a.balanceOf(address(executor)) == 65, "linear compatibility");
     }
-    function testFuzzFinalFloorCannotSpendExistingBorrowToken(uint128 floor, uint128 oldBalance) public {
-        ArbitrageExecutor.SplitParams memory p = plan(); p.minSurplusAfterRepayment = uint256(floor) % 300;
+    function testFuzzRepaymentCannotSpendExistingBorrowToken(uint16 fee, uint128 oldBalance) public {
+        ArbitrageExecutor.SplitParams memory p = plan(); p.v2RepayFee = uint256(fee) % 10000;
+        uint256 denominator = 10000 - p.v2RepayFee;
+        uint256 repayAmount = 200 + (200 * p.v2RepayFee + denominator - 1) / denominator;
         a.mint(address(executor), oldBalance);
         (bool ok, ) = address(executor).call(abi.encodeCall(executor.executeSplitArbitrage, (p)));
-        require(ok == (p.minSurplusAfterRepayment <= 106), "floor acceptance");
-        require(a.balanceOf(address(executor)) == uint256(oldBalance) + (ok ? 106 : 0), "isolated balance");
+        require(ok == (306 > repayAmount), "profit acceptance");
+        require(a.balanceOf(address(executor)) == uint256(oldBalance) + (ok ? 306 - repayAmount : 0), "isolated balance");
     }
 }

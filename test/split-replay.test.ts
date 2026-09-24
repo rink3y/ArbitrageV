@@ -17,12 +17,29 @@ test('offline V2 fills consume reserves instead of counting an unchanged quote a
     split: { stages: [
       { tokenIn: a, tokenOut: b, branches: [1, 2].map(id => ({ pool: addr(id), protocol: 'v2', fee: 0, data: '0x', amountIn: 100n, minAmountOut: 181n })) },
       { tokenIn: b, tokenOut: a, branches: [{ pool: addr(3), protocol: 'v2', fee: 0, data: '0x', amountIn: 362n, minAmountOut: 306n }] },
-    ], minSurplusAfterRepayment: 100n } };
+    ] } };
   expect(applyV2SplitFill(graph, opportunity)).toBe(106n);
   expect(graph.getAllPairs().find(pair => pair.pairAddress === addr(1))?.reserve0).toBe(1100n);
   const before = graph.getAllPairs().map(pair => ({ ...pair }));
   expect(applyV2SplitFill(graph, opportunity)).toBeNull();
   expect(graph.getAllPairs()).toEqual(before);
+});
+
+test('fill model requires a positive token surplus without a quoted-profit floor', () => {
+  const [a, b] = TOKENS.map(token => token.address);
+  const addr = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const;
+  for (const [sellReserve, profit] of [[1305n, 0n], [1312n, 1n]]) {
+    const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY);
+    for (const [id, x, y] of [[1, 1000n, 2000n], [2, 1000n, 2000n], [3, sellReserve, 2000n], [4, 100000n, 100000n]] as const)
+      graph.addPair(v2Pair(id, a, b, x, y, 0));
+    const plan: V2ReplayPlan = { path: [a, b, a], optimalInput: 200n, flashPoolAddress: addr(4), split: { stages: [
+      { tokenIn: a, tokenOut: b, branches: [1, 2].map(id => ({ pool: addr(id), protocol: 'v2', fee: 0, data: '0x', amountIn: 100n, minAmountOut: 181n })) },
+      { tokenIn: b, tokenOut: a, branches: [{ pool: addr(3), protocol: 'v2', fee: 0, data: '0x', amountIn: 362n, minAmountOut: 1n }] },
+    ] } };
+    const before = structuredClone(graph.getAllPairs());
+    expect(applyV2SplitFill(graph, plan)).toBe(profit > 0n ? profit : null);
+    if (profit === 0n) expect(graph.getAllPairs()).toEqual(before);
+  }
 });
 
 test('recorded NDJSON replays through the offline CLI without credentials or a revenue total', async () => {

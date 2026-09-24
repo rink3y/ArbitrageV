@@ -114,32 +114,32 @@ contract TransferFeesTest {
         returned = received * 9970 * 2000000 / (1000000 * 10000 + received * 9970);
     }
 
-    function linearPlan(SplitV2Pool funding, SplitV2Pool sell, uint256 floor) private view returns (ArbitrageExecutor.ArbParams memory p) {
+    function linearPlan(SplitV2Pool funding, SplitV2Pool sell) private view returns (ArbitrageExecutor.ArbParams memory p) {
         p.flashPool = address(funding); p.borrowToken = address(a); p.borrowAmount = 10000; p.v2RepayFee = 30;
         p.pools = new address[](2); p.pools[0] = address(pool); p.pools[1] = address(sell);
         p.protocols = new uint8[](2); p.fees = new uint256[](2); p.fees[0] = 30; p.fees[1] = 30;
         p.data = new bytes[](2); p.data[0] = hex"02"; p.data[1] = hex"02";
-        p.minSurplusAfterRepayment = floor;
     }
 
     function testLinearCustodyRouteRepaysAndKeepsMeasuredProfit() public {
         (SplitV2Pool funding, SplitV2Pool sell,, uint256 returned) = prepareRoute();
-        executor.executeArbitrage(linearPlan(funding, sell, 1000));
+        executor.executeArbitrage(linearPlan(funding, sell));
         require(a.balanceOf(address(executor)) == returned - 10031, "wrong linear profit");
     }
 
-    function testLinearMinimumSurplusCannotSpendExistingInventory() public {
+    function testLinearRepaymentCannotSpendExistingInventory() public {
         (SplitV2Pool funding, SplitV2Pool sell,,) = prepareRoute();
         a.mint(address(executor), 1000000);
-        (bool ok,) = address(executor).call(abi.encodeCall(executor.executeArbitrage, (linearPlan(funding, sell, 100000))));
-        require(!ok && a.balanceOf(address(executor)) == 1000000, "minimum profit ignored");
+        ArbitrageExecutor.ArbParams memory p = linearPlan(funding, sell); p.v2RepayFee = 9000;
+        (bool ok,) = address(executor).call(abi.encodeCall(executor.executeArbitrage, (p)));
+        require(!ok && a.balanceOf(address(executor)) == 1000000, "repayment spent old inventory");
     }
 
     function testSplitCustodyRouteRepaysAndKeepsMeasuredProfit() public {
         (SplitV2Pool funding, SplitV2Pool sell, uint256 bought, uint256 returned) = prepareRoute();
         ArbitrageExecutor.SplitParams memory p;
         p.flashPool = address(funding); p.borrowToken = address(a); p.borrowAmount = 10000; p.v2RepayFee = 30;
-        p.deadline = block.timestamp; p.minSurplusAfterRepayment = 1000;
+        p.deadline = block.timestamp;
         p.stages = new ArbitrageExecutor.SplitStage[](2);
         p.stages[0].tokenIn = address(a); p.stages[0].tokenOut = address(b);
         p.stages[0].branches = new ArbitrageExecutor.SplitBranch[](1);

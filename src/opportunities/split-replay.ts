@@ -6,7 +6,7 @@ import { receivedAfterTransfer } from '../protocols/v2/transfer-fees';
 
 /** Local V2-only fill model, not a transaction simulator. Null leaves the graph unchanged. */
 export type V2ReplayPlan = Pick<ArbitrageOpportunity, 'path' | 'optimalInput' | 'flashPoolAddress'> & {
-  split?: Pick<NonNullable<ArbitrageOpportunity['split']>, 'stages' | 'minSurplusAfterRepayment'>;
+  split?: Pick<NonNullable<ArbitrageOpportunity['split']>, 'stages'>;
 };
 export function applyV2SplitFill(graph: MarketGraph, opportunity: V2ReplayPlan): bigint | null {
   if (!opportunity.split || !opportunity.flashPoolAddress) return null;
@@ -54,7 +54,7 @@ export function applyV2SplitFill(graph: MarketGraph, opportunity: V2ReplayPlan):
         receivedAfterTransfer(repayment, profile.sell, profile.validUntil) !== repayment) return null;
   }
   const surplus = available - opportunity.optimalInput - fee;
-  if (token !== start || surplus < opportunity.split.minSurplusAfterRepayment) return null;
+  if (token !== start || surplus <= 0n) return null;
   if (funding.token0.toLowerCase() === start) funding.reserve0 += fee;
   else funding.reserve1 += fee;
   graph.updateReserves([...touched].map(key => pairs.get(key)!));
