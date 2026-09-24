@@ -68,7 +68,7 @@ export const RUNTIME: {
     reportingShutdownMs: number;
     marketDiscoveryIntervalMs: number;
 } = {
-    logLevel: 'info', // 'off' | 'info' | 'debug'
+    logLevel: 'off', // 'off' | 'info' | 'debug'
     websocketEnabled: true,
     searchTimeoutMs: 10_000,
     candidateMaxAgeMs: 500,
@@ -93,10 +93,10 @@ export const TOKENS: TokenConfig[] = [
         decimals: 18,
     },
     {
-        name: 'WCRO1',
-        address: '0xca2503482e5D6D762b524978f400f03E38d5F962',
-        liquidityAmount: tokenAmount('100'),
-        minProfit: tokenAmount('0.09'),
+        name: 'VVS',
+        address: '0x2D03bECE6747ADC00E1a131BBA1469C15fD11e03',
+        liquidityAmount: tokenAmount('1000000', 18),
+        minProfit: tokenAmount('99000', 18),
         decimals: 18,
     },
     {
@@ -107,25 +107,11 @@ export const TOKENS: TokenConfig[] = [
         decimals: 6,
     },
     {
-        name: 'USDC',
-        address: '0x3D7F2C478aAfdB65542BCB44bCeeC05849999d2D',
-        liquidityAmount: tokenAmount('10', 6),
-        minProfit: tokenAmount('0.10', 6),
-        decimals: 6,
-    },
-    {
         name: 'USDT',
         address: '0x66e428c3f67a68878562e79A0234c1F83c208770',
         liquidityAmount: tokenAmount('10', 6),
         minProfit: tokenAmount('0.10', 6),
         decimals: 6,
-    },
-        {
-        name: 'VVS',
-        address: '0x2D03bECE6747ADC00E1a131BBA1469C15fD11e03',
-        liquidityAmount: tokenAmount('1000000', 18),
-        minProfit: tokenAmount('99000', 18),
-        decimals: 18,
     },
     {
         name: 'WBTC',
@@ -147,6 +133,13 @@ export const TOKENS: TokenConfig[] = [
         liquidityAmount: tokenAmount('10', 18),
         minProfit: tokenAmount('0.10', 18),
         decimals: 18,
+    },
+    {
+        name: 'USDC',
+        address: '0x3D7F2C478aAfdB65542BCB44bCeeC05849999d2D',
+        liquidityAmount: tokenAmount('10', 6),
+        minProfit: tokenAmount('0.10', 6),
+        decimals: 6,
     },
     // {
     //     name: 'ISEI',
