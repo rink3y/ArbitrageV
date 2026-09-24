@@ -64,16 +64,26 @@ test('fees pause on an estimate above the ceiling or a failed refresh, then reco
   } finally { fees.stop(); warn.mockRestore(); }
 });
 
-test('fee snapshot expires if periodic refresh does not complete', async () => {
-  const fees = new GasFees(async () => ({ maxFeePerGas: 500n, maxPriorityFeePerGas: 3n }),
-    { ...policy, feeRefreshIntervalMs: 300_000 });
+test('a bad refresh retains the fee without extending its expiry', async () => {
+  let reads = 0;
+  const fees = new GasFees(async () => {
+    reads++;
+    if (reads === 2) throw new Error('RPC unavailable');
+    return { maxFeePerGas: reads === 3 ? 1001n : 500n, maxPriorityFeePerGas: 3n };
+  }, { ...policy, feeRefreshIntervalMs: 300_000 });
+  const alerts = spyOn(logger, 'alert').mockImplementation(() => {});
   try {
     await fees.start();
     const snapshot = fees.current()!;
+    await fees['refresh']();
+    expect(fees.current()).toBe(snapshot);
+    await fees['refresh']();
+    expect(fees.current()).toBe(snapshot);
+    expect(alerts.mock.calls.filter(([key]) => key === 'fees.refresh')).toHaveLength(2);
     const now = spyOn(Date, 'now').mockReturnValue(snapshot.validUntil);
     try {
       expect(fees.current()).toBeNull();
       expect(fees.isCurrent(snapshot)).toBe(false);
     } finally { now.mockRestore(); }
-  } finally { fees.stop(); }
+  } finally { fees.stop(); alerts.mockRestore(); }
 });

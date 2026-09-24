@@ -36,7 +36,7 @@ Sync saves market metadata and, with V2 profiling enabled, transfer observations
 
 `V2_LIVE_POLICY.transferFees` is currently `true`. Transfer profiling requires V2-only routing. To use V3 or Carbon, disable that mode in `src/protocols/v2/config.ts` and restrict trading to tokens compatible with the untaxed quote assumptions. Transfer-tax profiling is not yet supported for V3 or Carbon; a V2 profile does not establish that the same token is compatible with either.
 
-`TOKENS` supplies start-token addresses, decimals, `liquidityAmount` and `minProfit`. Both searches start from the first `topTokens` entries, currently five. Intermediate tokens come from the graph; they do not all need to be in `TOKENS`. Use `tokenAmount(value, decimals)` for thresholds. `liquidityAmount` is a loading filter, not the amount the bot borrows.
+`TOKENS` supplies start-token addresses, decimals, `liquidityAmount` and `minProfit`. Both searches start from the first `topTokens` entries, currently six. Intermediate tokens come from the graph; they do not all need to be in `TOKENS`. Use `tokenAmount(value, decimals)` for thresholds. `liquidityAmount` is a loading filter, not the amount the bot borrows.
 
 Factory and controller settings stay with their adapters:
 
@@ -71,7 +71,7 @@ V3 also rotates block-pinned checkpoints: currently ten pools per batch, normall
 
 Carbon reads current controller pairs and strategies rather than scanning historical factory logs. Create, update and delete events change the in-memory strategies. The worker gets a full snapshot at startup/recovery and strategy deltas afterward. Updates rebuild the affected pair's directions, not every Carbon edge. Grouped routes consider at most eight orders; controller and strategy ID identify the liquidity being spent.
 
-V2/V3 factory feeds keep discovering new pools after startup, with a sixty-second catch-up interval controlled by `RUNTIME.marketDiscoveryIntervalMs`. A selected new pool is subscribed before hydration. Unchanged V2 checks do not reload/filter the catalog or repeat the full `Found ... V2 pools` summary. A startup reconciliation repairs interrupted catalog updates.
+V2/V3 factory feeds keep discovering new pools after startup. Factory creation events trigger a check immediately; the shared `RUNTIME.marketDiscoveryIntervalMs` runs a four-hour catch-up check in case an event was missed. A selected new pool is subscribed before hydration. Unchanged V2 checks do not reload/filter the catalog or repeat the full `Found ... V2 pools` summary. A startup reconciliation repairs interrupted catalog updates.
 
 Expect discovery, database and live-pool counts to differ. `src/bannedtax.json` excludes tokens explicitly. The shared filter requires both tokens to occur in more than one market. V2 then applies reserve/activity filters, Carbon applies its liquidity filter, and V3 needs a usable snapshot. V2's fallback threshold for tokens outside `TOKENS` is a raw-unit threshold in `V2_DISCOVERY_POLICY`, not a dollar valuation.
 
@@ -100,7 +100,7 @@ The executor uses `balanceOf(pool) - reserveIn` as effective V2 input and the re
 
 The configured probes sample reserve fractions from 1/100,000,000 through 1/4. A usable estimate needs at least two distinct amounts, exact sender debits, positive recipient credits and deduction rates agreeing within one basis point. Quotes use the largest rounded-up observed deduction and reject amounts outside the measured range. Unknown, failed and unsupported profiles are not treated as zero tax. The flash-borrowed asset needs observed zero buy/sell deductions on its funding pool, with borrowing and repayment inside the measured bounds. Explicit bans still win.
 
-Sync and startup fill missing or expired observations. The current `transferRefreshMs` is four hours; a local timer checks for expiry roughly once a minute and runs background probes when needed. A long initial pass gives many profiles the same observation time, so a later refresh can look like another large startup pass. Current cached profiles are reused after block-hash validation. Expired ones stop being eligible until refreshed; failed refreshes do not reopen them.
+Sync and startup fill missing or expired observations. The current `transferRefreshMs` is four hours. After startup, the V2 adapter schedules the next probe for the earliest profile expiry, or wakes when a newly hydrated pair has no profile. A long initial pass gives many profiles the same observation time, so a later refresh can look like another large startup pass. Current cached profiles are reused after block-hash validation. Expired ones stop being eligible until refreshed; failed refreshes retry after a minute and do not reopen them.
 
 Refreshes publish new pool revisions and merge profiles into the latest reserves without overwriting intervening events. The worker receives estimates without raw samples, and unchanged profiles are omitted from later reserve patches. Search, signing and submission never perform probe RPCs.
 
@@ -134,7 +134,7 @@ Split amounts and minimum outputs are fixed in the signed plan. Later stages are
 
 A route needs an enabled V2/V3 funding pool outside its swap pools. Carbon cannot lend, so Carbon-only routing does not produce executable trades. `allowProtocolMixing: false` restricts the swap route, not the funding protocol.
 
-Gas prices are estimated through the existing HTTP client at startup and every `feeRefreshIntervalMs`, currently five minutes. `legacy: true` uses `gasPrice`; `false` uses EIP-1559 maximum and priority fees. There is no manual fee mode. An invalid estimate, failed refresh or estimate above `feeCeilingPerGas` clears the cached quote and pauses searches/submissions until recovery. A quote also expires after twice the refresh interval if refresh cannot finish.
+Gas prices are estimated through the existing HTTP client at startup and every `feeRefreshIntervalMs`, currently five minutes. `legacy: true` uses `gasPrice`; `false` uses EIP-1559 maximum and priority fees. There is no manual fee mode. If a refresh fails, returns an invalid estimate or exceeds `feeCeilingPerGas`, the bot keeps the previous valid quote until its original expiry. Searches and submissions pause when there is no valid quote, including at startup or after that expiry. A quote expires after twice the refresh interval; a failed refresh never extends it. If fees really have risen, a transaction signed with the older cap may remain pending.
 
 The search charges the full configured `gasLimit` at the estimated fee cap. At the current 1,500,000 gas limit, a hypothetical 400 gwei cap produces a 0.6-native-token allowance. The 1,000 gwei ceiling is a rejection threshold, not the price always used. There is no per-route gas estimation or calibrated per-protocol gas model, so this allowance neither proves a route fits the limit nor accurately compares actual gas for different routes. Rollup L1 data fees are not modeled.
 
@@ -156,19 +156,19 @@ Submission locks route pools until their next applied market update or the thirt
 
 Use a dedicated wallet and one bot process. Execution startup reads its pending nonce once, then allocates locally. Background reconciliation runs every twelve hours. A known-unsubmitted nonce can be released after signing/freshness failure; an attempted submission with an uncertain outcome pauses new submissions and triggers immediate reconciliation, retrying every five seconds. Trading resumes only after pending advances past all uncertain nonces. A rejected or dropped transaction can need operator intervention; the bot does not cancel it, replace it or replay an old opportunity automatically. Inspect pending transactions before restarting.
 
-Receipt tracking runs separately from submission. A submitted hash is not a successful receipt, and a successful receipt is not a realized-profit report. Reverts and two-minute receipt timeouts are reported independently.
+After the RPC returns a transaction hash, the bot queues a Telegram alert with that hash and an explorer link when one is configured. It does not request transaction receipts or report confirmations and reverts. Check the explorer for the outcome. Signing and submission failures that happen before a hash is returned are still reported.
 
 ## Logs and alerts
 
-Set `RUNTIME.logLevel` to `off`, `info` or `debug` and restart. The checked-in value is `debug`. Info includes startup progress, quote counts, outcomes and compact latency summaries. Debug adds sized-candidate diagnostics, rejected profit checks, paths, split allocations, execution plans and error stacks. Off disables routine logging and latency collection, but not freshness checks or configured Telegram alerts.
+Set `RUNTIME.logLevel` to `off`, `info` or `debug` and restart. The checked-in value is `info`. Info includes startup progress, quote counts, submission notices and compact latency summaries. Debug adds sized-candidate diagnostics, rejected profit checks, paths, split allocations, execution plans and error stacks. Off disables routine logging and latency collection, but not freshness checks or configured Telegram alerts.
 
 A separate reporting worker formats output and sends Telegram through `src/reporting/telegram.ts`. The trading thread never awaits it. It still copies bounded records, so enabled logging has allocation and CPU cost. The queues hold 256 routine records and 32 alerts, with bounded in-flight batches; overload drops diagnostics instead of blocking trades. Debug is not a lossless trade ledger. Secrets and signed payloads are redacted, but do not intentionally pass credentials to the logger.
 
-Alerts for submission, receipts, feed/fee/nonce problems and fatal errors use the existing Telegram fields. Repeated incident keys are throttled; different transaction hashes remain separate. Delivery has timeouts, at most one retry and rate-limit handling. A timed-out delivery may be duplicated by its retry. `Reporting health` exposes drops and delivery failures.
+Alerts for submission, feed/fee/nonce problems and fatal errors use the existing Telegram fields. Repeated incident keys are throttled; different transaction hashes remain separate. Delivery has timeouts, at most one retry and rate-limit handling. A timed-out delivery may be duplicated by its retry. `Reporting health` exposes drops and delivery failures.
 
 Reporting-worker failure disables reporting without stopping trading. Fatal shutdown stops execution first and allows a bounded two-second cleanup/reporting window. A killed process, dead worker or failed machine cannot guarantee a Telegram alert; detecting that needs an external supervisor.
 
-Latency summaries normally appear every minute. Counts are cumulative; percentiles use the last 512 samples per stage, with p95 withheld until 20 samples and p99 until 100. Receipt-observation time includes polling/RPC delay. Check `search.expired`, `search.invalidated` and `split.budgetStops` before assuming a missing result is a quote-calculation bug. SQLite checkpoints and reporting allocations still share CPU or the main event loop; workers do not make their overhead disappear.
+Latency summaries normally appear every minute. Counts are cumulative; percentiles use the last 512 samples per stage, with p95 withheld until 20 samples and p99 until 100. Check `search.expired`, `search.invalidated` and `split.budgetStops` before assuming a missing result is a quote-calculation bug. SQLite checkpoints and reporting allocations still share CPU or the main event loop; workers do not make their overhead disappear.
 
 ## Checks and local tools
 

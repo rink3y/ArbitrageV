@@ -207,6 +207,8 @@ export class V2EventAdapter implements ProtocolEventAdapter {
   private transferTimer: ReturnType<typeof setTimeout> | undefined;
   private transferStopped = true;
   private transferGeneration = 0;
+  private transferRefreshing = false;
+  private transferRetryAt = 0;
   readonly id = 'v2';
   private readonly pools = new Map<string, V2PoolMetadata>();
   private readonly pendingLogs = new Map<string, { logs: any[] | null }>();
@@ -240,7 +242,7 @@ export class V2EventAdapter implements ProtocolEventAdapter {
     try {
       await this.subscribe(this.addresses());
       this.transferStopped = false;
-      this.scheduleTransferRefresh();
+      this.rescheduleTransferRefresh();
       return [() => this.stopWatching()];
     } catch (error) {
       await this.stopWatching();
@@ -299,6 +301,7 @@ export class V2EventAdapter implements ProtocolEventAdapter {
       }
     }
     const changed = added.map(pool => pool.pairAddress);
+    this.rescheduleTransferRefresh();
     if (changed.length > 0) await this.scan(changed, changed);
   }
 
@@ -324,6 +327,7 @@ export class V2EventAdapter implements ProtocolEventAdapter {
     }
     const pairs = await refreshKnownPairsInfo(this.client, [...touched.values()]);
     for (const pair of pairs) this.graph.addPair(pair);
+    if (pairs.length > 0) this.rescheduleTransferRefresh();
     if (pairs.length > 0) await this.scan(pairs.map(pair => pair.pairAddress), pairs.map(pair => pair.pairAddress));
   }
 
@@ -393,15 +397,28 @@ export class V2EventAdapter implements ProtocolEventAdapter {
     this.onError = undefined;
   }
 
-  private scheduleTransferRefresh(): void {
-    if (!V2_LIVE_POLICY.transferFees || this.transferStopped) return;
+  rescheduleTransferRefresh(): void {
+    clearTimeout(this.transferTimer);
+    this.transferTimer = undefined;
+    if (!V2_LIVE_POLICY.transferFees || this.transferStopped || this.transferRefreshing) return;
+    let nextExpiry = Infinity;
+    for (const pair of this.graph.getAllPairs()) {
+      const profiles = pair.transferProfiles;
+      if (!profiles) { nextExpiry = Date.now(); break; }
+      nextExpiry = Math.min(nextExpiry, profiles.token0.validUntil, profiles.token1.validUntil);
+    }
+    if (nextExpiry === Infinity) return;
+    const delay = Math.max(0, nextExpiry - Date.now(), this.transferRetryAt - Date.now());
     const generation = this.transferGeneration;
     this.transferTimer = setTimeout(async () => {
+      this.transferTimer = undefined;
+      this.transferRefreshing = true;
       try {
         const pairs = this.graph.getAllPairs();
         if (pairs.every(pair => pair.transferProfiles && Math.min(pair.transferProfiles.token0.validUntil, pair.transferProfiles.token1.validUntil) > Date.now())) return;
         const profiled = await profileV2Transfers(this.client, pairs);
         if (this.transferStopped || generation !== this.transferGeneration) return;
+        this.transferRetryAt = 0;
         const current = new Map(this.graph.getAllPairs().map(pair => [pair.pairAddress.toLowerCase(), pair]));
         const changed: Address[] = [];
         for (const pair of profiled) {
@@ -414,9 +431,15 @@ export class V2EventAdapter implements ProtocolEventAdapter {
           changed.push(pair.pairAddress);
         }
         if (changed.length) await this.scan(changed, changed);
-      } catch (error) { logger.error('V2 transfer refresh failed; expired profiles remain ineligible:', error); }
-      finally { if (generation === this.transferGeneration) this.scheduleTransferRefresh(); }
-    }, Math.min(60_000, V2_LIVE_POLICY.transferRefreshMs));
+      } catch (error) {
+        this.transferRetryAt = Date.now() + 60_000;
+        logger.error('V2 transfer refresh failed; expired profiles remain ineligible:', error);
+      } finally {
+        this.transferRefreshing = false;
+        if (generation === this.transferGeneration) this.rescheduleTransferRefresh();
+      }
+    }, delay);
+    this.transferTimer.unref?.();
   }
 }
 

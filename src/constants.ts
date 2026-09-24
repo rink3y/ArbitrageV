@@ -51,7 +51,7 @@ export const EXECUTION_POLICY = {
     gasLimit: 1500000n,
     // Haircut on each split branch's quoted output, used to fund the next stage.
     slippageBps: 5,
-    // Fees refresh away from the submission path. A failed refresh pauses trading.
+    // Fees refresh away from the submission path. The last valid quote keeps its original expiry.
     feeRefreshIntervalMs: 5 * 60 * 1000,
     // Applies to legacy gasPrice or EIP-1559 maxFeePerGas; never clamps estimates.
     feeCeilingPerGas: gasPrice('1000'),
@@ -66,8 +66,6 @@ export const RUNTIME: {
     metricsIntervalMs: number;
     notificationTimeoutMs: number;
     reportingShutdownMs: number;
-    receiptPollIntervalMs: number;
-    receiptTimeoutMs: number;
     marketDiscoveryIntervalMs: number;
 } = {
     logLevel: 'info', // 'off' | 'info' | 'debug'
@@ -77,9 +75,7 @@ export const RUNTIME: {
     metricsIntervalMs: 60_000,
     notificationTimeoutMs: 5_000,
     reportingShutdownMs: 2_000,
-    receiptPollIntervalMs: 1_000,
-    receiptTimeoutMs: 120_000,
-    marketDiscoveryIntervalMs: 60_000,
+    marketDiscoveryIntervalMs: 4 * 60 * 60 * 1000,
 };
 
 export const TELEGRAM = {

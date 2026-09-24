@@ -72,13 +72,11 @@ export class GasFees {
           ? { type: 'eip1559', maxFeePerGas: estimate.maxFeePerGas,
             maxPriorityFeePerGas: estimate.maxPriorityFeePerGas, validUntil } : null;
       if (!next) {
-        this.value = null;
-        this.pause('Gas fee estimate was invalid; submissions paused.');
+        this.refreshFailed('Gas fee estimate was invalid.');
         return;
       }
       if (gasPriceCeiling(next) > this.policy.feeCeilingPerGas) {
-        this.value = null;
-        this.pause('Gas estimate exceeds configured ceiling; submissions paused.');
+        this.refreshFailed('Gas estimate exceeds configured ceiling.');
         return;
       }
       this.value = next;
@@ -87,15 +85,18 @@ export class GasFees {
       if (logger.enabled) logger.info('Gas fees refreshed', next);
     } catch (error) {
       if (!this.stopped) {
-        this.value = null;
-        this.pause('Gas fee refresh failed; submissions paused until a refresh succeeds.', error);
+        this.refreshFailed('Gas fee refresh failed.', error);
       }
     } finally {
       this.refreshing = false;
     }
   }
-  private pause(message: string, error?: unknown): void {
+  private refreshFailed(message: string, error?: unknown): void {
+    if (this.current()) {
+      logger.alert('fees.refresh', 'warn', `${message} Keeping the previous quote until it expires.`, error);
+      return;
+    }
     this.paused = true;
-    logger.alert('fees.paused', 'error', message, error);
+    logger.alert('fees.paused', 'error', `${message} Submissions paused until a valid estimate is available.`, error);
   }
 }

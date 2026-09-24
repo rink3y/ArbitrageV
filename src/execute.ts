@@ -18,7 +18,6 @@ import { LocalNonces } from './execution/local-nonces';
 import { GasFees, gasPriceCeiling, type GasFeeSnapshot } from './execution/gas-fees';
 import { logger } from './reporting/logger';
 import { latency } from './runtime/latency';
-import { ReceiptTracker } from './execution/receipt-tracker';
 
 const TOKEN_PROFIT_SCALE = new Map(TOKENS.map(token => [token.address.toLowerCase(), token.minProfit]));
 
@@ -29,7 +28,6 @@ export class OpportunityManager {
     private lockedPairs: Map<string, number> = new Map();
     private readonly nonces: LocalNonces;
     private stopped = false;
-    private readonly receipts: ReceiptTracker;
     private readonly gasFees: GasFees;
 
     constructor(
@@ -42,7 +40,6 @@ export class OpportunityManager {
     ) {
         this.gasFees = gasFees ?? new GasFees(type =>
             networkConfig.client.estimateFeesPerGas({ type, chain: networkConfig.client.chain }));
-        this.receipts = new ReceiptTracker(hash => networkConfig.client.getTransactionReceipt({ hash }));
         this.nonces = new LocalNonces(
             () => networkConfig.client.getTransactionCount({ address: networkConfig.account.address, blockTag: 'pending' }),
             EXECUTION_POLICY.nonceRefreshIntervalMs,
@@ -57,7 +54,6 @@ export class OpportunityManager {
 
     stop(): void {
         this.stopped = true;
-        this.receipts.stop();
         this.nonces.stop();
         this.gasFees.stop();
     }
@@ -199,9 +195,7 @@ export class OpportunityManager {
         }
         latency.elapsed('submit.rpc', submittedAt);
         if (latency.enabled && opportunity.observedAt) latency.observe('event.toSubmissionAck', Date.now() - opportunity.observedAt);
-        this.receipts.track(hash, opportunity.observedAt);
-        
-        logger.alert(`submitted:${hash}`, 'info', 'Transaction submitted, not yet confirmed', {
+        logger.alert(`submitted:${hash}`, 'info', 'Transaction submitted; check the explorer for its outcome', {
             hash, nonce, expectedProfitRaw: opportunity.profit, token: opportunity.path[0],
         });
 

@@ -9,6 +9,8 @@ import { V2_FACTORIES } from './config';
 import { profileV2Transfers } from './transfer-probes';
 import { logger } from '../../reporting/logger';
 
+let runtime: V2EventAdapter | undefined;
+
 export const v2Plugin: ProtocolPlugin = {
   id: 'v2',
   contractId: 0,
@@ -23,10 +25,12 @@ export const v2Plugin: ProtocolPlugin = {
   async hydrate({ client, catalog, graph }) {
     const pairs = await profileV2Transfers(client, await getKnownPairsInfo(client, catalog.v2Pools));
     for (const pair of pairs) graph.addPair(pair);
+    runtime?.rescheduleTransferRefresh();
   },
   events: context => {
-    const runtime = new V2EventAdapter(context.client, context.graph, context.catalog.v2Pools, context.scan);
-    if (!context.liveMarkets) return runtime;
+    const adapter = new V2EventAdapter(context.client, context.graph, context.catalog.v2Pools, context.scan);
+    runtime = adapter;
+    if (!context.liveMarkets) return adapter;
     const liveMarkets = context.liveMarkets;
     const factories = V2_FACTORIES.map(factory => factory.address);
     liveMarkets.registerV2(
@@ -35,7 +39,7 @@ export const v2Plugin: ProtocolPlugin = {
         try { return store.pools(factories); }
         finally { store.close(); }
       },
-      pools => runtime.replacePools(pools)
+      pools => adapter.replacePools(pools)
     );
     // Reconcile once on startup in case a previous run saved discovery but not its trading list.
     let needsReconcile = true;
@@ -65,6 +69,6 @@ export const v2Plugin: ProtocolPlugin = {
       },
       RUNTIME.marketDiscoveryIntervalMs
     );
-    return [runtime, discovery];
+    return [adapter, discovery];
   },
 };

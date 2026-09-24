@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +14,8 @@ import { ARBITRAGE_SEARCH_POLICY, CONTRACTS } from '../src/constants';
 import { type PairInfo } from '../src/protocols/v2/types';
 import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
 import { createExecutionPlan } from '../src/execution/execution-planner';
+import { V2EventAdapter } from '../src/protocols/v2/runtime';
+import { logger } from '../src/reporting/logger';
 
 const addr = (n: number): Address => `0x${n.toString(16).padStart(40, '0')}`;
 const a = addr(1), b = addr(2), executor = addr(3), origin = addr(4);
@@ -180,4 +182,36 @@ describe('profile storage and simulation', () => {
     const firstCalls = calls;
     await profileV2Transfers(client, [p]); expect(calls).toBe(firstCalls);
   });
+});
+
+test('V2 profile refresh wakes for expiry or a newly hydrated unprofiled pair', async () => {
+  const errorLog = spyOn(logger, 'error').mockImplementation(() => {});
+  try {
+    for (const missing of [false, true]) {
+      const graph = new MarketGraph();
+      let calls = 0;
+      let entered!: () => void;
+      const fired = new Promise<void>(resolve => { entered = resolve; });
+      const client = {
+        async getBlockNumber() { calls++; entered(); throw new Error('probe unavailable'); },
+        async simulateContract() { return { result: [] }; },
+      };
+      const adapter = new V2EventAdapter(client as any, graph, [], async () => {});
+      const stops = await adapter.watch(client as any, async () => {}, async () => {});
+      try {
+        const p = pair(addr(missing ? 12 : 13));
+        if (missing) p.transferProfiles = undefined;
+        else {
+          p.transferProfiles!.token0.validUntil = Date.now() + 30;
+          p.transferProfiles!.token1.validUntil = Date.now() + 30;
+        }
+        graph.addPair(p);
+        adapter.rescheduleTransferRefresh();
+        await Promise.race([fired, Bun.sleep(1000).then(() => { throw new Error('profile refresh did not wake'); })]);
+        expect(calls).toBe(1);
+      } finally {
+        for (const stop of stops) await stop();
+      }
+    }
+  } finally { errorLog.mockRestore(); }
 });
