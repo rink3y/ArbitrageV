@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { type Address } from "viem";
 import { OpportunityManager } from "../src/execute";
 import { type ExecutableOpportunity } from "../src/execution/execution-planner";
-import { RUNTIME, ARBITRAGE_SEARCH_POLICY } from '../src/constants';
+import { RUNTIME, ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY } from '../src/constants';
 import { startedTestGasFees } from './helpers/gas-fees';
 
 const pair = "0x0000000000000000000000000000000000000001" as Address;
@@ -49,20 +49,22 @@ test('stale and expired queued opportunities are skipped before reserving or sub
   manager.stop();
 });
 
-test('off and shadow split candidates never reach submission, even through an injected submitter', async () => {
+test('off blocks an otherwise eligible split, while live permits submission', async () => {
   let submissions = 0;
   const gasFees = await startedTestGasFees();
   const manager = new OpportunityManager({} as never, async () => { submissions++; return true; }, gasFees);
   const before = ARBITRAGE_SEARCH_POLICY.splitRouting;
-  const split: ExecutableOpportunity = { ...opportunity, split: { mode: 'shadow', stages: [], resources: [],
-    minSurplusAfterRepayment: 1n, deadline: BigInt(Math.floor(Date.now() / 1000) + 60), gasLimit: 1n, gasPriceWei: 1n, costsValidUntil: Date.now() + 60000 } };
+  const split: ExecutableOpportunity = { ...opportunity, observedAt: Date.now(), marketVersions: { [pair]: 1 },
+    split: { stages: [], resources: [], minSurplusAfterRepayment: 1n,
+      deadline: BigInt(Math.floor(Date.now() / 1000) + 60), gasLimit: EXECUTION_POLICY.gasLimit,
+      gasPriceWei: 500n, costsValidUntil: Date.now() + 60000 } };
+  const graph = { matchesVersions: () => true } as never;
   try {
-    ARBITRAGE_SEARCH_POLICY.splitRouting = 'shadow';
-    await manager.processOpportunities({} as never, [split]);
-    ARBITRAGE_SEARCH_POLICY.splitRouting = 'live';
-    await manager.processOpportunities({} as never, [split]);
     ARBITRAGE_SEARCH_POLICY.splitRouting = 'off';
-    await manager.processOpportunities({} as never, [{ ...split, split: { ...split.split!, mode: 'live' } }]);
+    await manager.processOpportunities(graph, [split]);
     expect(submissions).toBe(0);
+    ARBITRAGE_SEARCH_POLICY.splitRouting = 'live';
+    await manager.processOpportunities(graph, [split]);
+    expect(submissions).toBe(1);
   } finally { ARBITRAGE_SEARCH_POLICY.splitRouting = before; manager.stop(); }
 });

@@ -19,7 +19,7 @@ export const V2_LIVE_POLICY = {
   recoveryLogsPerPool: 2_048,
   // Requires the updated NArb and FlashQuery deployments. No probe RPCs during search.
   transferFees: true,
-  transferRefreshMs: 60 * 60 * 1000,
+  transferRefreshMs: 4 *60 * 60 * 1000,
   transferBatchSize: 8,
   transferConcurrency: 4,
   transferProbeGas: 600_000,

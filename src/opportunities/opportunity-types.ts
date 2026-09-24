@@ -22,7 +22,7 @@ export type ArbitrageOpportunity = Omit<CandidateRoute, 'edgeIndexes'> & {
   observedAt?: number;
   netProfit?: bigint;
   split?: {
-    mode: 'shadow' | 'live'; stages: SplitStage[]; resources: string[];
+    stages: SplitStage[]; resources: string[];
     minSurplusAfterRepayment: bigint; deadline: bigint; gasLimit: bigint;
     gasPriceWei: bigint; costsValidUntil: number;
   };

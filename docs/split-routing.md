@@ -1,6 +1,6 @@
 # Split routing
 
-Split routing is implemented but switched off. It searches short circular trades with up to two pools per stage, three stages and six swaps. V2, V3 and Carbon can participate, subject to `ARBITRAGE_SEARCH_POLICY.allowedProtocols` and `allowProtocolMixing`.
+Split routing is controlled by `ARBITRAGE_SEARCH_POLICY.splitRouting`. It searches short circular trades with up to two pools per stage, three stages and six swaps. V2, V3 and Carbon can participate, subject to `ARBITRAGE_SEARCH_POLICY.allowedProtocols` and `allowProtocolMixing`.
 
 ```
                             100 A -> pool 1 -> 181 B
@@ -20,7 +20,7 @@ Use the existing settings in `src/constants.ts`. There is no separate split toke
 
 | Setting | Effect on splits |
 | --- | --- |
-| `ARBITRAGE_SEARCH_POLICY.splitRouting` | `off` skips splits; `shadow` reports them; `live` permits submission. Default: `off`. |
+| `ARBITRAGE_SEARCH_POLICY.splitRouting` | `off` skips splits; `live` searches them alongside linear routes. Submission requires `executeTrades: true`. |
 | `ARBITRAGE_SEARCH_POLICY.splitSearchMs` | Extra worker time allowed for split search. Default: 10 ms, checked cooperatively. |
 | `TOKENS` and `topTokens` | The same first N tokens are eligible to start linear and split trades. Intermediate tokens can still come from the graph. |
 | Token `minProfit` | Linear routes must exceed it after the conservative gas allowance. Splits must exceed it before gas and remain positive after gas. |
@@ -35,7 +35,7 @@ Use the existing settings in `src/constants.ts`. There is no separate split toke
 
 Two branches per stage and six swaps are contract limits, not tuning knobs. The allocator uses eight coarse samples and three refinement rounds internally. Linear sizing still uses `optimizationIterations`. Split deadlines expire 30 seconds after observation; the existing, shorter candidate-age check also applies.
 
-Restart after changing settings. To observe without sending **any** transactions, also set `EXECUTION_POLICY.executeTrades = false`. Shadow mode alone does not turn off linear trading.
+Restart after changing settings. To observe without sending **any** transactions, also set `EXECUTION_POLICY.executeTrades = false`. With `splitRouting: 'live'` and execution disabled, both searches still run.
 
 ## What the search does
 
@@ -58,7 +58,7 @@ conservative net = minimum final proceeds
 
 Swap fees and price impact are already reflected in the quotes. Favorable intermediate leftovers are assigned no value in the score. The split must exceed the token's existing `minProfit` before gas, remain positive after gas, and beat the best sized, funded linear candidate for that token under the same gas model. Linear candidates below the old reporting threshold still count in this comparison.
 
-The initial gas model charges the **full transaction gas limit at the configured fee cap**, not an optimistic per-swap estimate. That covers a successful transaction within that limit, including callbacks, approval resets, wrapping and calldata execution costs. It may reject profitable trades and does not prove a route fits the limit. It also does not accurately rank the difference in actual gas between a short linear trade and a longer split. Protocol-specific calibrated gas estimates are not implemented. Gas-limit feasibility and actual gas use still need fork or live shadow simulation before rollout.
+The initial gas model charges the **full transaction gas limit at the configured fee cap**, not an optimistic per-swap estimate. That covers a successful transaction within that limit, including callbacks, approval resets, wrapping and calldata execution costs. It may reject profitable trades and does not prove a route fits the limit. It also does not accurately rank the difference in actual gas between a short linear trade and a longer split. Protocol-specific calibrated gas estimates are not implemented. Gas-limit feasibility and actual gas use still need fork simulation before rollout.
 
 `NETWORK.wrappedNativeToken` uses the native-token identity conversion. Other tokens can supply `gasConversion: { numerator, denominator, validUntil }` on their existing `TOKENS` entry. This is a conservative `numerator / denominator` in smallest token units per smallest native unit and a `validUntil` Unix-millisecond timestamp. Missing, invalid or expired conversions make that borrow token ineligible for both linear and split live searches. Gas fee refreshes do not refresh these token conversion rates. An upstream cached price source can instead supply `FindOpportunitiesRequest.splitCosts`. Never derive gas prices from token minimum-profit settings. Additional chain-specific fees such as rollup L1 data fees are not included in the execution-gas model; live execution requires those costs to be accounted for before rollout.
 
@@ -78,7 +78,7 @@ These changes require a **new NArb deployment** to use splits. The old linear fu
 
 Pool/controller addresses come from the configured market graph and owner-signed plan. This is not an on-chain factory allowlist. Only supported, trusted deployments and ordinary non-taxed, non-rebasing tokens should be admitted. A local mock suite is not an independent contract audit.
 
-The main process locks every branch pool before submission. Carbon controller-level locks are conservative and can also block disjoint strategies on that controller. Funding is a revision dependency, not an exclusive lending lock. A split uses one transaction and one local nonce. Shadow candidates are rejected at the submission boundary even if passed there directly.
+The main process locks every branch pool before submission. Carbon controller-level locks are conservative and can also block disjoint strategies on that controller. Funding is a revision dependency, not an exclusive lending lock. A split uses one transaction and one local nonce. When split routing is off, split candidates are rejected at the submission boundary even if passed there directly.
 
 ## Offline checks
 
@@ -93,7 +93,7 @@ bun run bench:split
 
 Foundry uses Solidity 0.8.27, optimization and `via_ir` for the nested stage ABI. `abi:arb` copies the compiled NArb ABI; there is no handwritten duplicate function ABI.
 
-The test suite includes an independent exhaustive small-integer V2 allocation oracle, exact-input and cost checks, worker mirroring, stale funding/branch revisions, shadow submission guards, ABI signing through an in-memory transport, and Solidity tests for V2/V3/Carbon, native wrapping, callback validation, old-balance isolation and a fuzzed final-profit floor. The V3 contract mock checks execution/callback behavior; it is not a substitute for running against deployed pool bytecode.
+The test suite includes an independent exhaustive small-integer V2 allocation oracle, exact-input and cost checks, worker mirroring, stale funding/branch revisions, off-mode submission guards, ABI signing through an in-memory transport, and Solidity tests for V2/V3/Carbon, native wrapping, callback validation, old-balance isolation and a fuzzed final-profit floor. The V3 contract mock checks execution/callback behavior; it is not a substitute for running against deployed pool bytecode.
 
 `bench:split` compares warmed worker round trips with split search off and on using four synthetic V2 pools. It also performs a separate stateful V2 depletion experiment: each hypothetical fill changes reserves before the next search. It never treats repeated unchanged quotes as independent earned revenue. Its fill model does not simulate V3 or Carbon trades.
 
@@ -105,8 +105,8 @@ For recorded graph data:
 bun run replay:split recording.ndjson
 ```
 
-`recording.ndjson` is a placeholder, not a bundled file. Supply a real recording, or use `bun run bench:split` for the synthetic example. Replay forces shadow mode and uses the existing `TOKENS`/`topTokens` selection; frame start tokens can narrow that selection, not expand it. No second token setup is needed.
+`recording.ndjson` is a placeholder, not a bundled file. Supply a real recording, or use `bun run bench:split` for the synthetic example. Replay enables split search and uses the existing `TOKENS`/`topTokens` selection; frame start tokens can narrow that selection, not expand it. No second token setup is needed.
 
-Each line is a frame `{ at, changes, startTokens, costs }`. `at` is the capture timestamp in Unix milliseconds; `changes` is a full initial `GraphChanges` snapshot, followed by ordered deltas; `costs` is the contemporaneous `SplitCosts` snapshot. Use `replayJSON.stringify` from `src/opportunities/split-replay.ts` to encode bigints as `{ "$bigint": "123" }`. Keep signing keys and RPC credentials out of recordings. The tool forces shadow mode and constructs no network client or signer.
+Each line is a frame `{ at, changes, startTokens, costs }`. `at` is the capture timestamp in Unix milliseconds; `changes` is a full initial `GraphChanges` snapshot, followed by ordered deltas; `costs` is the contemporaneous `SplitCosts` snapshot. Use `replayJSON.stringify` from `src/opportunities/split-replay.ts` to encode bigints as `{ "$bigint": "123" }`. Keep signing keys and RPC credentials out of recordings. The tool constructs no network client, signer or executor, regardless of `executeTrades`.
 
 Cost expiry is rebased relative to each recorded timestamp, preserving whether it was fresh at capture. Output includes linear and split quotes, work/deadline statistics, timings and repeated consecutive quote counts. This is observation replay, **not a historical P&L backtest**: recorded chain states do not include our hypothetical fills. No revenue total is produced. A representative Sei recording, actual gas calibration, fork validation, competition/inclusion analysis and independent contract review remain rollout work, not evidence established by these offline tests.

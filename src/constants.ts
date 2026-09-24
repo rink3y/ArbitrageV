@@ -27,7 +27,7 @@ export const CONTRACTS = {
 } as const;
 
 export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
-    topTokens: 10,
+    topTokens: 5,
     // Controls discovery, live loading, event monitoring, and route searches. Use ['v2'] for V2 only.
     allowedProtocols: ['v2'],
     allowProtocolMixing: true,
@@ -39,16 +39,16 @@ export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
     // Live search is bounded even when discovery finds thousands of pools.
     maxCandidatesToSize: 64,
     maxSearchExpansions: 50_000,
-    // Shadow reports splits without submitting them; linear trading is unaffected.
-    splitRouting: 'shadow', // 'off' | 'shadow' | 'live'
+    // Enables split search. executeTrades controls submission for all routes.
+    splitRouting: 'live', // 'off' | 'live'
     splitSearchMs: 10,
 } as const;
 
 export const EXECUTION_POLICY = {
-    executeTrades: false,
+    executeTrades: true,
     nonceRefreshIntervalMs: 12 * 60 * 60 * 1000,
     nonceRetryIntervalMs: 5_000,
-    gasLimit: 2500000n,
+    gasLimit: 1500000n,
     // Split-output haircut and maximum haircut on quoted linear surplus.
     slippageBps: 5,
     // Fees refresh away from the submission path. A failed refresh pauses trading.
@@ -70,7 +70,7 @@ export const RUNTIME: {
     receiptTimeoutMs: number;
     marketDiscoveryIntervalMs: number;
 } = {
-    logLevel: 'info', // 'off' | 'info' | 'debug'
+    logLevel: 'debug', // 'off' | 'info' | 'debug'
     websocketEnabled: true,
     searchTimeoutMs: 10_000,
     candidateMaxAgeMs: 500,

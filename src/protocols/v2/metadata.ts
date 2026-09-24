@@ -48,6 +48,20 @@ export async function discoverV2PoolMetadata(
   store: V2Store,
   factories: readonly DexFactoryConfig[] = V2_FACTORIES
 ): Promise<V2PoolMetadata[]> {
+  await refreshV2PoolMetadata(client, store, factories);
+  const pools = store.pools(factories.map(factory => factory.address));
+  logger.info(`Found ${pools.length} V2 pools across ${factories.length} factories`);
+  return pools;
+}
+
+// Update checkpoints without materializing the saved catalog on every live check.
+export async function refreshV2PoolMetadata(
+  client: V2Client,
+  store: V2Store,
+  factories: readonly DexFactoryConfig[] = V2_FACTORIES
+): Promise<{ poolsSaved: number; factoriesReset: number }> {
+  let poolsSaved = 0;
+  let factoriesReset = 0;
   const head = await client.getBlockNumber({ cacheTime: 0 });
   const identity = await blockIdentity(client, head);
   const lengths = await getPairsLength(client, factories, head);
@@ -59,6 +73,7 @@ export async function discoverV2PoolMetadata(
     if (checkpoint && (checkpoint.configuration !== configuration || checkpoint.pairCount > total ||
       checkpoint.blockNumber > head || (await blockIdentity(client, checkpoint.blockNumber)).blockHash !== checkpoint.blockHash)) {
       store.resetFactory(factory.address);
+      factoriesReset++;
       checkpoint = null;
     }
     const batchSize = factory.kind === 'solidly'
@@ -70,15 +85,14 @@ export async function discoverV2PoolMetadata(
       const stop = Math.min(start + batchSize, total);
       const pools = await getPairsInRange(client, factory, start, stop, fees, head);
       store.saveDiscovery(factory.address, pools, { pairCount: stop, ...identity, configuration });
+      poolsSaved += pools.length;
       saved = true;
       start = stop;
     }
     if (!checkpoint && !saved) store.saveDiscovery(factory.address, [], { pairCount: total, ...identity, configuration });
   }
   if ((await blockIdentity(client, head)).blockHash !== identity.blockHash) throw new Error('Chain changed during V2 discovery; retry');
-  const pools = store.pools(factories.map(factory => factory.address));
-  logger.info(`Found ${pools.length} V2 pools across ${factories.length} factories`);
-  return pools;
+  return { poolsSaved, factoriesReset };
 }
 
 async function getPairsLength(client: V2Client, factories: readonly DexFactoryConfig[], blockNumber: bigint): Promise<Map<string, number>> {

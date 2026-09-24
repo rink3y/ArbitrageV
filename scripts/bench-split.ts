@@ -10,7 +10,7 @@ const fees = { type: 'eip1559', maxFeePerGas: 1_000_000_000n,
   maxPriorityFeePerGas: 0n, validUntil: Number.MAX_SAFE_INTEGER } as const;
 const costs = () => splitCostsFromSnapshot(TOKENS, fees);
 const unit = 10n ** 18n;
-const policy = { ...ARBITRAGE_SEARCH_POLICY, splitRouting: 'shadow' as const, maxRouteEdges: 3 };
+const policy = { ...ARBITRAGE_SEARCH_POLICY, splitRouting: 'live' as const, maxRouteEdges: 3 };
 const engine = new OpportunityEngine(policy);
 for (const [id, x, y] of [[1, 10000n, 20000n], [2, 10000n, 20000n], [3, 20000n, 20000n], [4, 1000000n, 1000000n]] as const) {
   engine.graph.addPair({ pairAddress: `0x${id.toString(16).padStart(40, '0')}`, token0: a, token1: b,
@@ -19,20 +19,20 @@ for (const [id, x, y] of [[1, 10000n, 20000n], [2, 10000n, 20000n], [3, 20000n, 
 const snapshot = engine.graph.takeChanges(true);
 const baseline = new OpportunityEngine({ ...policy, splitRouting: 'off' }); baseline.graph.applyChanges(snapshot);
 const off = new WorkerSearch(baseline.graph, baseline.policy);
-const shadow = new WorkerSearch(engine.graph, engine.policy);
-const timings = { off: [] as number[], shadow: [] as number[] };
+const live = new WorkerSearch(engine.graph, engine.policy);
+const timings = { off: [] as number[], live: [] as number[] };
 let splitObservations = 0;
 try {
-  await off.search({ startTokens: [] }); await shadow.search({ startTokens: [] });
+  await off.search({ startTokens: [] }); await live.search({ startTokens: [] });
   for (let i = 0; i < 40; i++) {
-    for (const [name, worker] of [['off', off], ['shadow', shadow]] as const) {
+    for (const [name, worker] of [['off', off], ['live', live]] as const) {
       const started = performance.now();
       const result = await worker.search({ startTokens: [a], observedAt: Date.now(), splitCosts: costs() });
       timings[name].push(performance.now() - started);
-      if (name === 'shadow' && result.some(opportunity => opportunity.split)) splitObservations++;
+      if (name === 'live' && result.some(opportunity => opportunity.split)) splitObservations++;
     }
   }
-} finally { off.stop(); shadow.stop(); }
+} finally { off.stop(); live.stop(); }
 const percentiles = (values: number[]) => {
   values.sort((x, y) => x - y);
   return Object.fromEntries([50, 95, 99].map(p => [`p${p}Ms`, Number(values[Math.min(values.length - 1, Math.ceil(values.length * p / 100) - 1)].toFixed(3))]));
@@ -49,7 +49,7 @@ for (let i = 0; i < 10; i++) {
   fills.push(surplus.toString());
 }
 console.log(JSON.stringify({ fixture: 'four synthetic V2 pools, one profit token', samples: 40,
-  off: percentiles(timings.off), shadow: percentiles(timings.shadow), splitObservations,
+  off: percentiles(timings.off), live: percentiles(timings.live), splitObservations,
   note: 'Repeated quote observations are not independent revenue. No RPC, signing or submission.',
   statefulV2Fills: fills.length, surplusBeforeGasPerFill: fills,
 }, null, 2));

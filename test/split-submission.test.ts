@@ -27,7 +27,7 @@ for (const legacy of [false, true]) test(`a live split signs one ${legacy ? 'leg
   const opportunity: ExecutableOpportunity = { path: [addr(1), addr(2), addr(1)], pairs: [addr(3), addr(4), addr(5)],
     protocols: ['v2', 'v2', 'v2'], fees: [0, 0, 0], routeData: ['0x', '0x', '0x'], optimalInput: 200n, profit: 106n,
     netProfit: 100n, observedAt: Date.now(), marketVersions: { [addr(3)]: 1 }, flashPoolAddress: addr(6),
-    split: { mode: 'live', resources: [addr(3), addr(4), addr(5)], minSurplusAfterRepayment: 100n,
+    split: { resources: [addr(3), addr(4), addr(5)], minSurplusAfterRepayment: 100n,
       deadline: BigInt(Math.floor(Date.now() / 1000) + 30), costsValidUntil: Date.now() + 30000,
       gasLimit: EXECUTION_POLICY.gasLimit, gasPriceWei: 500n,
       stages: [

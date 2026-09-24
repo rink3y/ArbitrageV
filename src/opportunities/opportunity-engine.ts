@@ -44,7 +44,7 @@ export class OpportunityEngine {
     const measured = latency.enabled;
     this.diagnostics = [];
     request = { ...request, startTokens: request.startTokens.filter(token => this.tokenByAddress.has(token.toLowerCase())) };
-    const splitEnabled = !!this.policy.splitRouting && this.policy.splitRouting !== 'off';
+    const splitEnabled = this.policy.splitRouting === 'live';
     const opportunities: ArbitrageOpportunity[] = [];
     const shortlist: Array<{ candidate: CandidateRoute; numerator: bigint; denominator: bigint }> = [];
     const limit = this.policy.maxCandidatesToSize ?? 64;
@@ -116,7 +116,7 @@ export class OpportunityEngine {
         netProfit: candidate.netProfit, flashPoolAddress: candidate.flashPool.poolAddress,
         observedAt: request.observedAt ?? Date.now(),
         marketVersions: this.graph.marketVersions([...pairs, candidate.flashPool.poolAddress], protocols.includes('carbon')),
-        split: { mode: this.policy.splitRouting as 'shadow' | 'live', stages: candidate.quote.stages, resources: candidate.quote.resources,
+        split: { stages: candidate.quote.stages, resources: candidate.quote.resources,
           minSurplusAfterRepayment: candidate.minSurplusAfterRepayment,
           deadline: BigInt(Math.floor((request.observedAt ?? Date.now()) / 1000) + 30),
           gasLimit: EXECUTION_POLICY.gasLimit, gasPriceWei: request.splitCosts!.gasPriceWei, costsValidUntil: request.splitCosts!.validUntil },

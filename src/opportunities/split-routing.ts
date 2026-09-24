@@ -116,7 +116,7 @@ export function searchSplitRoutes(
   const winners = new Map<string, SplitCandidate>();
   const result = () => ({ best: winners.values().next().value ?? null, candidates: [...winners.values()], work, evaluated,
     exhausted: exhausted || evaluated >= maxCandidates });
-  if (!policy.splitRouting || policy.splitRouting === 'off' || paths.length === 0) return result();
+  if (policy.splitRouting !== 'live' || paths.length === 0) return result();
   const tokenByAddress = new Map(tokens.slice(0, policy.topTokens).map(token => [token.address.toLowerCase(), token]));
   for (const value of [maxCandidates, maxWork, alternatives]) {
     if (!Number.isSafeInteger(value) || value < 1) throw new Error('Invalid split search budget');

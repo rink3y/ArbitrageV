@@ -12,7 +12,7 @@ type Frame = { at: number; changes: GraphChanges; startTokens: Address[]; costs?
 const file = process.argv[2];
 if (!file) throw new Error('Usage: bun run replay:split recording.ndjson');
 if (!(await Bun.file(file).exists())) throw new Error(`Recording not found: ${file}. Supply a recorded NDJSON file, or run bun run bench:split for an offline synthetic example.`);
-const engine = new OpportunityEngine({ ...ARBITRAGE_SEARCH_POLICY, splitRouting: 'shadow' });
+const engine = new OpportunityEngine({ ...ARBITRAGE_SEARCH_POLICY, splitRouting: 'live' });
 let frames = 0;
 let splitFrames = 0;
 let repeats = 0;
@@ -35,7 +35,7 @@ for await (const line of createInterface({ input: createReadStream(file), crlfDe
   repeats += [...signatures].filter(key => previous.has(key)).length;
   previous = signatures;
   console.log(replayJSON.stringify({ frame: frames, at: frame.at, splitSearch: engine.lastSplitStats,
-    quotes: result.map(opportunity => ({ kind: opportunity.split ? 'split-shadow' : 'linear', token: opportunity.path[0],
+    quotes: result.map(opportunity => ({ kind: opportunity.split ? 'split' : 'linear', token: opportunity.path[0],
       amount: opportunity.optimalInput, net: opportunity.netProfit, grossAfterFlash: opportunity.profit })) }));
 }
 elapsed.sort((a, b) => a - b);

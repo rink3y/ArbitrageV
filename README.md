@@ -107,6 +107,8 @@ Optional [V2 transfer-fee profiling](docs/transfer-fees.md) measures pool-specif
 
 V2 discovery does not scan historical blocks. It reads each factory's current pair count and fetches only indexes after the saved checkpoint. The complete discovered catalog and the per-factory pair count are stored in SQLite. If the checkpoint block changes in a reorg, or the factory configuration changes, that factory is rebuilt from index zero.
 
+While running, the bot checks for new V2 pools on factory events and at `RUNTIME.marketDiscoveryIntervalMs`. Unchanged checks stay quiet and skip catalog loading and filtering. Startup reconciles the saved catalog once to recover interrupted updates. Later catalog changes trigger another reconciliation; failed updates are retried. The full `Found ... V2 pools` summary belongs to sync, not these runtime checks.
+
 ### V3
 
 Edit `V3_FACTORIES` in [src/protocols/v3/config.ts](src/protocols/v3/config.ts). Each entry needs a name, factory address, inclusive `fromBlock`, and `enabled` flag. There is no manual pool list. Sync reads every `PoolCreated` event from each enabled factory through the chain head observed when the sync starts, including every fee tier.
@@ -175,7 +177,7 @@ The fee snapshot used to score a search is also used to sign its transaction. Th
 
 `ARBITRAGE_SEARCH_POLICY.splitRouting` in [src/constants.ts](src/constants.ts) controls split-and-merge search across V2, V3 and Carbon. It is **off by default**. It uses the same `TOKENS`, `topTokens`, token `minProfit` and reserve-fraction cap as linear search; there is no second token list. Supported plans have at most two branches per stage, three stages and six swaps, in one atomic transaction. The search compares conservative net profit with the funded linear candidates and tracks every branch for stale-state rejection.
 
-`shadow` searches without submitting split trades. It does **not** disable existing linear trading; set `EXECUTION_POLICY.executeTrades = false` for observation only. `live` needs a newly deployed NArb and fresh gas-cost data. `NETWORK.wrappedNativeToken` uses its native 1:1 conversion; other borrow tokens need a fresh `gasConversion` on their existing `TOKENS` entry, or rates supplied with the search request. No deployment happens automatically.
+`off` runs only the linear search. `live` searches both linear and split routes. `EXECUTION_POLICY.executeTrades` controls submission for both: set it to `false` to observe without sending trades. Split execution needs a newly deployed NArb and fresh gas-cost data. `NETWORK.wrappedNativeToken` uses its native 1:1 conversion; other borrow tokens need a fresh `gasConversion` on their existing `TOKENS` entry, or rates supplied with the search request. No deployment happens automatically.
 
 The new NArb implementation makes both execution entry points owner-only, validates callbacks and exact branch spending, and enforces a final profit floor for splits. Its ABI is generated with `bun run abi:arb` after `forge build`. See [split routing](docs/split-routing.md) for configuration, amount accounting, gas assumptions, rollout requirements and offline replay commands.
 

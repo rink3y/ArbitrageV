@@ -217,7 +217,7 @@ export class OpportunityManager {
 
     private splitExecutable(opportunity: ExecutableOpportunity, feeSnapshot: GasFeeSnapshot): boolean {
         const split = opportunity.split;
-        return !!split && ARBITRAGE_SEARCH_POLICY.splitRouting === 'live' && split.mode === 'live' &&
+        return !!split && ARBITRAGE_SEARCH_POLICY.splitRouting === 'live' &&
             !!opportunity.marketVersions && opportunity.observedAt !== undefined &&
             split.costsValidUntil > Date.now() && split.deadline >= BigInt(Math.floor(Date.now() / 1000)) &&
             split.gasLimit === EXECUTION_POLICY.gasLimit && split.gasPriceWei === gasPriceCeiling(feeSnapshot);

@@ -19,7 +19,7 @@ const tokens = TOKENS.map(token => ({ ...token, minProfit: 1n }));
 const fees = { type: 'eip1559', maxFeePerGas: 1_000_000_000n,
   maxPriorityFeePerGas: 0n, validUntil: Number.MAX_SAFE_INTEGER } as const;
 function searchPolicy(): ArbitrageSearchPolicy {
-  return { ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2', 'v3', 'carbon'], splitRouting: 'shadow' as const, splitSearchMs: 1000,
+  return { ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2', 'v3', 'carbon'], splitRouting: 'live' as const, splitSearchMs: 1000,
     maxCandidatesToSize: 24, maxSearchExpansions: 100000, maxInputReserveFraction: 5n };
 }
 export function splitMarket(policy = searchPolicy()) {
@@ -68,7 +68,6 @@ test('engine finds splits before the single-route profit filter and encodes a st
   expect(results.filter(result => !result.split)).toHaveLength(0);
   const split = results.find(result => result.split)!;
   expect(split).toBeDefined();
-  expect(split.split!.mode).toBe('shadow');
   expect(split.split!.minSurplusAfterRepayment).toBe(201n);
   const plan = createExecutionPlan(engine.graph, split);
   expect(plan?.kind).toBe('split');
@@ -181,7 +180,7 @@ test('Carbon group and single overlap is rejected while independent Carbon and V
   expect(quoteSplitStages(noMix, [a, b, a], [[{ edgeIndex: noMixCarbon, amountIn: 100n }], [{ edgeIndex: edgeIndex(noMix, 3, b), amountIn: 50n }]], 0)).toBeNull();
 });
 
-test('worker carries shared tokens, policy and costs, preserves shadow plans, and rechecks every pool revision', async () => {
+test('worker carries shared tokens, policy and costs, preserves split plans, and rechecks every pool revision', async () => {
   const policy = searchPolicy(); const engine = new OpportunityEngine(policy, [], tokens);
   engine.graph.applyChanges(splitMarket().takeChanges(true));
   const worker = new WorkerSearch(engine.graph, engine.policy, tokens);
@@ -191,7 +190,7 @@ test('worker carries shared tokens, policy and costs, preserves shadow plans, an
     const actual = await worker.search(request);
     expect(actual).toEqual(expected);
     const split = actual.find(candidate => candidate.split)!;
-    expect(split.split!.mode).toBe('shadow');
+    expect(split?.split).toBeDefined();
     engine.graph.updateReserves([{ pairAddress: split.flashPoolAddress!, reserve0: 90000n, reserve1: 90000n }]);
     expect(engine.graph.matchesVersions(split.marketVersions!)).toBe(false);
     expect(await worker.search(request)).toEqual(engine.findOpportunities(request));

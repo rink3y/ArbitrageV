@@ -1,4 +1,4 @@
-import { discoverV2PoolMetadata, type V2Client } from './metadata';
+import { discoverV2PoolMetadata, refreshV2PoolMetadata, type V2Client } from './metadata';
 import { getKnownPairsInfo, V2EventAdapter } from './runtime';
 import { type ProtocolPlugin } from '../protocol-plugin';
 import { v2FlashLoanFee } from './execution';
@@ -7,6 +7,7 @@ import { FactoryDiscoveryAdapter } from '../../runtime/factory-discovery-adapter
 import { RUNTIME } from '../../constants';
 import { V2_FACTORIES } from './config';
 import { profileV2Transfers } from './transfer-probes';
+import { logger } from '../../reporting/logger';
 
 export const v2Plugin: ProtocolPlugin = {
   id: 'v2',
@@ -36,15 +37,31 @@ export const v2Plugin: ProtocolPlugin = {
       },
       pools => runtime.replacePools(pools)
     );
+    // Reconcile once on startup in case a previous run saved discovery but not its trading list.
+    let needsReconcile = true;
     const discovery = new FactoryDiscoveryAdapter(
       'v2-factories',
       factories,
       (client, addresses, onLogs, onError) => client.watchEvent({ address: [...addresses], onLogs, onError }),
       async () => {
-        const store = new V2Store();
-        try { await discoverV2PoolMetadata(context.client as unknown as V2Client, store); }
-        finally { store.close(); }
-        await liveMarkets.reconcile();
+        try {
+          const store = new V2Store();
+          let changes;
+          try { changes = await refreshV2PoolMetadata(context.client as unknown as V2Client, store); }
+          finally { store.close(); }
+          if (changes.poolsSaved > 0 || changes.factoriesReset > 0) {
+            needsReconcile = true;
+            logger.info('V2 discovery updated', changes);
+          }
+          if (needsReconcile) {
+            await liveMarkets.reconcile();
+            needsReconcile = false;
+          }
+        } catch (error) {
+          // Discovery can commit batches before a later read or publication fails.
+          needsReconcile = true;
+          throw error;
+        }
       },
       RUNTIME.marketDiscoveryIntervalMs
     );
