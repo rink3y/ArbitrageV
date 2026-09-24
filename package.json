@@ -6,7 +6,7 @@
     "start": "bun run index.ts",
     "sync:markets": "bun run src/sync-markets.ts",
     "test": "bun test",
-    "test:stress": "bun test test/v2.stress.test.ts",
+    "test:stress": "bun test test/graph.stress.test.ts",
     "bench:stress": "bun run scripts/bench-stress.ts",
     "bench:carbon": "bun run scripts/bench-carbon.ts",
     "bench:split": "bun run scripts/bench-split.ts",

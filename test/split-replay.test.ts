@@ -1,3 +1,4 @@
+import { v2Pair } from './helpers/markets';
 import { expect, test } from 'bun:test';
 import { MarketGraph } from '../src/market-graph/market-graph';
 import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, TOKENS } from '../src/constants';
@@ -11,7 +12,7 @@ test('offline V2 fills consume reserves instead of counting an unchanged quote a
   const [a, b] = TOKENS.map(token => token.address);
   const addr = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const;
   for (const [id, x, y] of [[1, 1000n, 2000n], [2, 1000n, 2000n], [3, 2000n, 2000n], [4, 100000n, 100000n]] as const)
-    graph.addPair({ pairAddress: addr(id), token0: a, token1: b, reserve0: x, reserve1: y, fee: 0, variant: 'uniswap-v2', scale0: 1n, scale1: 1n });
+    graph.addPair(v2Pair(id, a, b, x, y, 0));
   const opportunity: V2ReplayPlan = { path: [a, b, a], optimalInput: 200n, flashPoolAddress: addr(4),
     split: { stages: [
       { tokenIn: a, tokenOut: b, branches: [1, 2].map(id => ({ pool: addr(id), protocol: 'v2', fee: 0, data: '0x', amountIn: 100n, minAmountOut: 181n })) },
@@ -30,8 +31,7 @@ test('recorded NDJSON replays through the offline CLI without credentials or a r
   const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY);
   const [a, b] = TOKENS.map(token => token.address);
   for (const [id, x, y] of [[1, 1000n, 2000n], [2, 1000n, 2000n], [3, 2000n, 2000n], [4, 100000n, 100000n]] as const)
-    graph.addPair({ pairAddress: `0x${id.toString(16).padStart(40, '0')}`, token0: a, token1: b, reserve0: x, reserve1: y,
-      fee: 0, variant: 'uniswap-v2', scale0: 1n, scale1: 1n });
+    graph.addPair(v2Pair(id, a, b, x, y, 0));
   const costs = { validUntil: 11000, gasPriceWei: 1n, rates: { [a.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimit } } };
   const frames = [
     { at: 1000, changes: graph.takeChanges(true), startTokens: [a], costs },

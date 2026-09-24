@@ -1,3 +1,4 @@
+import { v2Pair } from './helpers/markets';
 import { expect, test } from 'bun:test';
 import { MarketGraph } from '../src/market-graph/market-graph';
 import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, TOKENS } from '../src/constants';
@@ -25,8 +26,7 @@ function searchPolicy(): ArbitrageSearchPolicy {
 export function splitMarket(policy = searchPolicy()) {
   const graph = new MarketGraph(policy);
   for (const [id, r0, r1] of [[1, 1000n, 2000n], [2, 1000n, 2000n], [3, 2000n, 2000n], [4, 100000n, 100000n]] as const) {
-    graph.addPair({ pairAddress: address(id), token0: a, token1: b, reserve0: r0, reserve1: r1,
-      fee: 0, variant: 'uniswap-v2', scale0: 1n, scale1: 1n });
+    graph.addPair(v2Pair(id, a, b, r0, r1, 0));
   }
   return graph;
 }
@@ -144,8 +144,7 @@ test('budget exhaustion is reported, including work inside a V3 tick walk', () =
 
 test('bounded and execution funding lookups agree when several lenders have equal fees', () => {
   const graph = splitMarket();
-  graph.addPair({ pairAddress: address(5), token0: a, token1: b, reserve0: 1000000n, reserve1: 1000000n,
-    fee: 0, variant: 'uniswap-v2', scale0: 1n, scale1: 1n });
+  graph.addPair(v2Pair(5, a, b, 1000000n, 1000000n, 0));
   expect(graph.findBestFlashPoolForToken(a, 200n, [address(1), address(2)], () => true))
     .toEqual(graph.findBestFlashPoolForToken(a, 200n, [address(1), address(2)]));
 });

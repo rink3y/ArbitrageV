@@ -3,7 +3,7 @@ import { type Address } from "viem";
 import { TOKENS } from "../src/constants";
 import { type CarbonStrategy } from "../src/protocols/carbon/types";
 import { type ArbitrageSearchPolicy } from "../src/market-graph/types";
-import { type PairInfo } from "../src/protocols/v2/types";
+import { v2Pair as pair } from './helpers/markets';
 import { type V3PoolConfig } from "../src/protocols/v3/types";
 import { OpportunityEngine } from "../src/opportunities/opportunity-engine";
 import { Q96 } from "../src/protocols/v3/quote";
@@ -29,17 +29,7 @@ function policy(maxRouteEdges: number): ArbitrageSearchPolicy {
 test("finds a profitable mixed Carbon and V2 route", () => {
   const searchPolicy = policy(2);
   const engine = new OpportunityEngine(searchPolicy, []);
-  engine.graph.addPair({
-    pairAddress: v2Pair,
-    token0: tokenA,
-    token1: tokenB,
-    fee: 30,
-    reserve0: 10n ** 30n,
-    reserve1: 10n ** 24n,
-    variant: 'uniswap-v2',
-    scale0: 1n,
-    scale1: 1n,
-  } satisfies PairInfo);
+  engine.graph.addPair(pair(v2Pair, tokenA, tokenB, 10n ** 30n, 10n ** 24n));
   engine.graph.setCarbonStrategies([carbonStrategy()]);
 
   const opportunities = engine.findOpportunities({ startTokens: [tokenA] });
@@ -64,17 +54,7 @@ test("finds a profitable mixed Carbon and V3 route", () => {
 test("finds a profitable mixed Carbon, V2, and V3 route", () => {
   const searchPolicy = policy(3);
   const engine = new OpportunityEngine(searchPolicy, []);
-  engine.graph.addPair({
-    pairAddress: v2Pair,
-    token0: tokenB,
-    token1: TOKENS[2].address,
-    fee: 30,
-    reserve0: 10n ** 24n,
-    reserve1: 10n ** 30n,
-    variant: 'uniswap-v2',
-    scale0: 1n,
-    scale1: 1n,
-  } satisfies PairInfo);
+  engine.graph.addPair(pair(v2Pair, tokenB, TOKENS[2].address, 10n ** 24n, 10n ** 30n));
   addV3Pool(engine, address(5), TOKENS[2].address, tokenA);
   engine.graph.setCarbonStrategies([carbonStrategy()]);
 

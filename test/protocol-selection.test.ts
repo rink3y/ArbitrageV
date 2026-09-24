@@ -3,7 +3,7 @@ import { ARBITRAGE_SEARCH_POLICY, CONTRACTS, NETWORK } from '../src/constants';
 import * as marketDb from '../src/market-db';
 import * as network from '../src/network';
 import * as workflow from '../src/opportunities/opportunity-workflow';
-import { protocolPlugin } from '../src/protocols/registry';
+import { enabledProtocolPlugins, PROTOCOL_PLUGINS, protocolPlugin } from '../src/protocols/registry';
 import { runArbitrageBot } from '../src/runtime/arbitrage-bot';
 import { parseSyncProtocols, syncMarkets } from '../src/sync-markets';
 
@@ -231,4 +231,32 @@ test('sync protocol arguments support repeated, comma-separated, and all selecti
   expect(() => parseSyncProtocols(['--protocol', 'wrong'])).toThrow('Unknown protocol');
   expect(() => parseSyncProtocols(['--all', '--protocol', 'v3'])).toThrow('either --all or --protocol');
   expect(() => parseSyncProtocols(['--wat'])).toThrow('Unknown sync option');
+});
+
+test('protocol registry keeps dependency-safe discovery order', () => {
+  expect(PROTOCOL_PLUGINS.map(plugin => plugin.id)).toEqual(['v2', 'v3', 'carbon']);
+});
+
+test('protocol selection follows the constant without changing registrations', () => {
+  const previous = ARBITRAGE_SEARCH_POLICY.allowedProtocols;
+  try {
+    ARBITRAGE_SEARCH_POLICY.allowedProtocols = ['v2'];
+    expect(enabledProtocolPlugins().map(plugin => plugin.id)).toEqual(['v2']);
+    expect(protocolPlugin('v3').contractId).toBe(1);
+    expect(protocolPlugin('carbon').contractId).toBe(2);
+  } finally {
+    ARBITRAGE_SEARCH_POLICY.allowedProtocols = previous;
+  }
+});
+
+test('protocol selection preserves dependency order and removes duplicates', () => {
+  expect(enabledProtocolPlugins(['carbon', 'v3', 'v2', 'v2']).map(plugin => plugin.id))
+    .toEqual(['v2', 'v3', 'carbon']);
+  expect(enabledProtocolPlugins(['carbon', 'v3']).map(plugin => plugin.id))
+    .toEqual(['v3', 'carbon']);
+  expect(enabledProtocolPlugins(['carbon']).map(plugin => plugin.id)).toEqual(['carbon']);
+});
+
+test('an empty protocol selection reports the setting to fix', () => {
+  expect(() => enabledProtocolPlugins([])).toThrow('ARBITRAGE_SEARCH_POLICY.allowedProtocols');
 });

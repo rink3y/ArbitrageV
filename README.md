@@ -1,247 +1,172 @@
 # ArbitrageV
 
-An arbitrage bot for compatible EVM networks, written in TypeScript and run with Bun. It looks for circular trades across V2 pools, V3 pools, and Carbon strategies, and can execute them using a flash loan from a V2 or V3 pool. The supplied chain, token and DEX settings are for Sei.
+A Bun/TypeScript arbitrage bot that keeps an EVM market graph in memory, searches circular trades, and executes them through a V2 or V3 flash loan. The adapters cover Uniswap-style V2, Solidly stable/volatile pools, Uniswap V3 and Carbon. Direct routes and split-and-merge routes share the same graph and execution pipeline.
 
-V2 and V3 pools are discovered from factories. Carbon pairs come from the configured controllers. You choose which protocols to use in `src/constants.ts`.
+This is a working bot that finds arbitrage opportunities and can execute trades on-chain, developed as a learning project. A profitable local quote is not proof that a transaction will succeed. Token behavior, incomplete event feeds, inclusion delay and competition can all invalidate it. The current configuration targets Cronos with V2 only.
 
-## Getting started
+## Before running it
 
-You'll need Bun, an HTTP RPC endpoint for your chosen chain, and a deployed query contract matching [UniswapFlashQuery.sol](Contract/UniswapFlashQuery.sol). To submit trades, you'll also need a deployed [arbitrage contract](Contract/NArb.sol) and a wallet with the chain's native currency for gas. Contract deployment isn't included in the setup commands.
+Use Bun. The runtime depends on its worker and SQLite APIs. Copy `.env.example` to `.env` if you do not already have one, then install dependencies with `bun install`.
 
-From the repository root:
+**The checked-in settings enable trading.** Set `EXECUTION_POLICY.executeTrades = false` in `src/constants.ts` before testing a deployment. `splitRouting: 'live'` still searches split routes with this switch off; neither direct nor split trades can be submitted.
 
-```sh
-bun install
-```
+Configure these environment variables:
 
-Copy [.env.example](.env.example) to `.env` and fill in your RPC URL, private key, and contract addresses. Keep an existing `.env` if you've already configured one.
+- `RPC_URL` and `UNISWAP_FLASH_QUERY_CONTRACT_ADDRESS` are needed for market sync. `WSS_URL` is optional; events fall back to HTTP when WebSocket initialization fails.
+- `PRIVATE_KEY` is required by `bun start` even with execution disabled, because startup creates the wallet client. Sync does not need a signing key.
+- `ARB_CONTRACT_ADDRESS` is required for execution and for V2 transfer profiling, including profiling during read-only sync.
+- `MARKET_DB_PATH` overrides `data/markets-<chainId>.sqlite`. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` enable alerts; leave both blank to disable them.
 
-Before starting, check `EXECUTION_POLICY` in [src/constants.ts](src/constants.ts). The current default is `executeTrades: true`. To watch for opportunities without sending transactions, change it to:
+Deploy contracts matching the source, not an older ABI-compatible-looking build. `Contract/NArb.sol` defines `ArbitrageExecutor(owner, wrappedNativeToken)`; the signing wallet must be its owner. `Contract/UniswapFlashQuery.sol` defines `FlashUniswapQueryV1`. Tax profiling needs both updated deployments. The linear execution tuple now contains `minSurplusAfterRepayment`, so turning profiling off does not make this bot compatible with the old executor.
 
-```ts
-executeTrades: false,
-```
+`forge build` compiles the contracts. `bun run abi:arb` then regenerates both JSON ABIs in `src/ABI/` from those artifacts. Deployment is separate; sync and startup never deploy contracts or update deployed bytecode.
 
-The bot still requires a valid private key in this mode because startup creates a wallet client. The market sync command does not need one.
-
-Then run:
+Once addresses and settings are checked:
 
 ```sh
 bun run sync:markets
 bun start
 ```
 
-Sync builds the market list in `data/markets-<chainId>.sqlite`. Startup loads that list, fetches current market state, and begins watching for changes. Stop the bot with `Ctrl+C`.
+Sync saves market metadata and, with V2 profiling enabled, transfer observations. Startup subscribes in buffering mode, loads current state, warms the search worker, reconciles buffered events, then starts searching. The first profile pass or full V3 snapshot can take several minutes. Stop with `Ctrl+C`.
 
-To refresh one protocol without querying or removing the others, select it on the command line:
+## Configuration that changes what gets traded
+
+`src/constants.ts` owns network, token, search, execution and logging settings. `ARBITRAGE_SEARCH_POLICY.allowedProtocols` controls discovery, startup reads, subscriptions and search. You can enable one protocol, any two, or all three, subject to the transfer-profiling restriction below. For example, use `['v2']`, `['v2', 'v3']`, or `['v2', 'v3', 'carbon']`. Keep at least one protocol. You do not need to edit the registry to turn an existing adapter off.
+
+`V2_LIVE_POLICY.transferFees` is currently `true`. Transfer profiling requires V2-only routing. To use V3 or Carbon, disable that mode in `src/protocols/v2/config.ts` and restrict trading to tokens compatible with the untaxed quote assumptions. Transfer-tax profiling is not yet supported for V3 or Carbon; a V2 profile does not establish that the same token is compatible with either.
+
+`TOKENS` supplies start-token addresses, decimals, `liquidityAmount` and `minProfit`. Both searches start from the first `topTokens` entries, currently five. Intermediate tokens come from the graph; they do not all need to be in `TOKENS`. Use `tokenAmount(value, decimals)` for thresholds. `liquidityAmount` is a loading filter, not the amount the bot borrows.
+
+Factory and controller settings stay with their adapters:
+
+- `src/protocols/v2/config.ts`: `V2_FACTORIES`, with a factory address, `kind` and fee. V2 fees use basis points, so `30` means 0.30%. Solidly discovery reads stable/volatile fees from the factory.
+- `src/protocols/v3/config.ts`: `V3_FACTORIES`, with an inclusive `fromBlock` and `enabled` flag. Set the start block at or before deployment to discover every pool. V3 fees use parts per million, so `3000` means 0.30%.
+- `src/protocols/carbon/config.ts`: `CARBON_CONTROLLERS`, with an address and `enabled` flag. Pair fees come from the controller.
+
+Restart after configuration changes. Refresh the affected protocol before starting if its discovery configuration changed:
 
 ```sh
 bun run sync:markets --protocol v3
-bun run sync:markets --protocol v2
-bun run sync:markets --protocol carbon
+bun run sync:markets --protocol v2 --protocol carbon
 ```
 
-Repeat `--protocol` to refresh several protocols, or use `--all` to refresh all three:
+With no arguments, sync uses `allowedProtocols`. `--all` selects all three. Explicit selection preserves stored markets for unselected protocols; it does not enable them at runtime. Carbon-only sync uses the stored V2/V3 markets as part of its token universe.
 
-```sh
-bun run sync:markets --protocol v3 --protocol carbon
-bun run sync:markets --all
+Changing networks requires more than changing the RPC URL. Set `NETWORK.chain` to the full viem chain definition and `NETWORK.wrappedNativeToken` to its wrapper, then review `TOKENS`, all enabled factories/controllers, bans and deployed contracts. Adapter addresses are separate configuration and are not rewritten when the chain changes. The executor's immutable wrapper must match and support standard 1:1 `deposit()`/`withdraw(uint256)` behavior.
+
+HTTP chain-ID mismatch stops startup or sync; a mismatched WebSocket endpoint falls back to HTTP. Each SQLite file is bound to one chain. A file from another chain, or an old catalog without a chain identity, is rejected rather than relabeled. Use a fresh path and sync. The adapters require compatible contract behavior, not merely a DEX with the same protocol name. Algebra, dynamic V3 fees, non-EVM chains and cross-chain trades are outside this implementation.
+
+## Discovery is not live liquidity
+
+The database keeps a filtered trading list separately from the complete V2/V3 discovery catalogs and checkpoints. Disabling a protocol or replacing the trading list does not erase its discovery history.
+
+V2 discovery reads factory pair counts and fetches indexes after the saved checkpoint. A changed factory configuration, count rollback or checkpoint reorg causes that factory to be rebuilt. V3 discovery scans `PoolCreated` logs across all fee tiers, then batches immutable metadata reads through FlashQuery. Phase one saves tokens, fee, tick spacing, creation block and legal bitmap bounds. Neither a pool address nor those bounds tells us its current liquidity.
+
+At V3 startup, phase two reads price, current tick, active liquidity, every bitmap word in the legal range and every initialized tick, pinned to one block per snapshot. This is enough to quote swaps across multiple initialized ticks. It is not a download of individual LP positions, and there is no 512-tick total cap. `V3_STARTUP_POLICY` controls pagination and concurrency.
+
+Interrupted V3 downloads retain a cursor but never enter the trading graph as partial snapshots. Completed snapshots include a block hash; restart verifies that hash and catches up missed events. Reorgs or unavailable historical reads/logs trigger a fresh snapshot. Live Swap, Mint and Burn events update state and tick boundaries locally. Invalid ordering, removed logs or inconsistent liquidity make a pool unavailable until recovery succeeds.
+
+V3 also rotates block-pinned checkpoints: currently ten pools per batch, normally sixty seconds between batches, five seconds during recovery. That is not one refresh per pool per minute. Events received during a checkpoint are replayed afterward; replay-buffer overflow leaves the pool unavailable. The query adapter handles standard Uniswap V3 events and Sailor's extended Swap event.
+
+Carbon reads current controller pairs and strategies rather than scanning historical factory logs. Create, update and delete events change the in-memory strategies. The worker gets a full snapshot at startup/recovery and strategy deltas afterward. Updates rebuild the affected pair's directions, not every Carbon edge. Grouped routes consider at most eight orders; controller and strategy ID identify the liquidity being spent.
+
+V2/V3 factory feeds keep discovering new pools after startup, with a sixty-second catch-up interval controlled by `RUNTIME.marketDiscoveryIntervalMs`. A selected new pool is subscribed before hydration. Unchanged V2 checks do not reload/filter the catalog or repeat the full `Found ... V2 pools` summary. A startup reconciliation repairs interrupted catalog updates.
+
+Expect discovery, database and live-pool counts to differ. `src/bannedtax.json` excludes tokens explicitly. The shared filter requires both tokens to occur in more than one market. V2 then applies reserve/activity filters, Carbon applies its liquidity filter, and V3 needs a usable snapshot. V2's fallback threshold for tokens outside `TOKENS` is a raw-unit threshold in `V2_DISCOVERY_POLICY`, not a dollar valuation.
+
+The RPC must return complete logs and support block-pinned reads. Range-limit errors can be retried in smaller batches; silent truncation cannot. Subscription recovery and checkpoints help repair missed events, but cannot fix a provider that omits them from both subscriptions and history.
+
+## How transfer taxes enter a quote
+
+Tax is a property of an observed transfer context, not one permanent percentage attached to a token. The same token can behave differently on two pools. We keep separate buy, sell and external-transfer observations for each pool/token/executor/origin combination in `v2_transfer_profiles`.
+
+FlashQuery batches unsigned `eth_call` simulations through NArb. NArb borrows a sample from the pool, measures both balances, sends half its received amount to its owner, and transfers the remainder back to the pool. It deliberately reverts with the measurements so each probe restores state before the next one. These calls use RPC resources but send no transaction and spend no wallet gas.
+
+The measured paths are pool → NArb for buy, NArb → that pool for sell, and NArb → its owner for external transfer. The token sees NArb as the transferring contract; the simulated origin is its owner. The external-transfer result is informational. It does not describe arbitrary recipients, and a successful sell-transfer probe does not prove that a complete sell swap will succeed.
+
+With profiling enabled, V2 proceeds return to NArb between hops, for both direct and split routes. The quote deducts the input token's sell tax, applies pool math including its swap fee, then deducts the output token's buy tax. For example:
+
+```text
+100 input
+  -> 10% sell deduction: pool receives 90
+  -> AMM quotes 200 output for that 90, after its swap fee
+  -> 22% buy deduction: NArb receives 156
 ```
 
-With no command-line selection, sync refreshes the protocols in `ARBITRAGE_SEARCH_POLICY.allowedProtocols`. Every run preserves stored markets for protocols it did not select. Carbon-only discovery uses the stored V2 and V3 markets as its token universe.
+Those are illustrative amounts, not a quoted trade. The next hop starts with 156 and applies its own pool-specific deductions. We do not add buy and sell percentages to approximate an unmeasured pool-to-pool transfer. Returning through NArb costs more contract gas, but matches the transfer paths we probed. With profiling disabled, consecutive direct V2 hops can forward pool-to-pool and quotes assume no tax.
 
-### The .env file
+The executor uses `balanceOf(pool) - reserveIn` as effective V2 input and the recipient's balance increase as output. It rejects extra sender debits. Do not rely on a token's `Transfer` event amount or a successful `transfer()` return value as evidence that the recipient received the requested amount.
 
-| Variable | What it does |
-| --- | --- |
-| `RPC_URL` | HTTP RPC endpoint, required for both sync and startup. |
-| `PRIVATE_KEY` | Wallet private key, required for startup even when trading is disabled. |
-| `WSS_URL` | Optional WebSocket endpoint. Leave it unset to receive market events through HTTP. |
-| `UNISWAP_FLASH_QUERY_CONTRACT_ADDRESS` | Deployed query contract used for market discovery and batch reads. |
-| `ARB_CONTRACT_ADDRESS` | Deployed contract used to execute trades. |
-| `MARKET_DB_PATH` | Overrides `data/markets-<chainId>.sqlite`. Each catalog file is bound to one chain. |
-| `TELEGRAM_BOT_TOKEN` | Bot token for transaction notifications. |
-| `TELEGRAM_CHAT_ID` | Chat receiving those notifications. Leave both Telegram fields blank to disable them. |
+The configured probes sample reserve fractions from 1/100,000,000 through 1/4. A usable estimate needs at least two distinct amounts, exact sender debits, positive recipient credits and deduction rates agreeing within one basis point. Quotes use the largest rounded-up observed deduction and reject amounts outside the measured range. Unknown, failed and unsupported profiles are not treated as zero tax. The flash-borrowed asset needs observed zero buy/sell deductions on its funding pool, with borrowing and repayment inside the measured bounds. Explicit bans still win.
 
-## Switching networks
+Sync and startup fill missing or expired observations. The current `transferRefreshMs` is four hours; a local timer checks for expiry roughly once a minute and runs background probes when needed. A long initial pass gives many profiles the same observation time, so a later refresh can look like another large startup pass. Current cached profiles are reused after block-hash validation. Expired ones stop being eligible until refreshed; failed refreshes do not reopen them.
 
-Edit `NETWORK` in [src/constants.ts](src/constants.ts). Set `chain` to the full definition imported from `viem/chains`, and `wrappedNativeToken` to that chain's wrapped native currency contract. For a custom EVM network, use viem's `defineChain` in the same file. There is no separate chain ID to keep in sync. Clients, signing, explorer links, native-token aliases and split gas conversion use these settings.
+Refreshes publish new pool revisions and merge profiles into the latest reserves without overwriting intervening events. The worker receives estimates without raw samples, and unchanged profiles are omitted from later reserve patches. Search, signing and submission never perform probe RPCs.
 
-Also replace `TOKENS`, the enabled V2/V3 factories and Carbon controllers, and any chain-specific entries in `src/bannedtax.json`. Set the new RPC endpoints and deployed contract addresses in `.env`. Disable protocols that do not have a supported deployment on the new chain. A matching protocol name alone does not establish compatible contract behavior.
+These samples do not establish token safety. Untested amount thresholds, changing exemptions, rebases, trailing fees or caller-dependent behavior can still break a route. Validate an unfamiliar token and actual route on a fork before paying to execute it. Profiling is not a full-route simulation.
 
-Deploy `ArbitrageExecutor(owner, wrappedNativeToken)` from [NArb.sol](Contract/NArb.sol), using the same wrapped-token address as `NETWORK.wrappedNativeToken`. The wrapper must implement standard `deposit()` and `withdraw(uint256)` with 1:1 native-unit accounting. This constructor replaces the old owner-only constructor, so existing deployments need replacement to use this implementation. Regenerate the ABI with `bun run abi:arb` after building. No command here deploys a contract automatically.
+## Direct and split search
 
-Sync and startup check the HTTP RPC chain ID before using markets. A mismatched WebSocket endpoint falls back to HTTP. These checks run at initialization, not for each trade. With no explorer configured in the chain definition, notifications show the transaction hash without a link.
+The direct search visits circular paths, ranks a bounded candidate shortlist by marginal exchange rate, then sizes amounts using integer quotes. Current limits are five route edges, 50,000 exploration attempts and 64 candidates to size. Lower limits reduce work but can miss trades. `maxInputReserveFraction: 10n` caps opening input at one tenth of the relevant capacity; it does not require borrowing that much.
 
-The default database path changes with the chain ID. An explicit `MARKET_DB_PATH` pointing at another chain's catalog is rejected. Old unbound catalogs such as `data/markets.sqlite` are left untouched and rejected rather than assigned a guessed chain. Unset that override or choose a fresh path, then run `bun run sync:markets` to rebuild the list.
+`splitRouting: 'off'` skips split work. `'live'` adds it after the direct search, using the same tokens, filters and graph. The execution switch remains independent. Direct candidates are retained; enabling splits does not replace them.
 
-Set `EXECUTION_POLICY.executeTrades = false` while configuring a new network. Review token thresholds and the legacy/EIP-1559 gas settings, sync, and validate against that network before enabling trades. Portability covers compatible EVM networks and the existing protocol adapters, not non-EVM chains, arbitrary DEX forks or cross-chain arbitrage. Profit checks cover execution gas only; additional chain-specific fees, such as L1 data fees on some rollups, are not modeled. Leave live execution off on those networks until those costs are accounted for.
+A split stage converts one token into one other token through one or two branches, then merges the proceeds. Plans have two or three stages, at most six swaps, and at least one two-branch stage. A simple two-stage example, using zero-fee/no-tax toy amounts:
 
-## Switching protocols
+```text
+                   100 A -> pool 1 -> 181 B
+borrow 200 A -----<                        >----- 362 B -> pool 3 -> 306 A
+                   100 A -> pool 2 -> 181 B
 
-Change `ARBITRAGE_SEARCH_POLICY.allowedProtocols` in [src/constants.ts](src/constants.ts). For V2 only:
-
-```ts
-allowedProtocols: ['v2'],
+repay 200 A; 106 A remains before flash fees and gas
 ```
 
-Add `'v3'` or `'carbon'` to enable them. All three are enabled by default. Keep at least one in the list.
+That is three swaps, not two. A three-stage cycle could be `A -> B -> C -> A`, with two pools on every stage for six swaps total. Branches within a stage must share the input/output token; splitting into different intermediate-token paths is not supported. Pools and Carbon strategy liquidity cannot be reused within a plan, and the funding pool must sit outside it.
 
-This setting controls discovery, startup reads, event subscriptions, and route searches. Removing a protocol takes effect on restart, even if its old market entries are still in SQLite. No registry edits are needed.
+Split search takes short token cycles from direct discovery before the direct profit filter. It tries pool subsets and amount allocations, returning at most one winning split per borrow token alongside the direct results. The split must beat the best sized, funded direct candidate for that token. It is a bounded heuristic, not an exhaustive or globally optimal router.
 
-When adding a protocol back, refresh that protocol before restarting. For example, run `bun run sync:markets --protocol v3`. Markets belonging to unselected protocols remain in SQLite and are still ignored at runtime while disabled.
+`splitSearchMs` currently gives split search ten extra milliseconds. Direct and split exploration use separate work budgets. Checks are cooperative, so a tick walk, GC or worker scheduling can overshoot the time limit. Both searches run in the same worker job; split work delays that job's return. `split.budgetStops` means exploration stopped early, not that no profitable split exists. `split.work` counts search work, not transactions, and zero winners can simply mean the direct route was better.
 
-`allowProtocolMixing: false` restricts each swap route to one protocol. It doesn't disable any protocol, and the flash loan can still come from another enabled protocol.
+Split amounts and minimum outputs are fixed in the signed plan. Later stages are funded from preceding minimum proceeds. `slippageBps` reduces each branch's quoted output; favorable leftovers are not counted toward the quote's profit. The contract checks actual spending and receipt deltas and cannot use old balances to cover an underfunded branch.
 
-Carbon can be part of a swap route but cannot provide the flash loan. The execution planner needs a V2 or V3 funding pool outside the route, so enabling only Carbon won't produce executable trades.
+## Execution, costs and stale results
 
-## Factories, pools, and controllers
+A route needs an enabled V2/V3 funding pool outside its swap pools. Carbon cannot lend, so Carbon-only routing does not produce executable trades. `allowProtocolMixing: false` restricts the swap route, not the funding protocol.
 
-### V2
+Gas prices are estimated through the existing HTTP client at startup and every `feeRefreshIntervalMs`, currently five minutes. `legacy: true` uses `gasPrice`; `false` uses EIP-1559 maximum and priority fees. There is no manual fee mode. An invalid estimate, failed refresh or estimate above `feeCeilingPerGas` clears the cached quote and pauses searches/submissions until recovery. A quote also expires after twice the refresh interval if refresh cannot finish.
 
-Edit `V2_FACTORIES` in [src/protocols/v2/config.ts](src/protocols/v2/config.ts). Each entry needs a name, factory address, fee, and kind. The supported kinds are `uniswap-v2` and `solidly`.
+The search charges the full configured `gasLimit` at the estimated fee cap. At the current 1,500,000 gas limit, a hypothetical 400 gwei cap produces a 0.6-native-token allowance. The 1,000 gwei ceiling is a rejection threshold, not the price always used. There is no per-route gas estimation or calibrated per-protocol gas model, so this allowance neither proves a route fits the limit nor accurately compares actual gas for different routes. Rollup L1 data fees are not modeled.
 
-The fee uses basis points: `30` means 0.30%. For Solidly pools, discovery reads the stable and volatile fees from the factory.
+Gas must be expressed in the borrow token before comparing profits. The configured wrapped native token uses a 1:1 raw-unit conversion. Other `TOKENS` entries need a fresh `gasConversion: { numerator, denominator, validUntil }`, in smallest token units per native wei with a Unix-millisecond expiry. No price oracle refreshes these rates automatically. Missing or expired conversion data excludes that start token even with trading disabled.
 
-Optional [V2 transfer-fee profiling](docs/transfer-fees.md) measures pool-specific buy, sell and owner-transfer deductions during sync/startup and refreshes them in the background. It requires updated NArb and FlashQuery deployments. Read the deployment warning before starting this bot against an older executor: the linear execution ABI has changed.
+Reported `profit` is quoted surplus after flash repayment, before gas; `netProfit` subtracts the conservative gas allowance. Direct routes must exceed token `minProfit` after gas. Splits currently use a different floor: surplus before gas must exceed `minProfit`, net must be positive, and net must beat the direct baseline. Ranking across different borrow tokens is scaled by their configured `minProfit`, not a common USD price.
 
-V2 discovery does not scan historical blocks. It reads each factory's current pair count and fetches only indexes after the saved checkpoint. The complete discovered catalog and the per-factory pair count are stored in SQLite. If the checkpoint block changes in a reorg, or the factory configuration changes, that factory is rebuilt from index zero.
+Both contract entry points are owner-only, validate callbacks and protect pre-existing borrowed-token inventory. Linear execution requires the quoted surplus less the configured slippage haircut, rounded up. Split execution enforces branch minimums and a repayment surplus of `max(minProfit, gasAllowance) + 1` raw unit, with a thirty-second deadline. These balance checks do not reimburse reverted-transaction gas. Pool addresses come from configuration and the signed plan, not an on-chain factory allowlist.
 
-While running, the bot checks for new V2 pools on factory events and at `RUNTIME.marketDiscoveryIntervalMs`. Unchanged checks stay quiet and skip catalog loading and filtering. Startup reconciles the saved catalog once to recover interrupted updates. Later catalog changes trigger another reconciliation; failed updates are retried. The full `Found ... V2 pools` summary belongs to sync, not these runtime checks.
+Events update the main graph before searches are queued. One search runs at a time; pending requests coalesce by market. Reserve changes, V3 liquidity deltas and Carbon strategy changes are applied before that coalescing, not thrown away with an older search request. The worker receives compact changes after its initial full snapshot. A failed or timed-out worker produces no trades, and the next scan starts from the current graph.
 
-### V3
+A quote carries route-pool, funding-pool and feed revisions. Checks after search, before signing and before broadcast reject changed dependencies. An unrelated pool event does not invalidate a V2/V3 quote. An event changing one of its pools does, even if the quote is only 100 ms old. Carbon invalidation is broader. Any Carbon change invalidates Carbon candidates. Independently, the current 500 ms `candidateMaxAgeMs` rejects a quote that has aged out even with unchanged pools. Disconnects pause acceptance until reconciliation. None of this closes the gap between broadcast and inclusion.
 
-Edit `V3_FACTORIES` in [src/protocols/v3/config.ts](src/protocols/v3/config.ts). Each entry needs a name, factory address, inclusive `fromBlock`, and `enabled` flag. There is no manual pool list. Sync reads every `PoolCreated` event from each enabled factory through the chain head observed when the sync starts, including every fee tier.
+Submission locks route pools until their next applied market update or the thirty-second timeout. Carbon locks are controller-wide. The fee snapshot, chain ID, calldata, gas limit and nonce are supplied locally; the normal signing path does no fee, nonce, gas-estimation or transaction-preparation RPC. The network call is the raw-transaction submission itself.
 
-The defaults cover [Dragon's concentrated-liquidity factory](https://docs.dragonswap.app/dragonswap/faq/contract-addresses/dragonswapv2), [Uniswap on Sei, available through Oku](https://gov.uniswap.org/t/official-uniswap-v3-deployments-list/24323), and [Sailor's factory](https://seiscan.io/accounts/label/sailor). The adapter supports standard Uniswap V3 reads and events plus [Sailor's extended Swap event](https://seiscan.io/address/0xa77386b7CB41a5693a0A5Ad34b6bDEB9237F35eE). It does not support Algebra or dynamically changing fees.
+Use a dedicated wallet and one bot process. Execution startup reads its pending nonce once, then allocates locally. Background reconciliation runs every twelve hours. A known-unsubmitted nonce can be released after signing/freshness failure; an attempted submission with an uncertain outcome pauses new submissions and triggers immediate reconciliation, retrying every five seconds. Trading resumes only after pending advances past all uncertain nonces. A rejected or dropped transaction can need operator intervention; the bot does not cancel it, replace it or replay an old opportunity automatically. Inspect pending transactions before restarting.
 
-The configured `fromBlock` must be at or before the factory deployment if you want every pool. The first scan can take a while. Later scans resume from saved checkpoints. `V3_DISCOVERY_POLICY` controls the block span and metadata batch size. V3 fees use parts per million: `3000` means 0.30%.
+Receipt tracking runs separately from submission. A submitted hash is not a successful receipt, and a successful receipt is not a realized-profit report. Reverts and two-minute receipt timeouts are reported independently.
 
-### V3's two phases
+## Logs and alerts
 
-`bun run sync:markets --protocol v3` runs phase 1 without querying V2 or Carbon. It saves each pool's factory, creation block, token addresses, fee, tick spacing, and full bitmap bounds. Factory events find the addresses; the query contract checks their immutable fields in batches. The complete V3 catalog stays in SQLite even when a pool fails the trading filters. Later V3 scans begin at each factory's saved checkpoint plus one and stop at the chain head captured at the start of that scan.
+Set `RUNTIME.logLevel` to `off`, `info` or `debug` and restart. The checked-in value is `debug`. Info includes startup progress, quote counts, outcomes and compact latency summaries. Debug adds sized-candidate diagnostics, rejected profit checks, paths, split allocations, execution plans and error stacks. Off disables routine logging and latency collection, but not freshness checks or configured Telegram alerts.
 
-`bun start` runs phase 2 for the selected trading pools. It reads price, current tick, active liquidity, every bitmap word in the pool's legal tick range, and every initialized tick. All reads for a snapshot use the same block. Tick liquidity and actual occupied ranges are mutable, so they belong here, not in phase 1. This loads pool liquidity, not individual LP wallets or NFT positions.
+A separate reporting worker formats output and sends Telegram through `src/reporting/telegram.ts`. The trading thread never awaits it. It still copies bounded records, so enabled logging has allocation and CPU cost. The queues hold 256 routine records and 32 alerts, with bounded in-flight batches; overload drops diagnostics instead of blocking trades. Debug is not a lossless trade ledger. Secrets and signed payloads are redacted, but do not intentionally pass credentials to the logger.
 
-The range is no longer a few words around the current price, and there is no 512-tick total cap. Reads are paginated. `V3_STARTUP_POLICY` sets page sizes, batch sizes, concurrency, and catch-up spans. Lower these if the RPC rejects large calls. Failed multi-item reads and log ranges are split into smaller requests.
+Alerts for submission, receipts, feed/fee/nonce problems and fatal errors use the existing Telegram fields. Repeated incident keys are throttled; different transaction hashes remain separate. Delivery has timeouts, at most one retry and rate-limit handling. A timed-out delivery may be duplicated by its retry. `Reporting health` exposes drops and delivery failures.
 
-Completed snapshots store their block number, block hash, and full-range coverage. Interrupted downloads save a separate cursor and resume at their original block; they are never admitted to the trading graph. On restart, the bot checks the saved block hash and catches up missed events. Swaps refresh live state; mints and burns refresh their affected tick boundaries. Burned-out ticks are removed. A reorg or unavailable history triggers a fresh snapshot. Failed pools stay out of the graph until a refresh succeeds.
+Reporting-worker failure disables reporting without stopping trading. Fatal shutdown stops execution first and allows a bounded two-second cleanup/reporting window. A killed process, dead worker or failed machine cannot guarantee a Telegram alert; detecting that needs an external supervisor.
 
-Once live, V3 does not call the query contract for every event. Swap events update price, tick, and active liquidity in memory. Mint and Burn events update both tick boundaries, their bitmap bits, and active liquidity when the position covers the current tick. Exact duplicate logs are ignored. Removed logs, conflicting block hashes, unexpected ordering, missing cursors, and liquidity inconsistencies exclude the affected pool until recovery succeeds.
+Latency summaries normally appear every minute. Counts are cumulative; percentiles use the last 512 samples per stage, with p95 withheld until 20 samples and p99 until 100. Receipt-observation time includes polling/RPC delay. Check `search.expired`, `search.invalidated` and `split.budgetStops` before assuming a missing result is a quote-calculation bug. SQLite checkpoints and reporting allocations still share CPU or the main event loop; workers do not make their overhead disappear.
 
-### New pools while the bot is running
-
-V2 and V3 factory feeds stay active after startup. A factory event triggers a checkpointed catch-up rather than trusting one notification as the source of truth. The bot also checks both factory catalogs every `RUNTIME.marketDiscoveryIntervalMs`, which defaults to 60 seconds, so a dropped subscription notification is repaired without a restart.
-
-Discovery and live state remain separate. First, the new pool's immutable metadata is saved in the complete catalog. The shared V2/V3/Carbon token filter is then recalculated and the filtered trading list is written to SQLite. If the pool is selected, its event subscription is installed before its current state is loaded. V2 buffers `Sync` logs while reading block-pinned reserves; V3 publishes only after a complete full-range snapshot and event catch-up. A failed hydration leaves the pool out of the graph and retries on a later catch-up.
-
-The same path handles removals caused by a factory reorg or a filter change. The pool is removed from the main graph and the search worker through an explicit removal patch. Adding one pool can also make another previously filtered V2 or V3 pool eligible, because filtering is rerun across the complete live catalogs.
-
-`V3_LIVE_POLICY` in [src/protocols/v3/config.ts](src/protocols/v3/config.ts) controls rotating checkpoints: 10 pools per batch, normally 60 seconds between batches, or 5 seconds while pools need recovery. These are batch intervals, not a promise that every pool is checked once a minute. Selected pools are temporarily unavailable while their block-pinned snapshot is refreshed. Events arriving during the read are replayed afterward; the saved database snapshot stays at its completed block. If the bounded replay buffer overflows, the pool stays unavailable and retries from a newer snapshot.
-
-The feed must deliver complete, ordered logs. There is no per-pool consecutive log counter, so skipped block numbers alone do not prove a gap. Disconnects trigger reconciliation, and rotating checkpoints repair events missed by the subscription when HTTP history is complete. A provider silently omitting events from both sources cannot be made reliable by a local cache.
-
-Your RPC must serve historical factory logs and block-pinned contract reads. Recent historical state is enough for a fresh download, but an archive endpoint helps resume older downloads. A provider that silently truncates logs can produce an incomplete catalog; use one that returns complete results or an explicit range-limit error.
-
-### Updating the query contract
-
-An existing deployment cannot gain the new methods from a local file edit. Compile and deploy `FlashUniswapQueryV1` from [UniswapFlashQuery.sol](Contract/UniswapFlashQuery.sol), then put its address in `UNISWAP_FLASH_QUERY_CONTRACT_ADDRESS`. V3 uses `getV3PoolMetadata`, `getV3LiveStates`, `getV3TickBitmapWords`, and `getV3Ticks`. The old `getV3StartupStatesAroundCurrentTick` endpoint has been removed from the source and ABI. External callers of that endpoint must migrate to the full-range reads before using a new deployment. The V2 and Carbon read methods remain available. This change does not require redeploying `NArb`.
-
-With Foundry installed, `forge build` compiles the contracts. Deployment is a separate, paid transaction; it is not performed by sync or startup. After deployment, run `bun run sync:markets`, then restart the bot. A deployment missing the V3 read methods will fail those calls. V2-only startup does not require them.
-
-### Carbon
-
-Edit `CARBON_CONTROLLERS` in [src/protocols/carbon/config.ts](src/protocols/carbon/config.ts). Each controller has an address and an `enabled` flag.
-
-Carbon discovery uses tokens from `TOKENS` and the enabled V2/V3 markets. It reads each pair's trading fee from the controller.
-
-Carbon discovery does not scan historical blocks. A Carbon-only sync reads each controller's current pair list and preserves stored V2 and V3 markets. Live strategy create, update, and delete events are handled separately while the bot runs.
-
-After editing a market definition, sync that protocol and restart. Set a V3 factory or Carbon controller to `enabled: false` to exclude it. To disable V3 entirely, use the protocol switch in `src/constants.ts`; no factory edits are needed.
-
-## Tokens, search, and execution
-
-These settings are in [src/constants.ts](src/constants.ts):
-
-- `TOKENS` lists the search start tokens, liquidity thresholds, and minimum profits. Amounts use `tokenAmount` with the token's decimals.
-- `ARBITRAGE_SEARCH_POLICY` controls route length, search width, sizing iterations, and the number of opportunities returned.
-- `maxSearchExpansions` caps route exploration at 50,000 edge attempts. `maxCandidatesToSize` selects up to 64 candidates by marginal exchange rate before exact sizing. Both live in `ARBITRAGE_SEARCH_POLICY`; lower limits save computation but can miss profitable routes.
-- `EXECUTION_POLICY` controls transaction submission, the gas limit, and gas fees. The `gasPrice` helper takes values in gwei.
-- `RUNTIME.websocketEnabled` controls whether startup uses the configured WebSocket endpoint.
-
-Gas fees always come from the existing HTTP client. The bot reads an estimate at startup and every `EXECUTION_POLICY.feeRefreshIntervalMs` (five minutes by default), not for each trade. Set `legacy: true` to estimate and sign a legacy `gasPrice` transaction, or leave it `false` to estimate and sign EIP-1559 `maxFeePerGas` and `maxPriorityFeePerGas`. `feeCeilingPerGas` rejects estimates above its value instead of clamping them to an underpriced transaction. Its default 1,000 gwei ceiling implies a maximum 2.5 native coins at the configured 2.5-million gas limit; this is a safety limit, not a recommended network price. A failed refresh or an expired quote pauses searches and submissions until a refresh succeeds. Check the ceiling against your chain and wallet before enabling trades.
-
-The fee snapshot used to score a search is also used to sign its transaction. There is no fee read, gas estimation, or transaction preparation RPC on the submission path. The gas model conservatively charges the full `gasLimit` at the snapshot's fee cap, which can reject trades that would use less gas in practice. Linear-route reported profit still shows swap proceeds after the selected flash fee; the separate `Conservative net after gas` line is the figure used for ranking and the token's `minProfit` check. A missing or expired native-to-borrow-token conversion makes that token ineligible for live searches. The wrapped native token needs no conversion entry.
-
-### Split routing
-
-`ARBITRAGE_SEARCH_POLICY.splitRouting` in [src/constants.ts](src/constants.ts) controls split-and-merge search across V2, V3 and Carbon. It is **off by default**. It uses the same `TOKENS`, `topTokens`, token `minProfit` and reserve-fraction cap as linear search; there is no second token list. Supported plans have at most two branches per stage, three stages and six swaps, in one atomic transaction. The search compares conservative net profit with the funded linear candidates and tracks every branch for stale-state rejection.
-
-`off` runs only the linear search. `live` searches both linear and split routes. `EXECUTION_POLICY.executeTrades` controls submission for both: set it to `false` to observe without sending trades. Split execution needs a newly deployed NArb and fresh gas-cost data. `NETWORK.wrappedNativeToken` uses its native 1:1 conversion; other borrow tokens need a fresh `gasConversion` on their existing `TOKENS` entry, or rates supplied with the search request. No deployment happens automatically.
-
-The new NArb implementation makes both execution entry points owner-only, validates callbacks and exact branch spending, and enforces a final profit floor for splits. Its ABI is generated with `bun run abi:arb` after `forge build`. See [split routing](docs/split-routing.md) for configuration, amount accounting, gas assumptions, rollout requirements and offline replay commands.
-
-Execution sends a transaction through `ARB_CONTRACT_ADDRESS`. Reports distinguish submission, successful receipts, reverts and receipt timeouts. A successful receipt does not establish realized profit; the quoted profit is still an estimate.
-
-### The live path
-
-Market events update the main graph before scheduling a search. Search and sizing run in a Bun worker, warmed while startup is still buffering events. V2 reserve updates and V3 state/tick changes are coalesced into compact worker patches. Carbon sends a full strategy snapshot at startup or recovery, then sends only changed strategies and deletion IDs. Only one search runs at a time; queued requests retain the latest update per market. Liquidity deltas are applied before this queue, never discarded as superseded search work.
-
-A Carbon update rebuilds the changed strategy's edges and the two trading directions for its pair, on both the main graph and the worker. Other pairs keep their edges and ranking caches. Strategies are keyed by controller and ID; native currency and its wrapped token remain separate execution groups. Repeated changes to a strategy are folded into its latest state before transfer. Groups still select at most eight orders, with strategy ID breaking equal-rate ties. Updating a busy pair still requires inspecting that pair's strategies, but no longer the whole Carbon catalog. A restarted worker receives a fresh full snapshot, including changes drained by a failed search.
-
-Candidates carry revisions for their route pools and funding pool, plus the feed revision. Execution checks these after search, before signing, and again immediately before broadcasting. Carbon changes currently invalidate all Carbon candidates. `RUNTIME.candidateMaxAgeMs` also rejects candidates older than 500 ms from the triggering event receipt. A disconnected feed pauses acceptance until reconciliation finishes.
-
-Transaction data, cached gas fees, gas limit, chain ID, and nonce are supplied locally. The account signs locally, then the wallet sends the signed bytes. There is no transaction-fill, gas-estimation, chain-ID, fee, or nonce lookup on that normal submission path. If signing fails, fees change, or the market changes before broadcast, only that known-unsubmitted nonce can be reused. Once a submission has been attempted, the conservative uncertain-nonce policy below still applies.
-
-Set `RUNTIME.logLevel` in [src/constants.ts](src/constants.ts) and restart. It replaces the old `DEBUG` environment variable.
-
-| Level | Output |
-| --- | --- |
-| `'off'` | No routine logs or latency collection. Configured Telegram alerts still work. |
-| `'info'` | Startup progress, quote counts, transaction outcomes, warnings, errors and a compact latency summary. This is the default. |
-| `'debug'` | Adds loading details, up to 64 sized candidates per search, profit-filter rejections, quote paths/amounts, split allocations, execution plans, error stacks and all latency stages. |
-
-The reporting worker formats and writes output. [src/reporting/telegram.ts](src/reporting/telegram.ts) owns Telegram, separate from execution. The trading thread copies small, bounded records and never waits for output or Telegram. Debug argument construction is gated; saturated debug queues discard new records before copying them. Enabled logging still has a cost, including allocations and worker CPU contention. Debug is for investigation, not a promise of the same latency as off.
-
-The main queues hold at most 256 log records and 32 alerts, with one outstanding batch of up to 16 records per lane. The Telegram worker queue holds at most 32 waiting alerts and sends one request at a time, pacing new messages at least a second apart. Critical alerts have priority. Repeated incidents are throttled to one alert per key per minute; separate transaction hashes are not coalesced. Requests time out after `RUNTIME.notificationTimeoutMs`, with at most one retry. HTTP and Telegram API failures are both checked, including rate-limit cooldowns. `Reporting health` includes dropped records and delivery failures.
-
-Full debug means more detail, not lossless recording. Strings, records, sample counts and queues have limits; overload drops diagnostics rather than delaying trades. Sensitive fields, RPC URLs and signed payloads are redacted. These logs are not a durable trade ledger. Never deliberately pass secrets to the logger.
-
-Fatal errors stop new submissions first, then allow up to `RUNTIME.reportingShutdownMs`, two seconds by default, for best-effort reporting and cleanup. Gas/nonce pauses, feed interruptions, execution errors, reverts and receipt timeouts can alert even in off mode when both existing Telegram environment fields are configured. A killed process, machine failure or dead reporting worker cannot guarantee an alert. An external supervisor is needed to detect those cases. A reporting-worker failure disables reporting without stopping trading; it does not loop through worker restarts.
-
-Checkpoint reads/writes run outside live event handling, but SQLite writes still share the main process and can briefly occupy its event loop.
-
-In info/debug mode, every `RUNTIME.metricsIntervalMs`, 60 seconds by default, the bot sends numeric latency samples to the reporting worker. That worker sorts and formats them. Percentiles use the latest 512 samples per stage; counts are cumulative. p95 appears after 20 samples and p99 after 100, so a two-sample startup snapshot no longer pretends to describe a tail distribution. Freshness checks, search budgets and receipt tracking still run with logging off. Receipt tracking polls in the background, at most eight requests per batch, and expires after two minutes. Receipt-observation time includes polling and RPC delay, not just chain inclusion time.
-
-`bun run bench:reporting` measures off/info/debug with the real reporting worker, Telegram disabled, and no RPC or signing. It runs steady and saturated workloads, reports tail latency, queue drops and heap/forced-GC observations. Those are local reporting measurements, not end-to-end trading latency. See [reporting verification](docs/reporting-verification.md) for the measured results and limitations.
-
-The worker has a `RUNTIME.searchTimeoutMs` deadline. A failed or timed-out job produces no trades; the next scan rebuilds the worker from current state. Changing search limits or timeouts requires a restart. These limits bound work and reject stale results; they do not guarantee profitable execution or eliminate competition, RPC delay, or garbage-collection pauses.
-
-When execution is enabled, startup fetches the wallet's pending nonce before enabling submissions. Each trade then reserves its nonce locally, without a nonce RPC read. `EXECUTION_POLICY.nonceRefreshIntervalMs` defaults to 12 hours; background checks can advance the counter but never move it backward. Failed refreshes retry after `nonceRetryIntervalMs`, which defaults to 5 seconds.
-
-A failed or uncertain submission pauses new submissions and triggers an immediate nonce check, followed by the shorter retry interval. Trading resumes only after the RPC's pending nonce has advanced past every uncertain nonce. A rejected or dropped transaction can therefore require operator intervention. Inspect the wallet's pending transactions before restarting; the bot does not reuse uncertain nonces, send cancellation transactions, or replay stale arbitrage trades automatically.
-
-Use a dedicated wallet with one bot process. This in-memory allocator does not coordinate independent processes or other applications using the wallet. The periodic check is not a distributed wallet lock. Watch-only mode does not fetch nonces or start a refresh timer.
-
-## What sync keeps
-
-The SQLite database stores the filtered trading list in a chain-bound file. V2 has separate, chain-scoped tables for its complete discovered catalog and pair-count checkpoints. V3 has separate tables for its complete discovered catalog, factory checkpoints, completed snapshots, and unfinished downloads. Replacing the trading list or disabling a protocol does not erase these tables. Tables are created automatically in the new file. Legacy catalogs without a chain identity require a fresh path and sync as described in [switching networks](#switching-networks); no existing database is deleted.
-
-V2 reserves and Carbon orders are fetched when the bot starts and updated in memory. V3 state is also checkpointed to SQLite so a restart can catch up rather than download every tick again.
-
-The trading list excludes addresses in [src/bannedtax.json](src/bannedtax.json). It also removes markets unless both tokens appear in more than one discovered market. These filters do not delete V3's complete discovery catalog. V2 and Carbon apply additional liquidity filters when loading live state, so a discovered market may still be excluded from the graph.
-
-Startup buffers market events while loading state, reconciles those events, then starts searching. New V2 and V3 pools are discovered, saved, hydrated, and subscribed while the bot remains online. Configuration changes still require a restart; run the relevant sync first when changing factory definitions or `fromBlock`.
-
-## When something doesn't show up
-
-If startup reports `No markets for enabled protocols`, run sync with the protocol list you intend to use. Check that sync and startup point to the same `MARKET_DB_PATH`.
-
-For a missing pool, check its factory or controller, the enabled protocols, and the filters described above. For V3, also check `fromBlock`, the deployed query contract's methods, and whether the RPC can read the required history. `V3 snapshot unavailable` means the pool was excluded, not loaded with a partial range. Set `RUNTIME.logLevel` to `'debug'` in `src/constants.ts` for loading details.
-
-If opportunities appear but no transaction is sent, check `executeTrades` and the arbitrage contract address. A route also needs a separate pool that can lend the starting token. Finding a profitable swap route alone isn't enough to execute it.
-
-## Working on the code
+## Checks and local tools
 
 ```sh
 bunx tsc --noEmit
@@ -249,23 +174,16 @@ bun test
 forge test
 ```
 
-The Bun tests use fixtures and mocked clients. Foundry tests run the query and arbitrage contracts against local mock pools. Neither submits trades or requires a live chain. The Bun suite includes the stress tests. You can also run the V2 stress tests and the local benchmarks separately:
+Bun tests use synthetic markets and mocked clients; Foundry tests use local mock contracts. Neither is deployed-pool validation. Foundry settings are pinned in `foundry.toml`, including Solidity 0.8.27 and `via_ir`. Contract or protocol changes still need fork validation against the intended deployments.
 
-```sh
-bun run test:stress
-bun run bench:stress
-bun run bench:carbon
-bun run bench:split
-```
+`bun run test:stress` runs V2-only and mixed V2/V3 graph cases. `V2_STRESS_PAIRS` and `V2_STRESS_SEARCH_LIMIT_MS` tune the V2 case; the scheduler burst test in `bun test` accepts `V2_STRESS_UPDATES`. Shared ordinary-token fixtures include synthetic zero-tax observations; unsupported and expired tax cases have their own tests.
 
-The V2 stress tests accept `V2_STRESS_PAIRS`, `V2_STRESS_SEARCH_LIMIT_MS`, and `V2_STRESS_UPDATES` environment overrides. The benchmark also runs repeated worker searches while sampling a main-thread heartbeat. Cold graph transfer is included in transfer metrics; subsequent live transfers contain only changed markets. Compare repeated runs on the same machine. Synthetic timings are not live-network latency measurements.
+The `bench:stress`, `bench:carbon`, `bench:split` and `bench:reporting` scripts are local measurements, not profitability estimates. Reporting runs with Telegram disabled and measures caller overhead, drops and heap/GC observations. Lower latency under saturation can mean logs were discarded. The current split benchmark builds pools without transfer profiles, so with profiling enabled its zero winners do not exercise successful split allocation.
 
-The Carbon benchmark compares full-snapshot updates with single-strategy patches across 10,000 synthetic strategies in 1,000 pairs. It reports main-graph update, patch extraction, structured-clone, and worker-graph application timings over 60 warmed samples. JSON bytes are a payload-size proxy; clone timings are not worker round-trip measurements. The tests separately exercise a real Bun worker and compare incremental quotes and execution data with full rebuilds.
+`bun run replay:split recording.ndjson` reads recorded graph frames without a client, signer or executor. Supply your own file; none is bundled. Each line is `{ at, changes, startTokens, costs }`: first a full graph snapshot, then deltas, with contemporaneous cost data. Encode bigints using `replayJSON.stringify` in `src/opportunities/split-replay.ts`. Replay enables split search and uses the existing `TOKENS`/`topTokens` selection. It rebases cost expiry, but not transfer-profile expiry, so old profiles remain ineligible. Repeated quotes are observations, not independent revenue; this is not a P&L backtest.
 
-For a new protocol, start with [ProtocolPlugin](src/protocols/protocol-plugin.ts). Implement discovery, state loading, events, quotes, and execution encoding, then add the required catalog and graph support. Register the plugin in [src/protocols/registry.ts](src/protocols/registry.ts) and add its ID to `allowedProtocols`. Keep the TypeScript contract ID, Solidity execution support, and deployed ABI in agreement.
+For a missing market, check the complete catalog versus the filtered list, bans, liquidity/activity rules, V3 coverage and profile expiry. For quotes without submissions, check the master execution switch, funding pool, fee/conversion validity, freshness, locks and nonce recovery. `No markets for enabled protocols` usually means the selected protocols need sync or startup is using a different database path.
 
-See [switching networks](#switching-networks) before changing chains. The provided addresses are a Sei configuration, not a cross-chain address registry.
+When adding an adapter, start with `src/protocols/protocol-plugin.ts`. Discovery, graph quotes, events and execution encoding must agree; keep its registry contract ID, Solidity support and generated ABI in sync. Editing TypeScript alone cannot add a protocol to a deployed executor.
 
-## License
-
-[MIT](LICENSE).
+MIT licensed; see [LICENSE](LICENSE).

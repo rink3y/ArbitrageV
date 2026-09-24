@@ -1,3 +1,4 @@
+import { v2Pair as pair } from './helpers/markets';
 import { describe, expect, test } from "bun:test";
 import { type Address } from "viem";
 import { TOKENS } from "../src/constants";
@@ -6,7 +7,6 @@ import { MarketGraph } from "../src/market-graph/market-graph";
 import { type ArbitrageSearchPolicy } from "../src/market-graph/types";
 import { OpportunityEngine } from "../src/opportunities/opportunity-engine";
 import { Q96 } from "../src/protocols/v3/quote";
-import { type PairInfo } from "../src/protocols/v2/types";
 import { tokenAmount } from "../src/values";
 
 const [tokenA, tokenB, tokenC] = TOKENS.map(({ address }) => address);
@@ -24,31 +24,6 @@ const policy: ArbitrageSearchPolicy = {
 
 function poolAddress(id: number): Address {
   return `0x${(9_000_000 + id).toString(16).padStart(40, "0")}` as Address;
-}
-
-function pairAddress(id: number): Address {
-  return `0x${(8_000_000 + id).toString(16).padStart(40, "0")}` as Address;
-}
-
-function pair(
-  id: number,
-  token0: Address,
-  token1: Address,
-  reserve0: bigint,
-  reserve1: bigint,
-  fee = 30,
-): PairInfo {
-  return {
-    pairAddress: pairAddress(id),
-    token0,
-    token1,
-    reserve0,
-    reserve1,
-    fee,
-    variant: 'uniswap-v2',
-    scale0: 1n,
-    scale1: 1n,
-  };
 }
 
 function pool(id: number, token0: Address, token1: Address, fee = 500): V3PoolConfig {

@@ -1,6 +1,8 @@
+import { MarketGraph } from '../src/market-graph/market-graph';
+import { v2Pair as pair, address as pairAddress } from './helpers/markets';
 import { describe, expect, test } from "bun:test";
 import { type Address } from "viem";
-import { TOKENS } from "../src/constants";
+import { ARBITRAGE_SEARCH_POLICY, TOKENS } from "../src/constants";
 import { swapSolidlyStable, swapV2 } from "../src/protocols/v2/quote";
 import { encodeV2RouteData } from "../src/protocols/v2/execution";
 import { type PairInfo } from "../src/protocols/v2/types";
@@ -10,33 +12,8 @@ import { tokenAmount } from "../src/values";
 
 const [tokenA, tokenB, tokenC] = TOKENS.map(({ address }) => address);
 
-function pairAddress(id: number): Address {
-  return `0x${id.toString(16).padStart(40, "0")}` as Address;
-}
-
 function tokenAddress(id: number): Address {
   return `0x${(100000 + id).toString(16).padStart(40, "0")}` as Address;
-}
-
-function pair(
-  id: number,
-  token0: Address,
-  token1: Address,
-  reserve0: bigint,
-  reserve1: bigint,
-  fee = 30,
-): PairInfo {
-  return {
-    pairAddress: pairAddress(id),
-    token0,
-    token1,
-    reserve0,
-    reserve1,
-    fee,
-    variant: 'uniswap-v2',
-    scale0: 1n,
-    scale1: 1n,
-  };
 }
 
 function buildGraph(pairs: PairInfo[]): OpportunityEngine {
@@ -82,7 +59,8 @@ describe("V2 arbitrage graph", () => {
     ]);
 
     const opportunity = graph.findOpportunities({ startTokens: [tokenA] })[0];
-    expect(opportunity.routeData).toEqual(['0x01', '0x', '0x']);
+    // Tax-aware custody adds bit 1; the stable-pool bit remains set only on the first hop.
+    expect(opportunity.routeData).toEqual(['0x03', '0x02', '0x02']);
     expect(graph.graph.findBestFlashPoolForToken(tokenA, 1n, [pairAddress(2), pairAddress(3)])).toBeNull();
   });
 
@@ -117,8 +95,6 @@ describe("V2 arbitrage graph", () => {
     });
 
     expect(opportunities).toEqual([]);
-    expect(opportunities.map(opportunity => opportunity.profit)).toEqual([]);
-    expect(opportunities.map(opportunity => opportunity.optimalInput)).toEqual([]);
   });
 
   test("does not reuse the same pair to manufacture a false two-hop cycle", () => {
@@ -275,5 +251,25 @@ describe("V2 arbitrage graph", () => {
 
     expect(opportunities.some(opportunity => opportunity.path[0] === tokenA)).toBe(true);
   });
+});
+
+test('cached flash-source ordering matches exhaustive selection across amounts and exclusions', () => {
+  const graph = new MarketGraph({ ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2'] });
+  const token = TOKENS[0].address;
+  for (const [id, fee, reserve] of [[1, 30, 1_000_000], [2, 15, 100], [3, 17, 1_000_000], [4, 15, 1_000_000]] as const) {
+    graph.addPair({ pairAddress: pairAddress(id), token0: token, token1: pairAddress(id + 100),
+      reserve0: BigInt(reserve), reserve1: BigInt(reserve), fee, variant: 'uniswap-v2', scale0: 1n, scale1: 1n });
+  }
+  for (const amount of [1n, 99n, 100n, 100_000n, 1_000_000n]) {
+    for (const excluded of [[], [pairAddress(4)], [pairAddress(2), pairAddress(4)]]) {
+      expect(graph.findBestFlashPoolForToken(token, amount, excluded))
+        .toEqual(graph.findBestFlashPoolForToken(token, amount, excluded, () => true));
+    }
+  }
+  graph.updateReserves([{ pairAddress: pairAddress(4), reserve0: 0n, reserve1: 0n }]);
+  for (const amount of [1n, 99n, 100n, 100_000n]) {
+    expect(graph.findBestFlashPoolForToken(token, amount))
+      .toEqual(graph.findBestFlashPoolForToken(token, amount, [], () => true));
+  }
 });
 

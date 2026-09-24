@@ -1,3 +1,4 @@
+import { v2Pair } from './helpers/markets';
 import { expect, test } from 'bun:test';
 import { ARBITRAGE_SEARCH_POLICY, RUNTIME, TOKENS } from '../src/constants';
 import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
@@ -13,8 +14,7 @@ const [a, b, c] = TOKENS.map(token => token.address);
 function market() {
   const engine = new OpportunityEngine(policy);
   for (const [i, token0, token1] of [[1, a, b], [2, b, c], [3, c, a], [4, a, b]] as const) {
-    engine.graph.addPair({ pairAddress: address(i), token0, token1, reserve0: 10n ** 24n, reserve1: 2n * 10n ** 24n,
-      fee: 30, variant: 'uniswap-v2', scale0: 1n, scale1: 1n });
+    engine.graph.addPair(v2Pair(i, token0, token1, 10n ** 24n, 2n * 10n ** 24n));
   }
   return engine;
 }
@@ -150,8 +150,7 @@ test('Carbon replacement and deletion are mirrored and invalidate Carbon candida
 test('Carbon worker deltas preserve quotes and execution data, including restart and updates during search', async () => {
   const carbonPolicy = { ...policy, maxCandidatesToSize: 16, maxRouteEdges: 2 };
   const engine = new OpportunityEngine(carbonPolicy);
-  engine.graph.addPair({ pairAddress: address(80), token0: a, token1: b, fee: 30,
-    reserve0: 10n ** 30n, reserve1: 10n ** 24n, variant: 'uniswap-v2', scale0: 1n, scale1: 1n });
+  engine.graph.addPair(v2Pair(80, a, b, 10n ** 30n, 10n ** 24n));
   const strategies: CarbonStrategy[] = [1n, 2n, 3n].map(id => ({
     id, controller: address(90), owner: address(99), token0: a, token1: b, feePpm: 0,
     orders: [{ y: 0n, z: 0n, A: 0n, B: 0n }, { y: 10n ** 27n, z: 10n ** 27n, A: 0n, B: (1n << 47n) | (2n << 48n) }],
@@ -181,3 +180,20 @@ test('Carbon worker deltas preserve quotes and execution data, including restart
     } finally { restarted.stop(); }
   } finally { search.stop(); }
 }, 20_000);
+
+test('off/info/debug preserve real local and worker quotes with the tax safety gate enabled', async () => {
+  const previous = RUNTIME.logLevel;
+  const engine = market();
+  const request = { startTokens: [a], observedAt: Date.now() };
+  const expected = engine.findOpportunities(request);
+  expect(expected.length).toBeGreaterThan(0);
+  const worker = new WorkerSearch(engine.graph, engine.policy, engine.tokens);
+  try {
+    for (const level of ['off', 'info', 'debug'] as const) {
+      RUNTIME.logLevel = level;
+      expect(engine.findOpportunities(request)).toEqual(expected);
+      expect(engine.diagnostics.length > 0).toBe(level === 'debug');
+      expect(await worker.search(request)).toEqual(expected);
+    }
+  } finally { RUNTIME.logLevel = previous; worker.stop(); }
+});
