@@ -27,7 +27,7 @@ export const CONTRACTS = {
 } as const;
 
 export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
-    topTokens: 6,
+    topTokens: 3,
     // Controls discovery, live loading, event monitoring, and route searches. Use ['v2'] for V2 only.
     allowedProtocols: ['v2'],
     allowProtocolMixing: true,
@@ -55,7 +55,7 @@ export const EXECUTION_POLICY = {
     feeRefreshIntervalMs: 5 * 60 * 1000,
     // Applies to legacy gasPrice or EIP-1559 maxFeePerGas; never clamps estimates.
     feeCeilingPerGas: gasPrice('1000'),
-    legacy: false,
+    legacy: true,
 } as const;
 
 export const RUNTIME: {
