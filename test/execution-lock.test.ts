@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { type Address } from "viem";
 import { OpportunityManager } from "../src/execute";
 import { type ExecutableOpportunity } from "../src/execution/execution-planner";
@@ -6,6 +6,12 @@ import { RUNTIME, ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, CONTRACTS } from '.
 import { startedTestGasFees, readExecutorContract } from './helpers/execution';
 
 const pair = "0x0000000000000000000000000000000000000001" as Address;
+let previousSubmissionMode: typeof EXECUTION_POLICY.submissionMode;
+beforeEach(() => {
+  previousSubmissionMode = EXECUTION_POLICY.submissionMode;
+  Object.assign(EXECUTION_POLICY, { submissionMode: 'single' });
+});
+afterEach(() => Object.assign(EXECUTION_POLICY, { submissionMode: previousSubmissionMode }));
 
 const opportunity: ExecutableOpportunity = {
   path: [pair, pair],
@@ -73,7 +79,7 @@ test('off blocks an otherwise eligible split, while live permits submission', as
   const before = ARBITRAGE_SEARCH_POLICY.splitRouting;
   const split: ExecutableOpportunity = { ...opportunity, observedAt: Date.now(), marketVersions: { [pair]: 1 },
     split: { stages: [], resources: [],
-      deadline: BigInt(Math.floor(Date.now() / 1000) + 60), gasLimit: EXECUTION_POLICY.gasLimits.single,
+      gasLimit: EXECUTION_POLICY.gasLimits.single,
       gasPriceWei: 500n, costsValidUntil: Date.now() + 60000 } };
   const graph = { matchesVersions: () => true } as never;
   try {

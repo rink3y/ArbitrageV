@@ -244,11 +244,6 @@
             ]
           },
           {
-            "name": "deadline",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
             "name": "routeSwap",
             "type": "bool",
             "internalType": "bool"
@@ -386,11 +381,6 @@
             ]
           },
           {
-            "name": "deadline",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
             "name": "routeSwap",
             "type": "bool",
             "internalType": "bool"
@@ -517,11 +507,6 @@
             ]
           },
           {
-            "name": "deadline",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
             "name": "routeSwap",
             "type": "bool",
             "internalType": "bool"
@@ -619,11 +604,6 @@
                 ]
               }
             ]
-          },
-          {
-            "name": "deadline",
-            "type": "uint256",
-            "internalType": "uint256"
           }
         ]
       }

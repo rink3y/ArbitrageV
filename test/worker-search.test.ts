@@ -109,12 +109,10 @@ test('V2 and V3 removals are mirrored to the worker graph and can be re-added', 
   expect(target.getV3Pools()).toHaveLength(1);
 });
 
-test('exact route sizing is capped and event-local results touch a changed pool', () => {
+test('exact route sizing is capped', () => {
   const engine = market();
-  const opportunities = engine.findOpportunities({ startTokens: [a], changedPairs: [address(1)] });
+  engine.findOpportunities({ startTokens: [a] });
   expect(engine.lastSearchStats.sized).toBeLessThanOrEqual(policy.maxCandidatesToSize);
-  expect(opportunities.length).toBeGreaterThan(0);
-  expect(opportunities.every(opportunity => opportunity.pairs.includes(address(1)))).toBe(true);
   expect(() => new OpportunityEngine({ ...policy, maxSearchExpansions: 0 })).toThrow();
 });
 

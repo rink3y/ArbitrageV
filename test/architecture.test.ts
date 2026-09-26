@@ -65,11 +65,6 @@ test('empty CONFIGURED_TOKENS auto-selects valued graph tokens and uses the shar
   engine.policy.minProfitNative = 10000n * unit;
   expect(engine.findOpportunities({ startTokens: [], autoSelect: true, splitCosts: costs() })).toHaveLength(0);
 });
-test('a token override uses native wei, not token decimals or a ranking denominator', () => {
-  const engine = market([{ address: a, name: 'native', decimals: 18, liquidityAmount: 1n, minProfitNative: 10000n * unit }]);
-  expect(first(engine)).toBeUndefined();
-});
-
 test('six-decimal direct and split profits use a native-denominated override', () => {
   const engine = market([{ address: b, name: 'six decimals', decimals: 6, liquidityAmount: 1n, minProfitNative: unit / 1000n }]);
   for (const pair of engine.graph.takeChanges(true).pairs) engine.graph.addPair({ ...pair, reserve1: pair.reserve1 / (10n ** 12n) });

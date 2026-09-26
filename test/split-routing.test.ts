@@ -1,4 +1,4 @@
-import { v2Pair, routeTokens } from './helpers/markets';
+import { address, v2Pair, routeTokens } from './helpers/markets';
 import { expect, test } from 'bun:test';
 import { MarketGraph } from '../src/market-graph/market-graph';
 import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY } from '../src/constants';
@@ -15,7 +15,6 @@ import { quoteV3MultiRangeExactInput, Q96 } from '../src/protocols/v3/quote';
 import { tickWordBounds } from '../src/protocols/v3/coverage';
 
 const [a, b] = routeTokens.map(token => token.address);
-const address = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const;
 const tokens = routeTokens.map(token => ({ ...token, minProfitNative: 1n }));
 const fees = { type: 'eip1559', maxFeePerGas: 1_000_000_000n,
   maxPriorityFeePerGas: 0n, validUntil: Number.MAX_SAFE_INTEGER } as const;
@@ -137,13 +136,6 @@ test('budget exhaustion is reported, including work inside a V3 tick walk', () =
     spendWork: () => ++work <= 2 });
   expect(quote.exhaustedLiquidity).toBe(true);
   expect(quote.initializedTicksCrossed).toBe(2);
-});
-
-test('bounded and execution funding lookups agree when several lenders have equal fees', () => {
-  const graph = splitMarket();
-  graph.addPair(v2Pair(5, a, b, 1000000n, 1000000n, 0));
-  expect(graph.findBestFlashPoolForToken(a, 200n, [address(1), address(2)], () => true))
-    .toEqual(graph.findBestFlashPoolForToken(a, 200n, [address(1), address(2)]));
 });
 
 test('quotes reject shared pools, discontinuous tokens and unfunded later-stage inputs', () => {

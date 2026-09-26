@@ -66,7 +66,6 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         uint256 borrowAmount;
         uint256 v2RepayFee;
         SplitStage[] stages;
-        uint256 deadline;
     }
 
     struct FlashData {
@@ -188,7 +187,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     }
 
     function _validateSplit(SplitParams memory params) private view {
-        if (params.deadline < block.timestamp || params.borrowAmount == 0 || params.stages.length < 2 || params.stages.length > 3 ||
+        if (params.borrowAmount == 0 || params.stages.length < 2 || params.stages.length > 3 ||
             params.flashPool.code.length == 0 || params.flashProtocol > V3 || params.v2RepayFee >= FEE_DENOMINATOR) revert InvalidSplitPlan();
         address token = params.borrowToken;
         uint256 available = params.borrowAmount;
@@ -502,7 +501,6 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     struct Plan {
         ArbParams route;
         SplitStage[] stages;
-        uint256 deadline;
         bool routeSwap;
     }
 
@@ -555,13 +553,12 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     }
 
     function _executePlan(Plan memory plan) private {
-        if (plan.deadline < block.timestamp) revert InvalidSplitPlan();
         if (plan.routeSwap) {
             if (plan.stages.length != 0) revert InvalidSplitPlan();
             _startRouteSwap(plan.route);
         } else if (plan.stages.length != 0) {
             _executeSplitLoan(SplitParams(plan.route.flashProtocol, plan.route.flashPool,
-                plan.route.borrowToken, plan.route.borrowAmount, plan.route.v2RepayFee, plan.stages, plan.deadline));
+                plan.route.borrowToken, plan.route.borrowAmount, plan.route.v2RepayFee, plan.stages));
         } else _executeLoan(plan.route);
     }
 

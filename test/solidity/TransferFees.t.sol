@@ -139,7 +139,6 @@ contract TransferFeesTest {
         (SplitV2Pool funding, SplitV2Pool sell, uint256 bought, uint256 returned) = prepareRoute();
         ArbitrageExecutor.SplitParams memory p;
         p.flashPool = address(funding); p.borrowToken = address(a); p.borrowAmount = 10000; p.v2RepayFee = 30;
-        p.deadline = block.timestamp;
         p.stages = new ArbitrageExecutor.SplitStage[](2);
         p.stages[0].tokenIn = address(a); p.stages[0].tokenOut = address(b);
         p.stages[0].branches = new ArbitrageExecutor.SplitBranch[](1);

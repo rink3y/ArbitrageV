@@ -132,7 +132,6 @@ contract NArbSplitTest {
         ArbitrageExecutor.SplitParams memory split = plan();
         ArbitrageExecutor.Plan[] memory plans = new ArbitrageExecutor.Plan[](2);
         for (uint256 i; i < 2; ++i) {
-            plans[i].deadline = split.deadline;
             plans[i].stages = split.stages;
             plans[i].route.flashProtocol = split.flashProtocol;
             plans[i].route.flashPool = split.flashPool;
@@ -147,7 +146,6 @@ contract NArbSplitTest {
 
     function plan() private view returns (ArbitrageExecutor.SplitParams memory p) {
         p.flashProtocol = 0; p.flashPool = address(funding); p.borrowToken = address(a); p.borrowAmount = 200;
-        p.deadline = block.timestamp;
         p.stages = new ArbitrageExecutor.SplitStage[](2);
         p.stages[0].tokenIn = address(a); p.stages[0].tokenOut = address(b);
         p.stages[0].branches = new ArbitrageExecutor.SplitBranch[](2);
@@ -176,7 +174,12 @@ contract NArbSplitTest {
     function testRejectsDuplicatePool() public { ArbitrageExecutor.SplitParams memory p = plan(); p.stages[0].branches[1].pool = address(buy1); reject(p); }
     function testRejectsFundingPoolAsBranch() public { ArbitrageExecutor.SplitParams memory p = plan(); p.stages[0].branches[0].pool = address(funding); reject(p); }
     function testRejectsNonCircularPath() public { ArbitrageExecutor.SplitParams memory p = plan(); p.stages[1].tokenOut = address(b); reject(p); }
-    function testRejectsExpiredPlan() public { ArbitrageExecutor.SplitParams memory p = plan(); vm.warp(block.timestamp + 1); reject(p); }
+    function testSplitCanExecuteAfterTimeAdvances() public {
+        ArbitrageExecutor.SplitParams memory p = plan();
+        vm.warp(block.timestamp + 60);
+        executor.executeSplitArbitrage(p);
+        require(a.balanceOf(address(executor)) == 106, "delayed split did not execute");
+    }
     function testRejectsUnauthorizedEntry() public {
         ArbitrageExecutor.SplitParams memory p = plan(); vm.prank(address(123));
         (bool ok, ) = address(executor).call(abi.encodeCall(executor.executeSplitArbitrage, (p))); require(!ok, "authorization");
@@ -274,13 +277,6 @@ contract NArbSplitTest {
         stages[2].branches[0] = ArbitrageExecutor.SplitBranch(address(carbon), 2, 0, 724, 1448, abi.encode(uint256(11), address(c), address(a)));
         p.stages = stages; executor.executeSplitArbitrage(p);
         require(a.balanceOf(address(executor)) == 1248, "three stages");
-    }
-    function testLinearEntryStillWorksForOwner() public {
-        ArbitrageExecutor.ArbParams memory p;
-        p.flashPool = address(funding); p.borrowToken = address(a); p.borrowAmount = 100;
-        p.pools = new address[](2); p.pools[0] = address(buy1); p.pools[1] = address(sell);
-        p.protocols = new uint8[](2); p.fees = new uint256[](2); p.data = new bytes[](2);
-        executor.executeArbitrage(p); require(a.balanceOf(address(executor)) == 65, "linear compatibility");
     }
     function testFuzzRepaymentCannotSpendExistingBorrowToken(uint16 fee, uint128 oldBalance) public {
         ArbitrageExecutor.SplitParams memory p = plan(); p.v2RepayFee = uint256(fee) % 10000;

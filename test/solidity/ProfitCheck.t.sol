@@ -76,7 +76,6 @@ contract ProfitCheckTest {
 
     function splitPlan(uint256 borrowed) private view returns (ArbitrageExecutor.SplitParams memory p) {
         p.flashPool = address(lender); p.borrowToken = address(token); p.borrowAmount = borrowed; p.v2RepayFee = 15;
-        p.deadline = block.timestamp;
         p.stages = new ArbitrageExecutor.SplitStage[](2);
         p.stages[0].tokenIn = address(token); p.stages[0].tokenOut = address(intermediate);
         p.stages[1].tokenIn = address(intermediate); p.stages[1].tokenOut = address(token);

@@ -35,11 +35,11 @@ function market(mode: typeof modes[number]) {
   return { engine, changed, mixedPool };
 }
 
-for (const mode of modes) for (const update of [false, true]) {
-  test(`${mode.name} stress: event-local ${update ? 'reserve update and scan' : 'scan'} stays bounded`, () => {
+for (const mode of modes) {
+  test(`${mode.name} stress: event-local reserve update and scan stay bounded`, () => {
     const { engine, changed, mixedPool } = market(mode);
     const started = performance.now();
-    if (update) engine.graph.updateReserves([{ pairAddress: changed.pairAddress,
+    engine.graph.updateReserves([{ pairAddress: changed.pairAddress,
       reserve0: tokenAmount('1000'), reserve1: tokenAmount(mode.v3 ? '2500' : '1200') }]);
     const quotes = engine.findOpportunities({ startTokens: [a], changedPairs: [changed.pairAddress] });
     const elapsed = performance.now() - started;

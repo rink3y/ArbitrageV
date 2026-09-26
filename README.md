@@ -17,7 +17,7 @@ Use Bun; the runtime depends on its workers and SQLite APIs. Copy [.env.example]
 
 Deploy contracts matching the source. [Contract/NArb.sol](Contract/NArb.sol) defines `ArbitrageExecutor(owner, wrappedNativeToken)`; its owner must be the signing wallet. The constructor deploys immutable V2, V3 and Carbon logic contracts. NArb delegates swaps to them but retains custody, callback validation, repayment and profit checks. These modules are not upgradeable and should not hold funds themselves.
 
-Independent batching requires a new NArb deployment, even if you already use the modular executor with atomic batches. Update `ARB_CONTRACT_ADDRESS`, approve additional configured wrappers and refresh the executor-specific transfer profiles before enabling `submissionMode: 'batch'`. Startup rejects executors without independent batch support.
+Plan and split calls no longer include a deadline. Deploy the updated NArb and change `ARB_CONTRACT_ADDRESS` before running the bot. The old contract cannot decode these calls. Independent batching also needs the updated contract, even if your current executor supports atomic batches. Approve additional configured wrappers and refresh executor-specific transfer profiles after redeployment. Startup rejects executors without independent batch support.
 
 The query contract is `FlashUniswapQueryV1` in `Contract/UniswapFlashQuery.sol`. An existing deployment with transfer-profiling functions can still be used.
 
@@ -188,7 +188,7 @@ NArb protects pre-existing start-token inventory and requires positive surplus a
 
 In a batch, this check applies to each attempt, not the transaction as a whole. Failed attempts still consume gas, which successful attempts' checks do not include. Keeping A's profit after B fails does not guarantee a positive net after the entire transaction's gas bill.
 
-`NoProfit()` means no surplus; `InsufficientProfitAfterGas` means wrapper surplus failed that gas check; `InsufficientFlashLoanRepayment()` means repayment would consume old inventory. Non-wrapper on-chain checks do not establish profit after gas. No entry point enforces the quoted minimum profit. Split and general plans have deadlines, and split branches retain minimum outputs. Pools are supplied in signed plans, not checked against an on-chain factory allowlist.
+`NoProfit()` means no surplus; `InsufficientProfitAfterGas` means wrapper surplus failed that gas check; `InsufficientFlashLoanRepayment()` means repayment would consume old inventory. Non-wrapper on-chain checks do not establish profit after gas. No entry point enforces the quoted minimum profit. Plans have no on-chain expiry; a delayed transaction can still execute against changed markets. Split branches retain minimum outputs. Pools are supplied in signed plans, not checked against an on-chain factory allowlist.
 
 ## Freshness and submission
 

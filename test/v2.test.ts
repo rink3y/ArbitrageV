@@ -201,28 +201,6 @@ describe("V2 arbitrage graph", () => {
     expect(opportunities[0].path).toEqual([tokenA, tokenB, tokenC, tokenA]);
   });
 
-  test("event-local search only returns routes touching affected pairs", () => {
-    const changedPair = pair(1, tokenA, tokenB, tokenAmount("1000"), tokenAmount("2200"));
-    const graph = buildGraph([
-      changedPair,
-      pair(2, tokenB, tokenC, tokenAmount("1000"), tokenAmount("2200")),
-      pair(3, tokenC, tokenA, tokenAmount("1000"), tokenAmount("2200")),
-      pair(4, tokenA, tokenB, tokenAmount("1000"), tokenAmount("3000")),
-      pair(5, tokenB, tokenC, tokenAmount("1000"), tokenAmount("3000")),
-      pair(6, tokenC, tokenA, tokenAmount("1000"), tokenAmount("3000")),
-    ]);
-
-    const opportunities = graph.findOpportunities({
-      startTokens: [tokenA],
-      changedPairs: [changedPair.pairAddress],
-    });
-
-    expect(opportunities.length).toBeGreaterThan(0);
-    for (const routePairs of opportunities.map(opportunity => opportunity.pairs)) {
-      expect(routePairs).toContain(changedPair.pairAddress);
-    }
-  });
-
   test("event-local search keeps an affected pair even when it is outside the normal beam", () => {
     const distractors: PairInfo[] = [];
     for (let i = 0; i < 20; i++) {

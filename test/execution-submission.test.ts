@@ -333,7 +333,7 @@ for (const legacy of [false, true]) test(`a live split signs one ${legacy ? 'leg
     protocols: ['v2', 'v2', 'v2'], fees: [0, 0, 0], routeData: ['0x', '0x', '0x'], optimalInput: 200n, profit: 106n,
     netProfit: 100n, observedAt: Date.now(), marketVersions: { [address(3)]: 1 }, flashPoolAddress: address(6),
     split: { resources: [address(3), address(4), address(5)],
-      deadline: BigInt(Math.floor(Date.now() / 1000) + 30), costsValidUntil: Date.now() + 30000,
+      costsValidUntil: Date.now() + 30000,
       gasLimit: EXECUTION_POLICY.gasLimits.single, gasPriceWei: 500n,
       stages: [
         { tokenIn: address(1), tokenOut: address(2), branches: [3, 4].map(n => ({ pool: address(n), protocol: 'v2' as const,
@@ -494,7 +494,7 @@ test('independent batching preserves staged split amounts alongside a direct rou
       protocols: ['v2', 'v2', 'v2'], fees: [0, 0, 0], routeData: ['0x', '0x', '0x'], optimalInput: 200n,
       marketVersions: { [address(10)]: 1, [address(11)]: 1, [address(12)]: 1 },
       split: { resources: [address(10), address(11), address(12)], gasLimit: EXECUTION_POLICY.gasLimits.single,
-        gasPriceWei: 500n, costsValidUntil: Date.now() + 60000, deadline: BigInt(Math.floor(Date.now() / 1000) + 60), stages: [
+        gasPriceWei: 500n, costsValidUntil: Date.now() + 60000, stages: [
           { tokenIn: a, tokenOut: b, branches: [10, 11].map(id => ({ pool: address(id), protocol: 'v2', fee: 0,
             data: '0x', amountIn: 100n, minAmountOut: 181n })) },
           { tokenIn: b, tokenOut: a, branches: [{ pool: address(12), protocol: 'v2', fee: 0,

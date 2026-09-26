@@ -3,20 +3,12 @@ import { createExecutionPlan, flashLoanFee, gasLimitForTransaction } from "../sr
 import { EXECUTION_POLICY } from '../src/constants';
 import { decodeFunctionData, encodeFunctionData } from "viem";
 import ArbABI from "../src/ABI/Arb.json";
-
-type Address = `0x${string}`;
+import { encodeCarbonRouteData } from '../src/protocols/carbon/execution';
+import { address } from './helpers/markets';
 
 const tokenA = address(101);
 const tokenB = address(102);
 const tokenC = address(103);
-
-function address(id: number): Address {
-  return `0x${(60_000_000 + id).toString(16).padStart(40, "0")}` as Address;
-}
-
-function carbonRouteData(strategyId: bigint, sourceToken: Address, targetToken: Address): `0x${string}` {
-  return `0x${strategyId.toString(16).padStart(64, "0")}${sourceToken.slice(2).padStart(64, "0")}${targetToken.slice(2).padStart(64, "0")}`;
-}
 
 describe("createExecutionPlan", () => {
   test("calculates the exact flash repayment fee", () => {
@@ -93,7 +85,7 @@ describe("createExecutionPlan", () => {
     const flashPool = address(40);
     const carbonController = address(41);
     const v2Pool = address(42);
-    const carbonData = carbonRouteData(123n, tokenA, tokenB);
+    const carbonData = encodeCarbonRouteData({ strategyIds: [123n], amounts: [1_000n], rawFrom: tokenA, rawTo: tokenB });
 
     const plan = createExecutionPlan({
       findBestFlashPoolForToken(token, amountIn, excludePools) {

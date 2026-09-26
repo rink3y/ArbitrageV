@@ -146,7 +146,6 @@ export class OpportunityEngine {
         observedAt: request.observedAt ?? Date.now(),
         marketVersions: this.graph.marketVersions([...pairs, candidate.flashPool.poolAddress], protocols.includes('carbon')),
         split: { stages: candidate.quote.stages, resources: candidate.quote.resources,
-          deadline: BigInt(Math.floor((request.observedAt ?? Date.now()) / 1000) + 30),
           gasLimit: gasLimitForTransaction(), gasPriceWei: request.splitCosts!.gasPriceWei, costsValidUntil: request.splitCosts!.validUntil },
       };
       if (this.policy.minProfitNative !== undefined && request.splitCosts) {

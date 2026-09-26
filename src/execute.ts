@@ -359,7 +359,7 @@ export class OpportunityManager {
         const split = opportunity.split;
         return !!split && ARBITRAGE_SEARCH_POLICY.splitRouting === 'live' &&
             !!opportunity.marketVersions && opportunity.observedAt !== undefined &&
-            split.costsValidUntil > Date.now() && split.deadline >= BigInt(Math.floor(Date.now() / 1000)) &&
+            split.costsValidUntil > Date.now() &&
             split.gasLimit === gasLimitForTransaction() && split.gasPriceWei === gasPriceCeiling(feeSnapshot);
     }
 }

@@ -35,7 +35,6 @@ export type SplitContractParams = Pick<ArbContractParams, 'flashProtocol' | 'fla
   stages: Array<{ tokenIn: Address; tokenOut: Address; branches: Array<{
     pool: Address; protocol: number; fee: bigint; amountIn: bigint; minAmountOut: bigint; data: `0x${string}`;
   }> }>;
-  deadline: bigint;
 };
 export type ExecutionPlan = {
   kind: 'flash';
@@ -46,19 +45,18 @@ export type ExecutionPlan = {
 } | { kind: 'split'; params: SplitContractParams }
   | { kind: 'plan'; params: ContractPlan };
 
-export type ContractPlan = { route: ArbContractParams; stages: SplitContractParams['stages']; deadline: bigint; routeSwap: boolean };
+export type ContractPlan = { route: ArbContractParams; stages: SplitContractParams['stages']; routeSwap: boolean };
 
 export function contractPlan(plan: ExecutionPlan): ContractPlan {
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 30);
   if (plan.kind === 'plan') return plan.params;
-  if (plan.kind === 'v2-route-flash') return { deadline, stages: [], routeSwap: true, route: {
+  if (plan.kind === 'v2-route-flash') return { stages: [], routeSwap: true, route: {
     flashProtocol: 0, flashPool: plan.params.pools[0], borrowToken: plan.params.startToken, borrowAmount: plan.params.amountIn,
     v2RepayFee: 0n, pools: plan.params.pools, protocols: plan.params.pools.map(() => 0), fees: plan.params.fees,
     data: plan.params.pools.map(() => '0x02'),
   } };
-  if (plan.kind === 'split') return { deadline: plan.params.deadline, stages: plan.params.stages, routeSwap: false,
+  if (plan.kind === 'split') return { stages: plan.params.stages, routeSwap: false,
     route: { ...plan.params, pools: [], protocols: [], fees: [], data: [] } };
-  return { deadline, stages: [], routeSwap: false, route: plan.params };
+  return { stages: [], routeSwap: false, route: plan.params };
 }
 
 export function flashLoanFee(pool: FlashPoolCandidate, amount: bigint): bigint {
@@ -82,7 +80,7 @@ export function createExecutionPlan(graph: FlashPoolLookup, opportunity: Executa
         !['v2', 'v3'].includes(opportunity.protocols[0]) ||
         opportunity.flashPoolAddress?.toLowerCase() !== opportunity.pairs[0].toLowerCase() ||
         new Set(opportunity.pairs.map(pool => pool.toLowerCase())).size !== opportunity.pairs.length) return null;
-    return { kind: 'plan', params: { routeSwap: true, stages: [], deadline: BigInt(Math.floor(Date.now() / 1000) + 30),
+    return { kind: 'plan', params: { routeSwap: true, stages: [],
       route: { flashProtocol: 0, flashPool: opportunity.pairs[0], borrowToken: opportunity.path[0], borrowAmount: opportunity.optimalInput,
         v2RepayFee: 0n, pools: opportunity.pairs, protocols: opportunity.protocols.map(protocol => protocolPlugin(protocol).contractId),
         fees: opportunity.fees.map(BigInt), data: opportunity.routeData } } };
@@ -114,7 +112,7 @@ export function createExecutionPlan(graph: FlashPoolLookup, opportunity: Executa
 
   if (opportunity.split) {
     const split = opportunity.split;
-    if (split.stages.length < 2 || split.stages.length > 3 || split.deadline < BigInt(Math.floor(Date.now() / 1000)) ||
+    if (split.stages.length < 2 || split.stages.length > 3 ||
         split.costsValidUntil <= Date.now() || opportunity.optimalInput <= 0n) return null;
     let token = borrowToken.toLowerCase();
     let available = opportunity.optimalInput;
@@ -140,7 +138,6 @@ export function createExecutionPlan(graph: FlashPoolLookup, opportunity: Executa
       v2RepayFee: flashPlugin.flashRepayFee?.(flashPool.fee) ?? 0n,
       stages: split.stages.map(stage => ({ ...stage, branches: stage.branches.map(branch => ({ ...branch,
         protocol: protocolPlugin(branch.protocol).contractId, fee: BigInt(branch.fee) })) })),
-      deadline: split.deadline,
     } };
   }
 

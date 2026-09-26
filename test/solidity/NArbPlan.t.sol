@@ -46,7 +46,7 @@ contract NArbPlanTest {
     }
 
     function plan(address first, uint8 protocol) private view returns (ArbitrageExecutor.Plan memory p) {
-        p.deadline = block.timestamp; p.routeSwap = true;
+        p.routeSwap = true;
         p.route.borrowToken = address(a); p.route.borrowAmount = 1000;
         p.route.pools = new address[](1); p.route.pools[0] = first;
         p.route.protocols = new uint8[](1); p.route.protocols[0] = protocol;
@@ -61,6 +61,13 @@ contract NArbPlanTest {
         require(a.balanceOf(address(executor)) > 111, "no profit");
         require(b.balanceOf(address(executor)) == 222, "old output spent");
         require(address(executor).balance == 333, "old native spent");
+    }
+
+    function testPlanCanExecuteAfterTimeAdvances() public {
+        ArbitrageExecutor.Plan memory p = plan(address(pool), 0);
+        vm.warp(block.timestamp + 60);
+        executor.executePlan(p);
+        require(a.balanceOf(address(executor)) > 0, "delayed plan did not execute");
     }
 
     function testUnapprovedWrapperRevertsAtomically() public {
