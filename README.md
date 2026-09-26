@@ -48,14 +48,17 @@ Configured tokens present in the graph fill the preferred starting slots up to `
 
 Selection is reconsidered when the graph's token count changes or `tokenSelectionRefreshMs` elapses, currently 24 hours. This caches the starting-token selection, not token prices. Automatic tokens without metadata are reported as addresses and raw amounts.
 
-`ARBITRAGE_SEARCH_POLICY.minProfitNative` is the shared minimum after the conservative gas allowance, currently `tokenAmount('0.09')`. An entry in either token list can override it:
+`ARBITRAGE_SEARCH_POLICY.minProfitNative` is the shared minimum after the conservative gas allowance, currently `tokenAmount('0.09')`. An entry in either token list can override it for routes starting in that token. The override remains denominated in native currency, not the configured token. For a six-decimal USDC entry on Cronos:
 
 ```ts
-liquidityAmount: tokenAmount('10', 6), // 10 units of this six-decimal token
-minProfitNative: tokenAmount('0.2'),   // 0.2 native coins, not 0.2 of this token
+decimals: 6,
+liquidityAmount: tokenAmount('10', 6), // 10 USDC
+minProfitNative: tokenAmount('0.2'),   // 0.2 CRO after gas, not 0.2 USDC
 ```
 
-Liquidity thresholds filter loaded markets; they are not trade sizes. Profit overrides use native wei regardless of the token's decimals.
+`tokenAmount()` defaults to 18 decimals; the entry's `decimals` field does not affect it. Use USDC's six decimals for its liquidity threshold, but native currency's decimals for `minProfitNative`, 18 for CRO. Liquidity thresholds filter loaded markets; they are not trade sizes.
+
+The bot values the USDC surplus through local pool quotes, subtracts its gas allowance and checks that the result exceeds 0.2 CRO. It does not compare raw USDC units with raw CRO units or sell the USDC automatically. Omit the override to use the shared minimum. Minimums expressed directly in USDC or VVS units are not supported.
 
 Factory addresses stay with their protocols: `V2_FACTORIES` in `src/protocols/v2/config.ts`, `V3_FACTORIES` in `src/protocols/v3/config.ts`, and `CARBON_CONTROLLERS` in `src/protocols/carbon/config.ts`. V2 fees use basis points, so 30 means 0.30%; V3 fees use parts per million, so 3000 means 0.30%. Solidly fees are read from its factory. V3 `fromBlock` is inclusive and must be at or before deployment for complete discovery.
 
