@@ -41,7 +41,6 @@ export type FindOpportunitiesRequest = {
   autoSelect?: boolean;
   suppressFollowUp?: boolean;
   searchDeadline?: number;
-  aggregateProfit?: boolean;
 };
 
 export type ArbitrageSearchResult = ArbitrageOpportunity[];

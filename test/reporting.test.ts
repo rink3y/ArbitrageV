@@ -189,10 +189,10 @@ test('worker formatting distinguishes expired quotes from executable opportuniti
   const valued = formatReport({ at: 0, level: 'debug', args: ['Opportunity', { index: 1, status: null,
     path: ['A', 'B'], pairs: ['pool'], fees: [30n], protocols: ['v2'], profit: 1000000n, netProfit: 1000000n,
     netProfitNative: 2n * 10n ** 18n, nativeToken: { name: 'NATIVE', decimals: 18 },
-    optimalInput: 1000000n, ageLimitMs: 500, routeSwap: true, followUpMode: 'batch' }] });
+    optimalInput: 1000000n, ageLimitMs: 500, routeSwap: true, submissionMode: 'separate' }] });
   expect(valued).toContain('Estimated native net after gas: 2 NATIVE');
   expect(valued).not.toContain('Conservative net after gas');
-  expect(valued).toContain('Prepared follow-up: batch');
+  expect(valued).toContain('Prepared follow-up: separate');
 });
 
 test('shutdown has a deadline when the output pipe is not being drained', async () => {

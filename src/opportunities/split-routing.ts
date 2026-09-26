@@ -105,7 +105,6 @@ export function searchSplitRoutes(
   baselineNet: ReadonlyMap<string, bigint> = new Map(),
   valueNative?: (profit: bigint, token: Address) => bigint | null,
   searchDeadline = Infinity,
-  aggregateProfit = false,
 ): { best: SplitCandidate | null; candidates: SplitCandidate[]; work: number; evaluated: number; exhausted: boolean } {
   const policy = graph.policy;
   const maxCandidates = policy.maxCandidatesToSize ?? 64;
@@ -204,7 +203,7 @@ export function searchSplitRoutes(
         const netProfit = profit - gasCost;
         const nativeProfit = valueNative?.(profit, path[0]);
         if (valueNative && (nativeProfit === null || nativeProfit === undefined ||
-            (!aggregateProfit && nativeProfit <= (token.minProfitNative ?? policy.minProfitNative ?? 0n)))) return;
+            nativeProfit <= (token.minProfitNative ?? policy.minProfitNative ?? 0n))) return;
         const candidate: SplitCandidate = { path, quote, flashPool: funding, netProfit, gasCost };
         if (!localBest || netProfit > localBest.netProfit) localBest = candidate;
         const threshold = baselineNet.get(key) ?? 0n;

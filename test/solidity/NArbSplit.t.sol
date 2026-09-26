@@ -128,6 +128,23 @@ contract NArbSplitTest {
         buy2 = new SplitV2Pool(a, b, 1000, 2000);
         sell = new SplitV2Pool(a, b, 2000, 2000);
     }
+    function testBatchRetainsSplitProfitWhenAnotherPlanFails() public {
+        ArbitrageExecutor.SplitParams memory split = plan();
+        ArbitrageExecutor.Plan[] memory plans = new ArbitrageExecutor.Plan[](2);
+        for (uint256 i; i < 2; ++i) {
+            plans[i].deadline = split.deadline;
+            plans[i].stages = split.stages;
+            plans[i].route.flashProtocol = split.flashProtocol;
+            plans[i].route.flashPool = split.flashPool;
+            plans[i].route.borrowToken = split.borrowToken;
+            plans[i].route.borrowAmount = split.borrowAmount;
+            plans[i].route.v2RepayFee = split.v2RepayFee;
+        }
+        plans[1].route.borrowAmount = 999999;
+        require(executor.executeBatch(plans, 1000000) == 1, "split result not isolated");
+        require(a.balanceOf(address(executor)) == 106, "split profit lost");
+    }
+
     function plan() private view returns (ArbitrageExecutor.SplitParams memory p) {
         p.flashProtocol = 0; p.flashPool = address(funding); p.borrowToken = address(a); p.borrowAmount = 200;
         p.deadline = block.timestamp;

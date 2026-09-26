@@ -21,7 +21,7 @@ afterEach(() => {
 });
 function market(tokens: TokenConfig[] = [{ address: a, name: 'native', decimals: 18, liquidityAmount: 1n }]) {
   Object.assign(CONTRACTS, { arbitrage: address(999) });
-  Object.assign(EXECUTION_POLICY, { routeSwapFunding: true, followUpMode: 'off', followUpSearchMs: 100 });
+  Object.assign(EXECUTION_POLICY, { routeSwapFunding: true, submissionMode: 'single', followUpSearchMs: 100 });
   const engine = new OpportunityEngine({ ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2', 'v3', 'carbon'],
     splitRouting: 'off', maxInputReserveFraction: 5n, minProfitNative: 1n }, [], tokens);
   engine.graph.addPair(v2Pair(1, a, b, 1000n * unit, 1000n * unit));
@@ -92,9 +92,9 @@ test('approved wrapper closure discovers a single-swap route and preserves it th
   const pair = { ...v2Pair(1, a, b, unit, unit), factory: address(100), name: 'wrapper pair' };
   expect(filterDiscoveredMarkets([pair] as never, [], []).v2Pools).toHaveLength(1);
 });
-test.each(['separate', 'batch'] as const)('%s prepares one successor with observed-state dependencies without changing the graph', mode => {
+test('separate prepares one successor with observed-state dependencies without changing the graph', () => {
   const engine = market();
-  Object.assign(EXECUTION_POLICY, { followUpMode: mode });
+  Object.assign(EXECUTION_POLICY, { submissionMode: 'separate' });
   const before = structuredClone(engine.graph.takeChanges(true));
   const result = first(engine);
   expect(result.followUp).toBeDefined();
@@ -105,13 +105,23 @@ test.each(['separate', 'batch'] as const)('%s prepares one successor with observ
   engine.graph.updateReserves([{ pairAddress: result.pairs[0], reserve0: unit, reserve1: unit }]);
   expect(engine.graph.matchesVersions(result.followUp!.marketVersions!)).toBe(false);
 });
-test('off does not create a follow-up and taxed transfers do not seed speculative state', () => {
+test('single does not create a follow-up and taxed transfers do not seed speculative state', () => {
   const engine = market();
   const result = first(engine);
   expect(result.followUp).toBeUndefined();
   const pair = engine.graph.getPair(result.pairs[0])!;
   pair.transferProfiles!.token0.sell.feeBps = 100;
   expect(projectOpportunity(engine.graph, result)).toBeNull();
+});
+
+test('batch searches observed state only and does not project a dependent successor', () => {
+  const engine = market();
+  Object.assign(EXECUTION_POLICY, { submissionMode: 'batch' });
+  const before = structuredClone(engine.graph.takeChanges(true));
+  const results = engine.findOpportunities({ startTokens: [a], splitCosts: costs() });
+  expect(results.length).toBeGreaterThan(0);
+  expect(results.every(result => !result.followUp && !result.followUpPlan && result.netProfitNative! > 0n)).toBe(true);
+  expect(engine.graph.takeChanges(true)).toEqual(before);
 });
 test('V3 projection carries price, tick and active liquidity, and restores observed state', () => {
   const engine = market();

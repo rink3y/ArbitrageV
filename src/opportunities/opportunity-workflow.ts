@@ -140,7 +140,7 @@ function logOpportunities(
     const status = invalidatedSet.has(opportunity) ? 'market changed or feed unavailable; not executable'
       : expiredSet.has(opportunity) ? 'expired; not executable' : null;
     logger.debug('Opportunity', { index: index + 1, status, path, profit, netProfit: opportunity.netProfit,
-      netProfitNative: opportunity.netProfitNative, routeSwap: opportunity.routeSwap, followUpMode: opportunity.followUp ? EXECUTION_POLICY.followUpMode : 'off',
+      netProfitNative: opportunity.netProfitNative, routeSwap: opportunity.routeSwap, submissionMode: opportunity.followUp ? EXECUTION_POLICY.submissionMode : 'single',
       nativeToken: { name: NETWORK.chain.nativeCurrency.symbol, decimals: NETWORK.chain.nativeCurrency.decimals },
       optimalInput, pairs, fees, protocols: opportunity.protocols,
       inputToken: startTokenInfo && { name: startTokenInfo.name, decimals: startTokenInfo.decimals },
@@ -150,7 +150,7 @@ function logOpportunities(
     });
     if (opportunity.split) logger.debug('Split allocation', opportunity.split);
     if (opportunity.followUp) logger.debug('Predicted follow-up', {
-      mode: EXECUTION_POLICY.followUpMode, path: opportunity.followUp.path, pairs: opportunity.followUp.pairs,
+      mode: EXECUTION_POLICY.submissionMode, path: opportunity.followUp.path, pairs: opportunity.followUp.pairs,
       profit: opportunity.followUp.profit, netProfitNative: opportunity.followUp.netProfitNative,
     });
   });

@@ -3,7 +3,7 @@ import { type Address } from "viem";
 import { OpportunityManager } from "../src/execute";
 import { type ExecutableOpportunity } from "../src/execution/execution-planner";
 import { RUNTIME, ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, CONTRACTS } from '../src/constants';
-import { startedTestGasFees } from './helpers/execution';
+import { startedTestGasFees, readExecutorContract } from './helpers/execution';
 
 const pair = "0x0000000000000000000000000000000000000001" as Address;
 
@@ -102,5 +102,20 @@ test('route flash checks the deployed executor once before starting', async () =
     manager.stop();
     Object.assign(CONTRACTS, { arbitrage: oldAddress });
     Object.assign(EXECUTION_POLICY, { routeSwapFunding: oldEnabled });
+  }
+});
+
+test('batch startup rejects an old executor before warming fees or nonces', async () => {
+  const oldAddress = CONTRACTS.arbitrage, oldMode = EXECUTION_POLICY.submissionMode;
+  Object.assign(CONTRACTS, { arbitrage: pair }); Object.assign(EXECUTION_POLICY, { submissionMode: 'batch' });
+  const manager = new OpportunityManager({ client: {
+    readContract: async (args: { functionName: string }) => args.functionName === 'MAX_BATCH_PLANS' ? 0n : readExecutorContract(args),
+    estimateFeesPerGas: async () => { throw Error('fee RPC must not run'); },
+    getTransactionCount: async () => { throw Error('nonce RPC must not run'); },
+  } } as never);
+  try {
+    await expect(manager.start()).rejects.toThrow('Deploy NArb with independent batch support');
+  } finally {
+    manager.stop(); Object.assign(CONTRACTS, { arbitrage: oldAddress }); Object.assign(EXECUTION_POLICY, { submissionMode: oldMode });
   }
 });

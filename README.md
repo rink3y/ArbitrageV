@@ -17,7 +17,9 @@ Use Bun; the runtime depends on its workers and SQLite APIs. Copy [.env.example]
 
 Deploy contracts matching the source. [Contract/NArb.sol](Contract/NArb.sol) defines `ArbitrageExecutor(owner, wrappedNativeToken)`; its owner must be the signing wallet. The constructor deploys immutable V2, V3 and Carbon logic contracts. NArb delegates swaps to them but retains custody, callback validation, repayment and profit checks. These modules are not upgradeable and should not hold funds themselves.
 
-The modular executor needs a new deployment if you were using the older monolithic contract. Set its address in `ARB_CONTRACT_ADDRESS` and refresh transfer profiles, which are executor-specific. The query contract is `FlashUniswapQueryV1` in `Contract/UniswapFlashQuery.sol`. An existing query deployment with the transfer-profiling functions can still be used.
+Independent batching requires a new NArb deployment, even if you already use the modular executor with atomic batches. Update `ARB_CONTRACT_ADDRESS`, approve additional configured wrappers and refresh the executor-specific transfer profiles before enabling `submissionMode: 'batch'`. Startup rejects executors without independent batch support.
+
+The query contract is `FlashUniswapQueryV1` in `Contract/UniswapFlashQuery.sol`. An existing deployment with transfer-profiling functions can still be used.
 
 `forge build` compiles the contracts. `bun run abi:arb` regenerates both query and executor JSON ABIs from `out/forge`. Neither command deploys anything.
 
@@ -112,7 +114,7 @@ Sync and startup fill missing or expired profiles. Current cached profiles are r
 
 There are no probe RPCs during search, signing or submission. These measurements still cannot predict changing exemptions, untested thresholds, rebases or token-triggered swaps. A sell-transfer probe does not prove a complete sell swap succeeds. Validate unfamiliar token routes on a fork before executing them.
 
-## Direct routes, splits and follow-ups
+## Direct routes, splits and submission modes
 
 Direct search visits bounded paths, ranks candidates and sizes them with integer quotes. Current limits include five edges, 50,000 exploration attempts and 64 candidates to size. `maxInputReserveFraction: 10n` caps opening input at one tenth of the relevant capacity. These limits trade coverage for latency; the search is not exhaustive.
 
@@ -134,15 +136,21 @@ Split search takes short paths from direct discovery before its profit filter, t
 
 `splitSearchMs` gives split search ten extra milliseconds. Direct and split work share a worker job, so split work delays its return. Budget checks are cooperative; one quote, tick walk or GC pause can overshoot. `split.budgetStops` means exploration ended early, not that no profitable split exists. `split.work` counts search work, not trades.
 
-Predicted follow-ups are a separate feature controlled by `EXECUTION_POLICY.followUpMode`:
+`EXECUTION_POLICY.submissionMode` chooses how eligible quotes are sent:
 
-- `off`: no predicted successor.
-- `separate`: prepare A and B with consecutive nonces, submit A, then submit B after A's RPC acknowledgement if its freshness checks still pass. It does not wait for events or receipts.
-- `batch`: send one `executeBatch([A, B])` transaction. A's funding call returns before B starts, allowing B to reuse its pools. If B fails, A rolls back too.
+- `single`: submit eligible quotes individually, without predicting follow-ups. This is the checked-in setting.
+- `separate`: also predict a follow-up B from A's expected pool changes. Submit them with consecutive nonces, sending B after A's RPC acknowledgement if B is still fresh. No confirmation or market event is required.
+- `batch`: send independent quotes from the observed state in one transaction, without predicting follow-ups. Each attempt borrows, swaps, repays and passes its own profit check. If A succeeds and B reverts, A's profit remains. If A reverts, B can still run.
 
-The worker projects the highest-ranked candidate's pool changes and searches for one successor with the same start token. `followUpSearchMs` gives this search a shared ten-millisecond budget. It restores the observed graph afterward; submission never advances authoritative reserves. Projection supports V2 reserves, V3 tick/price/liquidity changes and Carbon inventory changes. Solidly assumes the supported fee-out-of-pair convention. Taxed routes can execute but do not seed successors, because transfer samples cannot predict arbitrary token side effects.
+Batch selection takes the highest native-net-profit quotes first, excluding shared swap pools and swaps that touch another member's funding or valuation pools. Sharing an external lender is allowed. Different start tokens, direct routes and splits can share a batch. The bot uses the current scan's results without waiting to fill a batch; a lone candidate submits individually.
 
-If A creates a price difference that makes B profitable, `separate` requires each to clear its own cost floor. Consecutive nonces preserve our order, not adjacency or A's success: a competitor may consume B's opportunity between them. `batch` compares combined surplus after one batch gas allowance with A alone. It permits no intervening transaction, but a revert still costs gas. This is one-step prediction, not a joint optimizer or an inclusion guarantee.
+An all-failed batch can still have a successful transaction receipt. Inspect its `BatchAttempt(index, success)` events to distinguish successful attempts from reverted ones; the index is the plan's zero-based position in the batch.
+
+Follow-up prediction in `separate` mode considers only the highest-ranked candidate and searches for one successor with the same start token. `followUpSearchMs` gives that search ten milliseconds. The worker restores the observed graph afterward; submission does not change authoritative reserves.
+
+Prediction supports V2 reserves, V3 tick/price/liquidity changes and Carbon inventory changes. Solidly assumes the supported fee-out-of-pair convention. Taxed routes can execute but do not seed successors, because transfer samples cannot predict arbitrary token side effects.
+
+Both A and predicted B must clear their own cost floors. Consecutive nonces preserve their order but do not guarantee A succeeds or prevent a competitor from trading between them. B may therefore execute without the state it needs and revert. The planner does not jointly optimize A and B.
 
 ## Funding, gas and profit
 
@@ -157,11 +165,15 @@ Gas limits have one configuration and one resolver:
 ```ts
 gasLimits: {
     single: 1_500_000n, // Direct, split, or each transaction in separate mode.
-    batch: 3_000_000n,  // A and B in one transaction.
+    batch: 3_000_000n,  // Total limit for independent attempts, including failed ones.
 }
 ```
 
-Search charges this allowance at the cached fee cap; signing uses the same limit. There are no per-chain or funding-path overrides. These limits are not measured per opportunity, and a route may exceed them. Measure against the deployed contract before lowering them. Gas limit is not gas used.
+Search charges the single allowance at the cached fee cap. Signing uses that limit for separate transactions and the batch allowance for grouped attempts. There are no per-chain or funding-path overrides. These limits are not measured per opportunity, and a route may exceed them. Measure against the deployed contract before lowering them. Gas limit is not gas used.
+
+Batch size is capped at `floor(gasLimits.batch / gasLimits.single)` and the contract maximum of 16. The current limits allow two attempts. Their summed quoted native net must cover any batch allowance beyond the individual allowances already charged by search; otherwise the sender falls back to individual submission.
+
+The sender reserves gas for calldata and the outer batch call, then divides the remainder between attempts, capped at `gasLimits.single` each. At the current limits, each gets less than 1.5 million gas. A route that fits individually may run out of gas in a batch. NArb checks the outer budget before starting and limits each attempt so one cannot consume the gas reserved for the others.
 
 Fees are estimated at startup and every `feeRefreshIntervalMs`, currently five minutes. `legacy: true` uses `gasPrice`; `false` uses EIP-1559 maximum and priority fees. Failed, invalid or above-ceiling estimates retain the last valid quote until its original expiry, twice the refresh interval. They never extend it. Without a valid quote, searches and submissions pause while market events continue. An old fee cap may leave a transaction pending. Expiry itself has no immediate pause alert; a later failed refresh reports it.
 
@@ -171,6 +183,8 @@ This valuation uses current graph state, fees, deductions and price impact, not 
 
 NArb protects pre-existing start-token inventory and requires positive surplus after repayment. For approved wrappers it also checks gas using `tx.gasprice`, measured execution, 21,000 intrinsic gas, 16 gas per calldata byte and 10,000 overhead. It takes the larger result versus `21,000 + 40 * calldataBytes` for the calldata floor. It treats bytes as nonzero and ignores refunds, so this is conservative rather than an exact receipt cost. Separate rollup fees and caller-contract overhead are not covered.
 
+In a batch, this check applies to each attempt, not the transaction as a whole. Failed attempts still consume gas, which successful attempts' checks do not include. Keeping A's profit after B fails does not guarantee a positive net after the entire transaction's gas bill.
+
 `NoProfit()` means no surplus; `InsufficientProfitAfterGas` means wrapper surplus failed that gas check; `InsufficientFlashLoanRepayment()` means repayment would consume old inventory. Non-wrapper on-chain checks do not establish profit after gas. No entry point enforces the quoted minimum profit. Split and general plans have deadlines, and split branches retain minimum outputs. Pools are supplied in signed plans, not checked against an on-chain factory allowlist.
 
 ## Freshness and submission
@@ -179,13 +193,13 @@ Events update the main graph before search requests coalesce by market. Only one
 
 Quotes carry route, funding, valuation and feed revisions. Checks after search, before signing and before broadcast reject changed dependencies. An unrelated V2/V3 event does not invalidate a quote. A change to a pool it uses does, even at 100 ms old. Any Carbon change invalidates Carbon candidates, including those using another controller. Separately, `candidateMaxAgeMs`, currently 500 ms, expires old results even with unchanged pools. Disconnects pause acceptance until reconciliation. These checks cannot prevent changes after broadcast.
 
-Submitted route pools, including a prepared successor's pools, stay locked locally until their next applied update or a thirty-second timeout. A failure to submit B does not release already-submitted A's locks. External lenders can serve disjoint routes; locks do not reserve flash capital. Carbon locks are controller-wide.
+Submitted route pools, including a prepared successor's pools, stay locked locally until their next applied update or a thirty-second timeout. This also applies to failed batch attempts. A failure to submit B does not release already-submitted A's locks. External lenders can serve disjoint routes; locks do not reserve flash capital. Carbon locks are controller-wide.
 
 Use one bot process and a dedicated wallet. Execution reads the pending nonce at startup and allocates locally, refreshing every twelve hours. An uncertain send pauses new submissions and reconciles immediately, retrying every five seconds until pending advances past all uncertain nonces. A known-unsubmitted nonce can be released. A rejected or dropped transaction may require operator intervention; the bot does not replace, cancel or replay it automatically. Inspect pending transactions before restarting.
 
 The normal signing path uses cached fees, local nonces and prepared calldata. It does no fee, nonce, gas-estimation or transaction-preparation RPC. Raw transaction submission is the network call. Factory discovery, fee refresh, profile refresh, V3 checkpoints and feed recovery still use RPC in the background.
 
-After submission returns a hash, the bot queues a Telegram message with an explorer link when configured. It does not poll receipts or report later confirmations/reverts. The reported profit is expected, not realized. Signing and submission errors before acknowledgement are still reported.
+After submission returns a hash, the bot queues a Telegram message with an explorer link when configured. It does not poll receipts or report later confirmations/reverts. Profits are expected, not realized; batch alerts list each attempt's token and amount rather than summing different tokens. Signing and submission errors before acknowledgement are still reported.
 
 ## Logs and offline checks
 

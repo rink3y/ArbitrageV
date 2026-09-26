@@ -66,13 +66,14 @@ export const EXECUTION_POLICY = {
     executeTrades: true,
     // First V2/V3 swap supplies the output before callback repayment. Requires the modular NArb.
     routeSwapFunding: false,
-    followUpMode: 'off' as 'off' | 'separate' | 'batch',
+    // Batch combines independent quotes; separate sends a predicted follow-up.
+    submissionMode: 'single' as 'single' | 'separate' | 'batch',
     followUpSearchMs: 10,
     nonceRefreshIntervalMs: 12 * 60 * 60 * 1000,
     nonceRetryIntervalMs: 5_000,
     gasLimits: {
         single: 1_500_000n, // Direct, split, or each separately submitted follow-up.
-        batch: 3_000_000n, // A and B in one transaction. Remeasure before lowering.
+        batch: 3_000_000n, // Total allowance for independent attempts, including failed ones.
     },
     // Haircut on each split branch's quoted output, used to fund the next stage.
     slippageBps: 5,

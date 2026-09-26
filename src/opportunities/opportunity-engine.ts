@@ -112,8 +112,7 @@ export class OpportunityEngine {
           (!!request.splitCosts && (opportunity.netProfit === undefined || opportunity.netProfit <= (token.minProfitNative ?? 0n)));
       if (this.policy.minProfitNative !== undefined && request.splitCosts) {
         const value = this.valueOpportunity(opportunity, request);
-        rejected = value === null || (request.aggregateProfit
-          ? opportunity.profit <= 0n : value <= (token.minProfitNative ?? this.policy.minProfitNative));
+        rejected = value === null || value <= (token.minProfitNative ?? this.policy.minProfitNative);
       }
       if (RUNTIME.logLevel === 'debug' && this.diagnostics.length < 64) this.diagnostics.push({
         path: opportunity.path, pairs: opportunity.pairs, input: opportunity.optimalInput,
@@ -133,7 +132,7 @@ export class OpportunityEngine {
       this.policy.minProfitNative === undefined || !request.splitCosts ? undefined : (profit, token) => {
         const value = nativeValue(this.graph, token, profit);
         return value ? value.amount - gasLimitForTransaction() * request.splitCosts!.gasPriceWei : null;
-      }, request.searchDeadline, request.aggregateProfit);
+      }, request.searchDeadline);
     this.lastSplitStats = { work: splitResults.work, evaluated: splitResults.evaluated, exhausted: splitResults.exhausted,
       elapsedMs: latency.now() - started, winners: splitResults.candidates.length };
     for (const candidate of splitResults.candidates) {
@@ -152,13 +151,12 @@ export class OpportunityEngine {
       };
       if (this.policy.minProfitNative !== undefined && request.splitCosts) {
         const value = this.valueOpportunity(opportunity, request);
-        const threshold = request.aggregateProfit ? -gasLimitForTransaction() * request.splitCosts.gasPriceWei
-          : this.tokenByAddress.get(opportunity.path[0].toLowerCase())?.minProfitNative ?? this.policy.minProfitNative;
+        const threshold = this.tokenByAddress.get(opportunity.path[0].toLowerCase())?.minProfitNative ?? this.policy.minProfitNative;
         if (value === null || value <= threshold) continue;
       }
       this.insertRankedOpportunity(opportunities, opportunity);
     }
-    if (!request.suppressFollowUp && EXECUTION_POLICY.followUpMode !== 'off' && request.splitCosts && opportunities[0]) {
+    if (!request.suppressFollowUp && EXECUTION_POLICY.submissionMode === 'separate' && request.splitCosts && opportunities[0]) {
       this.attachFollowUp(opportunities[0], request);
     }
     return opportunities;
@@ -219,21 +217,13 @@ export class OpportunityEngine {
       this.graph.withProjectedChanges(projection, () => {
         const candidates = this.findOpportunities({ ...request, autoSelect: false, startTokens: [first.path[0]],
           changedPairs: [...first.pairs, ...projection.pairs.map(pair => pair.pairAddress)],
-          suppressFollowUp: true, aggregateProfit: EXECUTION_POLICY.followUpMode === 'batch',
+          suppressFollowUp: true,
           searchDeadline: performance.now() + EXECUTION_POLICY.followUpSearchMs });
         const next = candidates[0];
         if (!next) return;
         const plan = createExecutionPlan(this.graph, next);
         if (!plan) return;
         next.marketVersions = { ...first.marketVersions, ...next.marketVersions };
-        if (EXECUTION_POLICY.followUpMode === 'batch') {
-          const finalState = projectOpportunity(this.graph, next);
-          if (!finalState) return;
-          const combined = this.graph.withProjectedChanges(finalState,
-            () => nativeValue(this.graph, first.path[0], first.profit + next.profit));
-          if (!combined || combined.amount - gasLimitForTransaction('batch') * request.splitCosts!.gasPriceWei <= (first.netProfitNative ?? 0n)) return;
-          next.marketVersions = { ...next.marketVersions, ...this.graph.marketVersions(combined.pools, combined.carbon) };
-        }
         first.followUp = next;
         first.followUpPlan = contractPlan(plan);
       });

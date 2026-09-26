@@ -15,5 +15,6 @@ export async function startedTestGasFees(): Promise<GasFees> {
 export async function readExecutorContract({ functionName }: { functionName: string }) {
   if (functionName === 'approvedWrapper') return true;
   if (functionName === 'v2Logic') return '0x0000000000000000000000000000000000000320';
+  if (functionName === 'MAX_BATCH_PLANS') return 16n;
   throw new Error('Unexpected executor read: ' + functionName);
 }

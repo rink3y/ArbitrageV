@@ -34,6 +34,15 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     address private pendingFlashPool;
     bytes32 private pendingFlashHash;
     bool private executing;
+    bool private batching;
+    uint256 public constant MAX_BATCH_PLANS = 16;
+
+    event BatchAttempt(uint256 indexed index, bool success);
+
+    modifier onlyBatch() {
+        if (msg.sender != address(this) || !batching) revert NotOwner();
+        _;
+    }
 
     struct SplitBranch {
         address pool;
@@ -96,7 +105,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
 
     modifier executionLock(address borrowToken) {
         uint256 gasStart = gasleft();
-        if (executing) revert ExecutionInProgress();
+        if (executing || (batching && msg.sender != address(this))) revert ExecutionInProgress();
         executing = true;
         uint256 balanceBefore = IERC20(borrowToken).balanceOf(address(this));
         _;
@@ -507,7 +516,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
 
     // Only approve audited WETH9-style wrappers of this chain's native coin.
     function setWrapper(address wrapper, bool approved) external onlyOwner {
-        if (executing) revert ExecutionInProgress();
+        if (executing || batching) revert ExecutionInProgress();
         if (wrapper == wrappedNativeToken && !approved) revert InvalidWrappedNativeToken();
         if (wrapper == NATIVE_TOKEN || wrapper.code.length == 0) revert InvalidWrappedNativeToken();
         approvedWrapper[wrapper] = approved;
@@ -517,13 +526,32 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         _executePlan(plan);
     }
 
-    function executeBatch(Plan[] calldata plans) external onlyOwner executionLock(plans[0].route.borrowToken) {
-        if (plans.length != 2) revert InvalidSplitPlan();
-        if (plans[0].route.borrowToken != plans[1].route.borrowToken) revert ArbitrageMustReturnToStart();
-        // Return from A's funding call before B, releasing the pool's swap lock.
-        // Each repayment also protects the inventory present before that plan.
-        _executePlan(plans[0]);
-        _executePlan(plans[1]);
+    // Each attempt repays and passes its own profit check, or rolls back alone.
+    // A successful receipt can contain zero successful attempts. Gas is still paid.
+    function executeBatch(Plan[] calldata plans, uint256 gasPerPlan) external onlyOwner returns (uint256 successMask) {
+        if (executing || batching) revert ExecutionInProgress();
+        if (plans.length < 2 || plans.length > MAX_BATCH_PLANS || gasPerPlan == 0) revert InvalidSplitPlan();
+        bytes[] memory calls = new bytes[](plans.length);
+        for (uint256 i; i < plans.length; ++i) calls[i] = abi.encodeCall(this.executeBatchPlan, (plans[i]));
+        batching = true;
+        // Include the EIP-150 forwarding reserve and bounded loop/log/cleanup work.
+        // Fail before any attempt if the caller supplied an inadequate outer limit.
+        if (gasleft() < plans.length * (gasPerPlan + 10_000) + gasPerPlan / 63 + 30_000) revert InvalidSplitPlan();
+        for (uint256 i; i < calls.length; ++i) {
+            bytes memory data = calls[i];
+            bool success;
+            // Do not copy unbounded revert data from an untrusted pool or token.
+            assembly ("memory-safe") {
+                success := call(gasPerPlan, address(), 0, add(data, 32), mload(data), 0, 0)
+            }
+            if (success) successMask |= uint256(1) << i;
+            emit BatchAttempt(i, success);
+        }
+        batching = false;
+    }
+
+    function executeBatchPlan(Plan calldata plan) external onlyBatch executionLock(plan.route.borrowToken) {
+        _executePlan(plan);
     }
 
     function _executePlan(Plan memory plan) private {

@@ -31,6 +31,7 @@ export class OpportunityManager {
     private readonly nonces: LocalNonces;
     private stopped = false;
     private readonly gasFees: GasFees;
+    private batchSizeLimit = 0;
 
     constructor(
         private readonly networkConfig: NetworkConfig,
@@ -50,7 +51,7 @@ export class OpportunityManager {
     }
 
     async start(): Promise<void> {
-        if (EXECUTION_POLICY.routeSwapFunding || EXECUTION_POLICY.followUpMode !== 'off' || WRAPPED_NATIVE_TOKENS.length > 1) {
+        if (EXECUTION_POLICY.routeSwapFunding || EXECUTION_POLICY.submissionMode !== 'single' || WRAPPED_NATIVE_TOKENS.length > 1) {
             if (!CONTRACTS.arbitrage?.match(/^0x[a-fA-F0-9]{40}$/)) throw new Error('Invalid CONTRACTS.arbitrage address');
             const helper = await this.networkConfig.client.readContract({
                 address: CONTRACTS.arbitrage as Address, abi: ArbABI, functionName: 'v2Logic',
@@ -63,6 +64,13 @@ export class OpportunityManager {
                 });
                 if (approved !== true) throw new Error('NArb has not approved wrapper ' + wrapper);
             }
+        }
+        if (EXECUTION_POLICY.submissionMode === 'batch') {
+            const limit = await this.networkConfig.client.readContract({
+                address: CONTRACTS.arbitrage as Address, abi: ArbABI, functionName: 'MAX_BATCH_PLANS',
+            });
+            if (limit !== 16n) throw new Error('Deploy NArb with independent batch support before enabling batch submission');
+            this.batchSizeLimit = Number(limit);
         }
         await this.gasFees.start();
         await this.nonces.start();
@@ -114,13 +122,18 @@ export class OpportunityManager {
 
         if (logger.debugEnabled) logger.debug('Processing opportunities in profit order', sortedOpps.length);
 
+        if (EXECUTION_POLICY.submissionMode === 'batch') {
+            await this.processIndependentBatches(graph, sortedOpps, feeSnapshot);
+            return;
+        }
+
         for (const opp of sortedOpps) {
             if (!this.gasFees.isCurrent(feeSnapshot)) return;
             if ((opp.netProfitNative ?? opp.netProfit ?? opp.profit) <= 0n) continue;
             if (opp.split && !this.splitExecutable(opp, feeSnapshot)) { latency.increment('split.notSubmitted'); continue; }
             if (!this.isFresh(graph, opp, feeSnapshot)) { latency.increment('execution.stale'); continue; }
             // Skip if any pairs conflict
-            const next = EXECUTION_POLICY.followUpMode !== 'off' && opp.followUpPlan && opp.followUp &&
+            const next = EXECUTION_POLICY.submissionMode === 'separate' && opp.followUpPlan && opp.followUp &&
                 this.isFresh(graph, opp.followUp, feeSnapshot) ? opp.followUp : undefined;
             // Flash liquidity is repaid inside each transaction. Preserve concurrent
             // disjoint routes sharing a lender; first-swap funding is already in pairs.
@@ -148,12 +161,61 @@ export class OpportunityManager {
         }
     }
 
+    private async processIndependentBatches(graph: FlashPoolLookup, opportunities: ExecutableOpportunity[], fees: GasFeeSnapshot): Promise<void> {
+        // Existing gas limits bound batch size. Do not wait for another search to fill a batch.
+        const capacity = Math.min(this.batchSizeLimit, Number(gasLimitForTransaction('batch') / gasLimitForTransaction()));
+        if (!this.batchSizeLimit) throw new Error('Batch execution has not been initialized');
+        this.tryLockPairs([]); // Expire old locks before selecting groups.
+        const pending = [...opportunities];
+        while (pending.length && this.gasFees.isCurrent(fees)) {
+            const group: ExecutableOpportunity[] = [];
+            const plans: ExecutionPlan[] = [];
+            const writes = new Set<string>();
+            const reads = new Set<string>();
+            for (let i = 0; i < pending.length && group.length < Math.max(1, capacity);) {
+                const opp = pending[i];
+                if ((opp.netProfitNative ?? opp.netProfit ?? opp.profit) <= 0n || !this.isFresh(graph, opp, fees) ||
+                    opp.pairs.some(pool => this.lockedPairs.has(pool.toLowerCase()))) {
+                    pending.splice(i, 1); continue;
+                }
+                let plan: ExecutionPlan | null;
+                try { plan = createExecutionPlan(graph, opp); }
+                catch { plan = null; }
+                if (!plan) { pending.splice(i, 1); continue; }
+                const swaps = opp.pairs.map(pool => pool.toLowerCase());
+                const dependencies = [...swaps, contractPlan(plan).route.flashPool.toLowerCase(),
+                    ...Object.keys(opp.marketVersions ?? {}).map(key => key.toLowerCase())];
+                if (swaps.some(pool => reads.has(pool)) || dependencies.some(pool => writes.has(pool))) { i++; continue; }
+                // Ignore attached predictions: only top-level observed-state quotes enter this group.
+                group.push(opp); plans.push(plan); pending.splice(i, 1);
+                swaps.forEach(pool => writes.add(pool)); dependencies.forEach(pool => reads.add(pool));
+            }
+            if (!group.length) break;
+            const extraGas = gasLimitForTransaction('batch') - BigInt(group.length) * gasLimitForTransaction();
+            if (group.length > 1 && (group.some(opp => opp.netProfitNative === undefined) ||
+                group.reduce((sum, opp) => sum + opp.netProfitNative!, 0n) <= (extraGas > 0n ? extraGas : 0n) * gasPriceCeiling(fees))) {
+                pending.unshift(...group.splice(1)); plans.splice(1);
+            }
+            const pools = group.flatMap(opp => opp.pairs);
+            if (!this.tryLockPairs(pools)) continue;
+            try {
+                const sent = await this.executeArbitrageOpportunity(graph, group[0], fees, plans[0], undefined,
+                    group.length > 1 ? { opportunities: group, plans } : undefined);
+                if (!sent) this.releasePairs(pools);
+            } catch (error) {
+                this.releasePairs(pools);
+                logger.alert('execution.failed', 'error', 'Failed to submit independent opportunities', error);
+            }
+        }
+    }
+
     private async executeArbitrageOpportunity(
         graph: FlashPoolLookup,
         opportunity: ExecutableOpportunity,
         feeSnapshot: GasFeeSnapshot,
         planOverride?: ExecutionPlan,
         reservedNonce?: number,
+        batch?: { opportunities: ExecutableOpportunity[]; plans: ExecutionPlan[] },
     ): Promise<boolean> {
         let transportAttempted = false;
         try {
@@ -178,10 +240,9 @@ export class OpportunityManager {
             if (!this.isFresh(graph, opportunity, feeSnapshot)) return false;
             const account = this.networkConfig.account;
             if (account.type !== 'local') throw new Error('Execution requires a local signing account');
-            const batch = EXECUTION_POLICY.followUpMode === 'batch' && opportunity.followUp && opportunity.followUpPlan;
-            if (batch && !this.isFresh(graph, opportunity.followUp!, feeSnapshot)) return false;
+            if (batch && !batch.opportunities.every(opp => this.isFresh(graph, opp, feeSnapshot))) return false;
             const data = batch
-                ? encodeFunctionData({ abi: ArbABI, functionName: 'executeBatch', args: [[contractPlan(plan), opportunity.followUpPlan]] })
+                ? this.encodeBatch(batch.plans)
                 : plan.kind === 'plan'
                 ? encodeFunctionData({ abi: ArbABI, functionName: 'executePlan', args: [plan.params] })
                 : plan.kind === 'v2-route-flash'
@@ -218,7 +279,7 @@ export class OpportunityManager {
                 throw error;
             }
             if (!this.isFresh(graph, opportunity, feeSnapshot) ||
-                (batch && !this.isFresh(graph, opportunity.followUp!, feeSnapshot))) {
+                (batch && !batch.opportunities.every(opp => this.isFresh(graph, opp, feeSnapshot)))) {
                 this.nonces.releaseUnsubmitted(nonce);
                 latency.increment('execution.stale');
                 return false;
@@ -235,7 +296,9 @@ export class OpportunityManager {
             latency.elapsed('submit.rpc', submittedAt);
             if (latency.enabled && opportunity.observedAt) latency.observe('event.toSubmissionAck', Date.now() - opportunity.observedAt);
             logger.alert(`submitted:${hash}`, 'info', 'Transaction submitted; check the explorer for its outcome', {
-                hash, nonce, expectedProfitRaw: opportunity.profit + (batch ? opportunity.followUp!.profit : 0n), token: opportunity.path[0],
+                hash, nonce,
+                ...(batch ? { attempts: batch.opportunities.map(opp => ({ token: opp.path[0], expectedProfitRaw: opp.profit })) }
+                    : { expectedProfitRaw: opportunity.profit, token: opportunity.path[0] }),
             });
 
             return true;
@@ -246,8 +309,21 @@ export class OpportunityManager {
         }
     }
 
+    private encodeBatch(plans: ExecutionPlan[]): Hex {
+        const args = plans.map(contractPlan);
+        const placeholder = encodeFunctionData({ abi: ArbABI, functionName: 'executeBatch', args: [args, 0n] });
+        // Charge every calldata byte at the floor rate and reserve outer encoding,
+        // event and lock work. The contract checks actual remaining gas before A.
+        const overhead = 100_000n + BigInt((placeholder.length - 2) / 2) * 40n + BigInt(plans.length) * 10_000n;
+        const available = gasLimitForTransaction('batch') - overhead;
+        if (available <= 0n) throw new Error('Batch gas limit is too small for its calldata');
+        const allowance = available * 63n / (BigInt(plans.length) * 63n + 1n);
+        const gasPerPlan = allowance < gasLimitForTransaction() ? allowance : gasLimitForTransaction();
+        return encodeFunctionData({ abi: ArbABI, functionName: 'executeBatch', args: [args, gasPerPlan] });
+    }
+
     private async executeSequence(graph: FlashPoolLookup, opportunity: ExecutableOpportunity, fees: GasFeeSnapshot): Promise<boolean> {
-        if (EXECUTION_POLICY.followUpMode !== 'separate' || !opportunity.followUp || !opportunity.followUpPlan)
+        if (EXECUTION_POLICY.submissionMode !== 'separate' || !opportunity.followUp || !opportunity.followUpPlan)
             return this.executeArbitrageOpportunity(graph, opportunity, fees);
         const nonces = this.nonces.reserveSequence();
         if (!nonces) return this.executeArbitrageOpportunity(graph, { ...opportunity, followUp: undefined }, fees);

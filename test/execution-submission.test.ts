@@ -253,11 +253,11 @@ for (const synchronous of [false, true]) {
   });
 }
 
-for (const mode of ['off', 'separate', 'batch'] as const) {
+for (const mode of ['single', 'separate'] as const) {
   for (const failure of mode === 'separate' ? ['none', 'signB', 'sendB', 'invalidA', 'encodeA'] : ['none']) {
     test(`${mode} follow-up submission with ${failure}: local nonces, correct calldata and retained locks`, async () => {
       const saved = { ...EXECUTION_POLICY }, savedContract = CONTRACTS.arbitrage;
-      Object.assign(EXECUTION_POLICY, { followUpMode: mode });
+      Object.assign(EXECUTION_POLICY, { submissionMode: mode });
       Object.assign(CONTRACTS, { arbitrage: address(900) });
       const token = address(100), pair = address(101), lender = address(102);
       const lookup: FlashPoolLookup = { matchesVersions: () => true,
@@ -295,8 +295,8 @@ for (const mode of ['off', 'separate', 'batch'] as const) {
         } else {
           expect(signed.map(tx => tx.nonce)).toEqual(mode === 'separate' ? [7, 8] : [7]);
           const decoded = decodeFunctionData({ abi: ArbABI, data: signed[0].data });
-          expect(decoded.functionName).toBe(mode === 'batch' ? 'executeBatch' : 'executeArbitrage');
-          expect(signed.every(tx => tx.gas === EXECUTION_POLICY.gasLimits[mode === 'batch' ? 'batch' : 'single'])).toBe(true);
+          expect(decoded.functionName).toBe('executeArbitrage');
+          expect(signed.every(tx => tx.gas === EXECUTION_POLICY.gasLimits.single)).toBe(true);
           const before = signed.length;
           await manager.processOpportunities(lookup, [next]);
           expect(signed).toHaveLength(before); // A's lock survives B's error.
@@ -381,3 +381,132 @@ async function executorCall(data: Hex): Promise<Hex> {
   return encodeFunctionResult({ abi: ArbABI, functionName,
     result: await readExecutorContract({ functionName }) });
 }
+
+async function batchFixture() {
+  const saved = { ...EXECUTION_POLICY }, contract = CONTRACTS.arbitrage;
+  Object.assign(EXECUTION_POLICY, { submissionMode: 'batch' });
+  Object.assign(CONTRACTS, { arbitrage: address(900) });
+  const signed: Array<{ nonce: number; data: Hex; gas: bigint }> = [];
+  const reads: string[] = [];
+  const submitted: Hex[] = [];
+  const stale = new Set<string>();
+  const lookup: FlashPoolLookup = {
+    matchesVersions: versions => !Object.keys(versions).some(pool => stale.has(pool)),
+    findBestFlashPoolForToken: () => ({ protocol: 'v2', poolAddress: address(800), fee: 0, liquidity: 100000n }),
+  };
+  const fees = await startedTestGasFees();
+  const account = { type: 'local', address: address(999), signTransaction: async (tx: typeof signed[number]) => {
+    signed.push(tx); return '0x01' as Hex;
+  } };
+  const manager = new OpportunityManager({ account, client: {
+    readContract: async (args: { functionName: string }) => { reads.push(args.functionName); return readExecutorContract(args); },
+    getTransactionCount: async () => { reads.push('nonce'); return 7; },
+  }, walletClient: { sendRawTransaction: async ({ serializedTransaction }: { serializedTransaction: Hex }) => {
+    submitted.push(serializedTransaction); return `0x${'0'.repeat(64)}`;
+  } } } as unknown as NetworkConfig, undefined, fees);
+  const opportunity = (id: number, profit = 1000000000000n): ExecutableOpportunity => ({
+    path: [address(100), address(100)], pairs: [address(id)], protocols: ['v2'], fees: [0], routeData: ['0x'],
+    optimalInput: 1000n, profit, netProfitNative: profit, flashPoolAddress: address(800), observedAt: Date.now(),
+    marketVersions: { [address(id)]: 1 },
+  });
+  const stop = () => { manager.stop(); Object.assign(EXECUTION_POLICY, saved); Object.assign(CONTRACTS, { arbitrage: contract }); };
+  try { await manager.start(); } catch (error) { stop(); throw error; }
+  return { manager, signed, submitted, reads, lookup, stale, opportunity, stop, account };
+}
+
+test('batch selects independent observed quotes, ignores predictions and signs once without hot-path reads', async () => {
+  const f = await batchFixture();
+  try {
+    const a = f.opportunity(1, 4000000000000n), c = f.opportunity(3, 2000000000000n);
+    const b = { ...f.opportunity(2, 3000000000000n), pairs: a.pairs };
+    const d = { ...f.opportunity(4), pairs: c.pairs };
+    a.followUp = { ...f.opportunity(5), edgeIds: [] };
+    a.followUpPlan = contractPlan(createExecutionPlan(f.lookup, a.followUp)!);
+    // Different profit tokens must remain separately identified in calldata and reporting.
+    c.path = [address(101), address(101)];
+    const reads = [...f.reads];
+    await f.manager.processOpportunities(f.lookup, [d, c, b, a]);
+    expect(f.signed).toHaveLength(1); expect(f.submitted).toHaveLength(1);
+    const tx = f.signed[0];
+    expect(tx.nonce).toBe(7); expect(tx.gas).toBe(EXECUTION_POLICY.gasLimits.batch);
+    const decoded = decodeFunctionData({ abi: ArbABI, data: tx.data });
+    expect(decoded.functionName).toBe('executeBatch');
+    const [plans, gasPerPlan] = decoded.args as unknown as [Array<{ route: { pools: Hex[]; borrowToken: Hex } }>, bigint];
+    expect(plans.map(plan => plan.route.pools)).toEqual([a.pairs, c.pairs]);
+    expect(plans.map(plan => plan.route.borrowToken)).toEqual([a.path[0], c.path[0]]);
+    expect(gasPerPlan).toBeGreaterThan(0n);
+    expect(gasPerPlan * 2n + gasPerPlan / 63n + 50000n).toBeLessThan(tx.gas);
+    expect(f.reads).toEqual(reads);
+    await f.manager.processOpportunities(f.lookup, [a, c]);
+    expect(f.submitted).toHaveLength(1); // Both routes stay locked after submission acknowledgement.
+  } finally { f.stop(); }
+});
+
+test('batch skips valuation/funding conflicts and stale quotes; a lone quote submits directly', async () => {
+  const f = await batchFixture();
+  try {
+    const a = f.opportunity(1, 4000000000000n);
+    const dependency = f.opportunity(2, 3000000000000n);
+    dependency.marketVersions![address(1)] = 1;
+    const fundingConflict = f.opportunity(800, 2000000000000n);
+    const stale = f.opportunity(3); f.stale.add(address(3));
+    await f.manager.processOpportunities(f.lookup, [a, dependency, fundingConflict, stale]);
+    expect(decodeFunctionData({ abi: ArbABI, data: f.signed[0].data }).functionName).toBe('executeArbitrage');
+    expect(f.signed.every(tx => decodeFunctionData({ abi: ArbABI, data: tx.data }).functionName !== 'executeBatch')).toBe(true);
+    expect(f.signed.every(tx => tx.gas === EXECUTION_POLICY.gasLimits.single)).toBe(true);
+  } finally { f.stop(); }
+});
+
+test('a member invalidated during batch signing prevents broadcast, frees locks and returns the nonce', async () => {
+  const f = await batchFixture();
+  try {
+    const a = f.opportunity(1), b = f.opportunity(2);
+    const sign = f.account.signTransaction;
+    f.account.signTransaction = async tx => { const bytes = await sign(tx); f.stale.add(address(2)); return bytes; };
+    await f.manager.processOpportunities(f.lookup, [a, b]);
+    expect(f.submitted).toHaveLength(0);
+    f.stale.clear(); f.account.signTransaction = sign;
+    await f.manager.processOpportunities(f.lookup, [a, b]);
+    expect(f.signed.map(tx => tx.nonce)).toEqual([7, 7]);
+    expect(f.submitted).toHaveLength(1);
+  } finally { f.stop(); }
+});
+
+test('batch gas cannot make individually profitable quotes collectively uneconomic', async () => {
+  const f = await batchFixture();
+  const limits = { ...EXECUTION_POLICY.gasLimits };
+  try {
+    Object.assign(EXECUTION_POLICY.gasLimits, { batch: 4400000n });
+    await f.manager.processOpportunities(f.lookup, [f.opportunity(1, 1n), f.opportunity(2, 1n)]);
+    expect(f.signed).toHaveLength(2);
+    expect(f.signed.map(tx => decodeFunctionData({ abi: ArbABI, data: tx.data }).functionName)).toEqual(['executeArbitrage', 'executeArbitrage']);
+  } finally { Object.assign(EXECUTION_POLICY.gasLimits, limits); f.stop(); }
+});
+
+test('independent batching preserves staged split amounts alongside a direct route', async () => {
+  const f = await batchFixture();
+  const oldSplit = ARBITRAGE_SEARCH_POLICY.splitRouting;
+  try {
+    ARBITRAGE_SEARCH_POLICY.splitRouting = 'live';
+    const a = address(100), b = address(101);
+    const split: ExecutableOpportunity = { ...f.opportunity(10),
+      path: [a, b, a], pairs: [address(10), address(11), address(12)],
+      protocols: ['v2', 'v2', 'v2'], fees: [0, 0, 0], routeData: ['0x', '0x', '0x'], optimalInput: 200n,
+      marketVersions: { [address(10)]: 1, [address(11)]: 1, [address(12)]: 1 },
+      split: { resources: [address(10), address(11), address(12)], gasLimit: EXECUTION_POLICY.gasLimits.single,
+        gasPriceWei: 500n, costsValidUntil: Date.now() + 60000, deadline: BigInt(Math.floor(Date.now() / 1000) + 60), stages: [
+          { tokenIn: a, tokenOut: b, branches: [10, 11].map(id => ({ pool: address(id), protocol: 'v2', fee: 0,
+            data: '0x', amountIn: 100n, minAmountOut: 181n })) },
+          { tokenIn: b, tokenOut: a, branches: [{ pool: address(12), protocol: 'v2', fee: 0,
+            data: '0x', amountIn: 362n, minAmountOut: 306n }] },
+        ] },
+    };
+    await f.manager.processOpportunities(f.lookup, [split, f.opportunity(20)]);
+    expect(f.submitted).toHaveLength(1);
+    const decoded = decodeFunctionData({ abi: ArbABI, data: f.signed[0].data });
+    expect(decoded.functionName).toBe('executeBatch');
+    const plans = decoded.args![0] as Array<{ stages: Array<{ branches: Array<{ amountIn: bigint }> }> }>;
+    expect(plans[0].stages.map(stage => stage.branches.map(branch => branch.amountIn))).toEqual([[100n, 100n], [362n]]);
+    expect(plans[1].stages).toEqual([]);
+  } finally { ARBITRAGE_SEARCH_POLICY.splitRouting = oldSplit; f.stop(); }
+});
