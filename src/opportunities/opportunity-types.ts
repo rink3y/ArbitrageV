@@ -19,6 +19,11 @@ export type ArbitrageOpportunity = Omit<CandidateRoute, 'edgeIndexes'> & {
   routeData: `0x${string}`[];
   marketVersions?: MarketVersions;
   flashPoolAddress?: Address;
+  v2RouteFlash?: boolean;
+  routeSwap?: boolean;
+  netProfitNative?: bigint;
+  followUp?: ArbitrageOpportunity;
+  followUpPlan?: import('../execution/execution-planner').ContractPlan;
   observedAt?: number;
   netProfit?: bigint;
   split?: {
@@ -33,6 +38,10 @@ export type FindOpportunitiesRequest = {
   changedPairs?: readonly string[];
   observedAt?: number;
   splitCosts?: SplitCosts;
+  autoSelect?: boolean;
+  suppressFollowUp?: boolean;
+  searchDeadline?: number;
+  aggregateProfit?: boolean;
 };
 
 export type ArbitrageSearchResult = ArbitrageOpportunity[];

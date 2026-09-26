@@ -1,9 +1,9 @@
-import { NETWORK } from '../src/constants';
+import { WRAPPED_NATIVE_TOKENS } from '../src/constants';
 import { describe, expect, test } from "bun:test";
 import { filterDiscoveredMarkets, marketTokens } from "../src/market-filter";
 import { NATIVE_TOKEN } from "../src/tokens";
 
-const WRAPPED_NATIVE = NETWORK.wrappedNativeToken;
+const WRAPPED_NATIVE = WRAPPED_NATIVE_TOKENS[0].address;
 
 type Address = `0x${string}`;
 

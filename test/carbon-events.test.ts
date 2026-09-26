@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { decodeFunctionResult, encodeFunctionData, encodeFunctionResult, type Address } from "viem";
 import UniswapFlashQueryABI from '../src/ABI/UniswapFlashQuery.json';
-import { CONTRACTS, TOKENS } from '../src/constants';
+import { CONTRACTS, CONFIGURED_TOKENS } from '../src/constants';
 import { EventMonitor } from "../src/runtime/event-monitor";
 import { CarbonStrategyStore } from "../src/protocols/carbon/runtime";
 import { type CarbonPairMetadata, type CarbonUpdate } from "../src/protocols/carbon/types";
@@ -157,7 +157,7 @@ describe("CarbonStrategyStore events", () => {
   });
 
   test('dropping below the liquidity filter emits a removal and recovery replaces the catalog', async () => {
-    const selected = TOKENS.find(token => token.liquidityAmount > 1n)!;
+    const selected = CONFIGURED_TOKENS.find(token => token.liquidityAmount > 1n)!;
     const selectedPair = { ...pair, token0: selected.address };
     const updates: CarbonUpdate[] = [];
     let reads = 0;

@@ -1,14 +1,14 @@
-import { ARBITRAGE_SEARCH_POLICY, TOKENS } from '../src/constants';
+import { ARBITRAGE_SEARCH_POLICY, CONFIGURED_TOKENS } from '../src/constants';
 import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
 import { WorkerSearch } from '../src/opportunities/worker-search';
 import { splitCostsFromSnapshot } from '../src/opportunities/split-costs';
 import { applyV2SplitFill } from '../src/opportunities/split-replay';
 
-const [a, b] = TOKENS.map(token => token.address);
+const [a, b] = CONFIGURED_TOKENS.map(token => token.address);
 // Synthetic fee fixture: this benchmark never reads the network.
 const fees = { type: 'eip1559', maxFeePerGas: 1_000_000_000n,
   maxPriorityFeePerGas: 0n, validUntil: Number.MAX_SAFE_INTEGER } as const;
-const costs = () => splitCostsFromSnapshot(TOKENS, fees);
+const costs = () => splitCostsFromSnapshot(fees);
 const unit = 10n ** 18n;
 const policy = { ...ARBITRAGE_SEARCH_POLICY, splitRouting: 'live' as const, maxRouteEdges: 3 };
 const engine = new OpportunityEngine(policy);

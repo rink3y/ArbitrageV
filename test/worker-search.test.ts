@@ -1,6 +1,6 @@
 import { v2Pair } from './helpers/markets';
 import { expect, test } from 'bun:test';
-import { ARBITRAGE_SEARCH_POLICY, RUNTIME, TOKENS } from '../src/constants';
+import { ARBITRAGE_SEARCH_POLICY, RUNTIME, CONFIGURED_TOKENS } from '../src/constants';
 import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
 import { WorkerSearch } from '../src/opportunities/worker-search';
 import { MarketGraph } from '../src/market-graph/market-graph';
@@ -10,7 +10,7 @@ import { type CarbonStrategy } from '../src/protocols/carbon/types';
 
 const policy = { ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2', 'v3', 'carbon'] as const,
   beamWidth: 8, maxRouteEdges: 3, maxCandidatesToSize: 4 };
-const [a, b, c] = TOKENS.map(token => token.address);
+const [a, b, c] = CONFIGURED_TOKENS.map(token => token.address);
 function market() {
   const engine = new OpportunityEngine(policy);
   for (const [i, token0, token1] of [[1, a, b], [2, b, c], [3, c, a], [4, a, b]] as const) {

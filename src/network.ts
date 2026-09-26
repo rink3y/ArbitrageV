@@ -1,7 +1,7 @@
 import { logger } from './reporting/logger';
 import { createPublicClient, http, webSocket, createWalletClient, isAddress, zeroAddress, type Account } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { NETWORK, RUNTIME } from './constants';
+import { NETWORK, RUNTIME, WRAPPED_NATIVE_TOKENS, TOKENS } from './constants';
 import { NATIVE_TOKEN } from './tokens';
 
 export type NetworkConfig = {
@@ -13,9 +13,16 @@ export type NetworkConfig = {
 
 export function createReadClient() {
   if (!NETWORK.rpcUrl) throw new Error('RPC_URL is required');
-  if (!isAddress(NETWORK.wrappedNativeToken) || NETWORK.wrappedNativeToken === zeroAddress ||
-      NETWORK.wrappedNativeToken.toLowerCase() === NATIVE_TOKEN.toLowerCase()) {
-    throw new Error('NETWORK.wrappedNativeToken must be a nonzero token address');
+  if (!WRAPPED_NATIVE_TOKENS.length) throw new Error('WRAPPED_NATIVE_TOKENS requires a canonical wrapper');
+  for (const { address } of WRAPPED_NATIVE_TOKENS) {
+    if (!isAddress(address) || address === zeroAddress || address.toLowerCase() === NATIVE_TOKEN.toLowerCase())
+      throw new Error('Each WRAPPED_NATIVE_TOKENS entry must have a nonzero token address');
+  }
+  const addresses = new Set<string>();
+  for (const { address } of [...WRAPPED_NATIVE_TOKENS, ...TOKENS]) {
+    const key = address.toLowerCase();
+    if (addresses.has(key)) throw new Error('Token configured more than once: ' + address);
+    addresses.add(key);
   }
   return createPublicClient({
     chain: NETWORK.chain,

@@ -1,12 +1,15 @@
 import { expect, mock, spyOn, test } from 'bun:test';
-import { createPublicClient, createWalletClient, custom, parseTransaction, type Hex } from 'viem';
+import { createPublicClient, createWalletClient, custom, parseTransaction, decodeFunctionData, encodeFunctionResult, type Hex } from 'viem';
 import { sei } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
-import { CONTRACTS, NETWORK, TELEGRAM } from '../src/constants';
+import { CONTRACTS, EXECUTION_POLICY, NETWORK, TELEGRAM, ARBITRAGE_SEARCH_POLICY } from '../src/constants';
 import { OpportunityManager } from '../src/execute';
-import { type ExecutableOpportunity, type FlashPoolLookup } from '../src/execution/execution-planner';
+import { contractPlan, createExecutionPlan, type ExecutableOpportunity, type FlashPoolLookup } from '../src/execution/execution-planner';
+import ArbABI from '../src/ABI/Arb.json';
+import { address } from './helpers/markets';
 import { initializeNetwork, type NetworkConfig } from '../src/network';
-import { startedTestGasFees } from './helpers/gas-fees';
+import { startedTestGasFees, readExecutorContract } from './helpers/execution';
+import { GasFees } from '../src/execution/gas-fees';
 import { logger } from '../src/reporting/logger';
 import { formatAlert } from '../src/reporting/telegram';
 
@@ -29,7 +32,7 @@ test(`notifications use the configured explorer ${explorer ?? 'or no link'} with
   let submissions = 0;
   const gasFees = await startedTestGasFees();
   const manager = new OpportunityManager({ account: privateKeyToAccount(`0x${'1'.padStart(64, '0')}`),
-    client: { getTransactionCount: async () => 7 },
+    client: { readContract: readExecutorContract, getTransactionCount: async () => 7 },
     walletClient: { sendRawTransaction: async () => `0x${(++submissions).toString(16).padStart(64, '0')}` },
   } as unknown as NetworkConfig, undefined, gasFees);
   const lookup: FlashPoolLookup = { findBestFlashPoolForToken: () => ({ protocol: 'v2', poolAddress: token, fee: 30, liquidity: 1000n }) };
@@ -73,6 +76,7 @@ test('a market change during signing prevents broadcast and returns only the uns
   let nonceReads = 0;
   const submitted: number[] = [];
   const transport = custom({ async request({ method, params }) {
+    if (method === 'eth_call') return executorCall((params as [{ data: Hex }])[0].data);
     if (method === 'eth_chainId') return '0x531';
     if (method === 'eth_getTransactionCount') { nonceReads++; return '0x7'; }
     if (method === 'eth_sendRawTransaction') {
@@ -146,7 +150,8 @@ test('execution warms once and submits concurrent and later trades without nonce
     const transport = custom({
       async request({ method, params }) {
         methods.push(method);
-        if (method === 'eth_chainId') return '0x7a69';
+        if (method === 'eth_call') return executorCall((params as [{ data: Hex }])[0].data);
+    if (method === 'eth_chainId') return '0x7a69';
         if (method === 'eth_getTransactionCount') {
           nonceBlocks.push((params as unknown[])[1]);
           return '0x7';
@@ -172,7 +177,8 @@ test('execution warms once and submits concurrent and later trades without nonce
     manager = new OpportunityManager(network, undefined, gasFees);
     await manager.start();
     expect(nonceBlocks).toEqual(['pending']);
-    expect(methods).toEqual(['eth_getTransactionCount']);
+    expect(methods.filter(method => method !== 'eth_call')).toEqual(['eth_getTransactionCount']);
+    methods.length = 0;
     await Promise.all([
       manager.processOpportunities(lookup, [opportunity]),
       manager.processOpportunities(lookup, [{ ...opportunity, pairs: [secondPool] }]),
@@ -181,7 +187,7 @@ test('execution warms once and submits concurrent and later trades without nonce
     manager.releasePairs([firstPool]);
     await manager.processOpportunities(lookup, [opportunity]);
     expect(nonces).toEqual([7, 8, 9]);
-    expect(methods).toEqual(['eth_getTransactionCount', 'eth_sendRawTransaction', 'eth_sendRawTransaction', 'eth_sendRawTransaction']);
+    expect(methods).toEqual(['eth_sendRawTransaction', 'eth_sendRawTransaction', 'eth_sendRawTransaction']);
     expect(nonceBlocks).toEqual(['pending']);
   } finally {
     manager?.stop();
@@ -213,7 +219,7 @@ for (const synchronous of [false, true]) {
     const gasFees = await startedTestGasFees();
     const manager = new OpportunityManager({
       account: privateKeyToAccount(`0x${'1'.padStart(64, '0')}`),
-      client: { getTransactionCount: read },
+      client: { readContract: readExecutorContract, getTransactionCount: read },
       walletClient: { sendRawTransaction: write },
     } as unknown as NetworkConfig, undefined, gasFees);
     Object.assign(CONTRACTS, { arbitrage: token });
@@ -245,4 +251,133 @@ for (const synchronous of [false, true]) {
       debugLog.mockRestore();
     }
   });
+}
+
+for (const mode of ['off', 'separate', 'batch'] as const) {
+  for (const failure of mode === 'separate' ? ['none', 'signB', 'sendB', 'invalidA', 'encodeA'] : ['none']) {
+    test(`${mode} follow-up submission with ${failure}: local nonces, correct calldata and retained locks`, async () => {
+      const saved = { ...EXECUTION_POLICY }, savedContract = CONTRACTS.arbitrage;
+      Object.assign(EXECUTION_POLICY, { followUpMode: mode });
+      Object.assign(CONTRACTS, { arbitrage: address(900) });
+      const token = address(100), pair = address(101), lender = address(102);
+      const lookup: FlashPoolLookup = { matchesVersions: () => true,
+        findBestFlashPoolForToken: () => ({ protocol: 'v2', poolAddress: lender, fee: 30, liquidity: 100000n }) };
+      const next = { path: [token, token], pairs: [pair], protocols: ['v2'], fees: [30], routeData: ['0x'],
+        optimalInput: 1000n, profit: 100n, flashPoolAddress: lender } satisfies ExecutableOpportunity;
+      const opportunity = { ...next, followUp: { ...next, edgeIds: [] }, followUpPlan: contractPlan(createExecutionPlan(lookup, next)!) };
+      const signed: Array<{ nonce: number; data: Hex; gas: bigint }> = [];
+      let submissions = 0, nonceReads = 0;
+      const fees = await startedTestGasFees();
+      const manager = new OpportunityManager({
+        account: { type: 'local', address: address(999), signTransaction: async (tx: typeof signed[number]) => {
+          signed.push(tx);
+          if (failure === 'signB' && signed.length === 2) throw Error('B signing failed');
+          return '0x01';
+        } },
+        client: {
+          readContract: readExecutorContract,
+          getTransactionCount: async () => { nonceReads++; return nonceReads === 1 ? 7 : 9; },
+        },
+        walletClient: { sendRawTransaction: async () => {
+          submissions++;
+          if (failure === 'sendB' && submissions === 2) throw Error('B submission uncertain');
+          return `0x${'0'.repeat(64)}`;
+        } },
+      } as unknown as NetworkConfig, undefined, fees);
+      try {
+        await manager.start();
+        await manager.processOpportunities(lookup, [failure === 'invalidA' ? { ...opportunity, fees: [] }
+          : failure === 'encodeA' ? { ...opportunity, fees: [-1] } : opportunity]);
+        if (failure === 'invalidA' || failure === 'encodeA') {
+          expect(signed).toHaveLength(0);
+          await manager.processOpportunities(lookup, [next]);
+          expect(signed.map(tx => tx.nonce)).toEqual([7]);
+        } else {
+          expect(signed.map(tx => tx.nonce)).toEqual(mode === 'separate' ? [7, 8] : [7]);
+          const decoded = decodeFunctionData({ abi: ArbABI, data: signed[0].data });
+          expect(decoded.functionName).toBe(mode === 'batch' ? 'executeBatch' : 'executeArbitrage');
+          expect(signed.every(tx => tx.gas === EXECUTION_POLICY.gasLimits[mode === 'batch' ? 'batch' : 'single'])).toBe(true);
+          const before = signed.length;
+          await manager.processOpportunities(lookup, [next]);
+          expect(signed).toHaveLength(before); // A's lock survives B's error.
+          if (failure === 'signB') {
+            manager.releasePairs([pair, lender]);
+            await manager.processOpportunities(lookup, [next]);
+            expect(signed.at(-1)?.nonce).toBe(8); // Only the unsubmitted nonce is reused.
+          }
+        }
+        expect(nonceReads).toBe(failure === 'sendB' ? 2 : 1);
+      } finally {
+        manager.stop(); Object.assign(EXECUTION_POLICY, saved); Object.assign(CONTRACTS, { arbitrage: savedContract });
+      }
+    });
+  }
+}
+
+for (const legacy of [false, true]) test(`a live split signs one ${legacy ? 'legacy' : 'EIP-1559'} transaction with one local nonce`, async () => {
+  const old = { mode: ARBITRAGE_SEARCH_POLICY.splitRouting, contract: CONTRACTS.arbitrage, telegram: TELEGRAM.botToken };
+  const submitted: Hex[] = [];
+  let nonceReads = 0;
+  let feeReads = 0;
+  const gasFees = new GasFees(async type => {
+    feeReads++;
+    return type === 'legacy' ? { gasPrice: 500n } : { maxFeePerGas: 500n, maxPriorityFeePerGas: 3n };
+  }, { ...EXECUTION_POLICY, legacy, feeRefreshIntervalMs: 300_000, feeCeilingPerGas: 1_000n });
+  const manager = new OpportunityManager({ account: privateKeyToAccount(`0x${'1'.padStart(64, '0')}`),
+    client: { readContract: readExecutorContract, getTransactionCount: async () => { nonceReads++; return 7; } },
+    walletClient: { sendRawTransaction: async ({ serializedTransaction }: { serializedTransaction: Hex }) => {
+      submitted.push(serializedTransaction); return `0x${'0'.repeat(64)}`;
+    } },
+  } as unknown as NetworkConfig, undefined, gasFees);
+  const opportunity: ExecutableOpportunity = { path: [address(1), address(2), address(1)], pairs: [address(3), address(4), address(5)],
+    protocols: ['v2', 'v2', 'v2'], fees: [0, 0, 0], routeData: ['0x', '0x', '0x'], optimalInput: 200n, profit: 106n,
+    netProfit: 100n, observedAt: Date.now(), marketVersions: { [address(3)]: 1 }, flashPoolAddress: address(6),
+    split: { resources: [address(3), address(4), address(5)],
+      deadline: BigInt(Math.floor(Date.now() / 1000) + 30), costsValidUntil: Date.now() + 30000,
+      gasLimit: EXECUTION_POLICY.gasLimits.single, gasPriceWei: 500n,
+      stages: [
+        { tokenIn: address(1), tokenOut: address(2), branches: [3, 4].map(n => ({ pool: address(n), protocol: 'v2' as const,
+          fee: 0, data: '0x' as const, amountIn: 100n, minAmountOut: 181n })) },
+        { tokenIn: address(2), tokenOut: address(1), branches: [{ pool: address(5), protocol: 'v2', fee: 0, data: '0x', amountIn: 362n, minAmountOut: 306n }] },
+      ] } };
+  const lookup = { matchesVersions: () => true, findBestFlashPoolForToken: () => ({ protocol: 'v2' as const, poolAddress: address(6), fee: 0, liquidity: 100000n }) };
+  try {
+    ARBITRAGE_SEARCH_POLICY.splitRouting = 'live'; Object.assign(CONTRACTS, { arbitrage: address(9) }); Object.assign(TELEGRAM, { botToken: '' });
+    await gasFees.start();
+    await manager.start();
+    await manager.processOpportunities(lookup, [opportunity]);
+    expect(submitted.length).toBe(1);
+    const transaction = parseTransaction(submitted[0]);
+    expect(transaction.nonce).toBe(7);
+    expect(transaction.gas).toBe(EXECUTION_POLICY.gasLimits.single);
+    expect(transaction.type).toBe(legacy ? 'legacy' : 'eip1559');
+    if (legacy) expect(transaction.gasPrice).toBe(500n);
+    else {
+      expect(transaction.maxFeePerGas).toBe(500n);
+      expect(transaction.maxPriorityFeePerGas).toBe(3n);
+    }
+    const decoded = decodeFunctionData({ abi: ArbABI, data: transaction.data! });
+    expect(decoded.functionName).toBe('executeSplitArbitrage');
+    expect((decoded.args![0] as any).stages[0].branches.map((branch: any) => branch.amountIn)).toEqual([100n, 100n]);
+    const boundary = structuredClone(opportunity);
+    boundary.split!.stages[1].branches[0].minAmountOut = 200n;
+    expect(createExecutionPlan(lookup, boundary)).toBeNull();
+    boundary.split!.stages[1].branches[0].minAmountOut = 201n;
+    expect(createExecutionPlan(lookup, boundary)?.kind).toBe('split');
+    await manager.processOpportunities(lookup, [{ ...opportunity, split: undefined, pairs: [address(4)], protocols: ['v2'], fees: [0], routeData: ['0x'] }]);
+    expect(submitted.length).toBe(1);
+    expect(nonceReads).toBe(1);
+    expect(feeReads).toBe(1);
+    manager.releasePairs(opportunity.pairs);
+    await manager.processOpportunities(lookup, [{ ...opportunity, split: { ...opportunity.split!, costsValidUntil: Date.now() - 1 } }]);
+    expect(submitted.length).toBe(1);
+  } finally {
+    manager.stop(); gasFees.stop(); ARBITRAGE_SEARCH_POLICY.splitRouting = old.mode; Object.assign(CONTRACTS, { arbitrage: old.contract }); Object.assign(TELEGRAM, { botToken: old.telegram });
+  }
+});
+
+async function executorCall(data: Hex): Promise<Hex> {
+  const { functionName } = decodeFunctionData({ abi: ArbABI, data });
+  return encodeFunctionResult({ abi: ArbABI, functionName,
+    result: await readExecutorContract({ functionName }) });
 }

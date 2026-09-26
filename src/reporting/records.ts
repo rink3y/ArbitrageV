@@ -55,13 +55,17 @@ export function formatReport(report: Report): string {
 
 function formatOpportunity(value: unknown): string {
   const quote = value as { index: number; status: string | null; path: string[]; profit: bigint; netProfit?: bigint;
+    netProfitNative?: bigint; nativeToken?: { name: string; decimals: number }; routeSwap?: boolean; followUpMode?: string;
     optimalInput: bigint; pairs: string[]; fees: bigint[]; protocols: string[]; ageMs?: number; ageLimitMs: number;
     inputToken?: { name: string; decimals: number }; profitToken?: { name: string; decimals: number } };
   const amount = (raw: bigint, token?: { name: string; decimals: number }) => token ? formatTokenAmountWithSymbol(raw, token) : `${raw} raw units`;
   return [quote.status ? `Quote #${quote.index} (${quote.status})` : `Opportunity #${quote.index}`,
     `Path: ${quote.path.join(' -> ')}`,
     `${quote.status ? 'Quoted' : 'Expected'} profit: ${amount(quote.profit, quote.profitToken)}`,
-    ...(quote.netProfit === undefined ? [] : [`Conservative net after gas: ${amount(quote.netProfit, quote.profitToken)}`]),
+    ...(quote.netProfitNative !== undefined ? [`Estimated native net after gas: ${amount(quote.netProfitNative, quote.nativeToken)}`]
+      : quote.netProfit === undefined ? [] : [`Conservative net after gas: ${amount(quote.netProfit, quote.profitToken)}`]),
+    ...(quote.routeSwap ? ['Funding: first swap output, repaid in its input token'] : []),
+    ...(quote.followUpMode && quote.followUpMode !== 'off' ? [`Prepared follow-up: ${quote.followUpMode}`] : []),
     `Optimal input: ${amount(quote.optimalInput, quote.inputToken)}`,
     `Profit percentage: ${formatBasisPoints(basisPoints(quote.profit, quote.optimalInput))}%`,
     `Age at check: ${quote.ageMs ?? 'unknown'} ms (limit ${quote.ageLimitMs} ms)`,

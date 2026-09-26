@@ -1,4 +1,4 @@
-import { NETWORK } from '../src/constants';
+import { WRAPPED_NATIVE_TOKENS } from '../src/constants';
 import { expect, test } from 'bun:test';
 import { type Address } from 'viem';
 import { ARBITRAGE_SEARCH_POLICY } from '../src/constants';
@@ -6,7 +6,7 @@ import { MarketGraph } from '../src/market-graph/market-graph';
 import { carbonStrategyKey, type CarbonDelta, type CarbonStrategy } from '../src/protocols/carbon/types';
 import { NATIVE_TOKEN } from '../src/tokens';
 
-const WRAPPED_NATIVE = NETWORK.wrappedNativeToken;
+const WRAPPED_NATIVE = WRAPPED_NATIVE_TOKENS[0].address;
 
 const address = (n: number): Address => `0x${n.toString(16).padStart(40, '0')}`;
 const controller = address(1);

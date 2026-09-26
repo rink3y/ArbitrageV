@@ -10,7 +10,7 @@ import { profileV2Transfers } from '../src/protocols/v2/transfer-probes';
 import { MarketGraph } from '../src/market-graph/market-graph';
 import { quoteSplitStages } from '../src/opportunities/split-routing';
 import { V2_LIVE_POLICY } from '../src/protocols/v2/config';
-import { ARBITRAGE_SEARCH_POLICY, CONTRACTS } from '../src/constants';
+import { ARBITRAGE_SEARCH_POLICY, CONTRACTS, EXECUTION_POLICY } from '../src/constants';
 import { type PairInfo } from '../src/protocols/v2/types';
 import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
 import { createExecutionPlan } from '../src/execution/execution-planner';
@@ -118,7 +118,7 @@ describe('graph integration', () => {
   });
   test('search sizes a profitable taxed route and produces custody execution data', () => {
     const engine = new OpportunityEngine({ ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2'], maxRouteEdges: 2 }, [],
-      [{ name: 'A', address: a, decimals: 18, liquidityAmount: 1n, minProfit: 1n }]);
+      [{ name: 'A', address: a, decimals: 18, liquidityAmount: 1n, minProfitNative: 1n }]);
     engine.graph.addPair(pair(addr(10), 2200));
     engine.graph.addPair({ ...pair(addr(11), 0, 1000), reserve0: 200000000n, reserve1: 100000000n });
     engine.graph.addPair({ ...pair(addr(12)), reserve0: 1000000000n, reserve1: 1000000000n });
@@ -128,6 +128,37 @@ describe('graph integration', () => {
     const plan = createExecutionPlan(engine.graph, result!);
     expect(plan?.kind).toBe('flash');
     if (plan?.kind === 'flash') expect(plan.params.data).toEqual(['0x02', '0x02']);
+  });
+  test('route flash keeps tax custody and falls back when the first input is taxed', () => {
+    const previous = { address: CONTRACTS.arbitrage, enabled: EXECUTION_POLICY.routeSwapFunding };
+    Object.assign(CONTRACTS, { arbitrage: executor });
+    Object.assign(EXECUTION_POLICY, { routeSwapFunding: true });
+    try {
+      const makeEngine = (firstSellTax: number) => {
+        const engine = new OpportunityEngine({ ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2'], maxRouteEdges: 2 }, [],
+          [{ name: 'A', address: a, decimals: 18, liquidityAmount: 1n, minProfitNative: 1n }]);
+        const first = pair(addr(10), 2200);
+        first.transferProfiles!.token0 = profile(a, addr(10), 0, firstSellTax);
+        engine.graph.addPair(first);
+        engine.graph.addPair({ ...pair(addr(11), 0, 1000), reserve0: 200000000n, reserve1: 100000000n });
+        engine.graph.addPair({ ...pair(addr(12)), reserve0: 1000000000n, reserve1: 1000000000n });
+        return engine;
+      };
+      const route = (engine: OpportunityEngine) => engine.findOpportunities({ startTokens: [a] })
+        .find(result => result.pairs[0] === addr(10) && result.pairs[1] === addr(11));
+      const direct = makeEngine(0);
+      const first = route(direct);
+      expect(first?.routeSwap).toBe(true);
+      expect(createExecutionPlan(direct.graph, first!)?.kind).toBe('plan');
+
+      const taxed = makeEngine(1000);
+      const fallback = route(taxed);
+      expect(fallback?.routeSwap).toBe(false);
+      expect(createExecutionPlan(taxed.graph, fallback!)?.kind).toBe('flash');
+    } finally {
+      Object.assign(CONTRACTS, { arbitrage: previous.address });
+      Object.assign(EXECUTION_POLICY, { routeSwapFunding: previous.enabled });
+    }
   });
 });
 

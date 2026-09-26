@@ -1,12 +1,13 @@
 import { type Address, type Hex } from 'viem';
-import { EXECUTION_POLICY, TOKENS, type TokenConfig } from '../constants';
+import { EXECUTION_POLICY, CONFIGURED_TOKENS, type TokenConfig } from '../constants';
 
 import { type MarketGraph } from '../market-graph/market-graph';
 import { type AnyMarketEdge, type MarketProtocol } from '../market-graph/types';
 import { encodeCarbonRouteData } from '../protocols/carbon/execution';
 import { encodeV2RouteData } from '../protocols/v2/execution';
-import { flashLoanFee } from '../execution/execution-planner';
+import { flashLoanFee, gasLimitForTransaction } from '../execution/execution-planner';
 import { type FlashPoolCandidate } from '../market-graph/types';
+import { canSettle } from '../tokens';
 
 // Search resolution, not user policy. The contract permits 3 stages with 2 branches each.
 const SAMPLES = 8;
@@ -15,7 +16,7 @@ const REFINEMENTS = 3;
 export type SplitCosts = {
   validUntil: number;
   gasPriceWei: bigint;
-  // Smallest borrow-token units per native-token wei. Never infer this from minProfit.
+  // Smallest borrow-token units per native-token wei. Never infer this from minProfitNative.
   rates: Record<string, { numerator: bigint; denominator: bigint }>;
 };
 export type SplitCandidate = {
@@ -23,11 +24,11 @@ export type SplitCandidate = {
   netProfit: bigint; gasCost: bigint;
 };
 
-export function splitGasCost(costs: SplitCosts | undefined, token: Address, now = Date.now()): bigint | null {
+export function splitGasCost(costs: SplitCosts | undefined, token: Address, now = Date.now(), gasLimit = gasLimitForTransaction()): bigint | null {
   const rate = costs?.rates[token.toLowerCase()];
   if (!costs || !Number.isFinite(costs.validUntil) || costs.validUntil <= now || costs.gasPriceWei <= 0n ||
-      !rate || rate.numerator <= 0n || rate.denominator <= 0n || EXECUTION_POLICY.gasLimit <= 0n) return null;
-  return (EXECUTION_POLICY.gasLimit * costs.gasPriceWei * rate.numerator + rate.denominator - 1n) / rate.denominator;
+      !rate || rate.numerator <= 0n || rate.denominator <= 0n) return null;
+  return (gasLimit * costs.gasPriceWei * rate.numerator + rate.denominator - 1n) / rate.denominator;
 }
 
 export type SplitBranch = {
@@ -52,7 +53,7 @@ export function quoteSplitStages(
 ): SplitQuote | null {
   if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps >= 10_000 ||
       allocations.length < 2 || allocations.length > 3 || path.length !== allocations.length + 1 ||
-      path[0].toLowerCase() !== path.at(-1)!.toLowerCase()) return null;
+      !canSettle(path[0], path.at(-1)!)) return null;
   const resources = new Set<string>();
   const stages: SplitStage[] = [];
   let amountIn = 0n;
@@ -100,8 +101,11 @@ export function quoteSplitStages(
 
 /** Bounded heuristic over short token cycles. A budget stop is not proof of no arbitrage. */
 export function searchSplitRoutes(
-  graph: MarketGraph, paths: Address[][], tokens: readonly TokenConfig[] = TOKENS, costs?: SplitCosts,
+  graph: MarketGraph, paths: Address[][], tokens: readonly TokenConfig[] = CONFIGURED_TOKENS, costs?: SplitCosts,
   baselineNet: ReadonlyMap<string, bigint> = new Map(),
+  valueNative?: (profit: bigint, token: Address) => bigint | null,
+  searchDeadline = Infinity,
+  aggregateProfit = false,
 ): { best: SplitCandidate | null; candidates: SplitCandidate[]; work: number; evaluated: number; exhausted: boolean } {
   const policy = graph.policy;
   const maxCandidates = policy.maxCandidatesToSize ?? 64;
@@ -116,7 +120,8 @@ export function searchSplitRoutes(
   const winners = new Map<string, SplitCandidate>();
   const result = () => ({ best: winners.values().next().value ?? null, candidates: [...winners.values()], work, evaluated,
     exhausted: exhausted || evaluated >= maxCandidates });
-  if (policy.splitRouting !== 'live' || paths.length === 0) return result();
+  if (policy.splitRouting !== 'live' || paths.length === 0 || !costs ||
+      !Number.isFinite(costs.validUntil) || costs.validUntil <= Date.now() || costs.gasPriceWei <= 0n) return result();
   const tokenByAddress = new Map(tokens.slice(0, policy.topTokens).map(token => [token.address.toLowerCase(), token]));
   for (const value of [maxCandidates, maxWork, alternatives]) {
     if (!Number.isSafeInteger(value) || value < 1) throw new Error('Invalid split search budget');
@@ -125,7 +130,7 @@ export function searchSplitRoutes(
       !Number.isFinite(maxTimeMs) || maxTimeMs <= 0 ||
       policy.maxInputReserveFraction < 1n || slippageBps < 0 || slippageBps >= 10000 ||
       !Number.isInteger(slippageBps)) throw new Error('Invalid split limits');
-  const end = performance.now() + maxTimeMs;
+  const end = Math.min(performance.now() + maxTimeMs, searchDeadline);
   const spend = () => {
     if (work >= maxWork || performance.now() >= end) { exhausted = true; return false; }
     work++;
@@ -137,9 +142,9 @@ export function searchSplitRoutes(
     if (path.length < 3 || path.length > maxStages + 1) continue;
     const key = path[0].toLowerCase();
     const token = tokenByAddress.get(key);
-    const gasCost = splitGasCost(costs, path[0]);
-    if (!token || token.minProfit < 0n || gasCost === null ||
-        key !== path.at(-1)!.toLowerCase() ||
+    const gasCost = valueNative ? 0n : splitGasCost(costs, path[0]);
+    if (!token || (token.minProfitNative ?? 0n) < 0n || gasCost === null ||
+        !canSettle(path[0], path.at(-1)!) ||
         new Set(path.slice(0, -1).map(token => token.toLowerCase())).size !== path.length - 1) continue;
     const pathKey = path.map(token => token.toLowerCase()).join(':');
     if (seen.has(pathKey)) continue;
@@ -197,10 +202,13 @@ export function searchSplitRoutes(
         if (!quote) return;
         const profit = quote.amountOut - amount - flashLoanFee(funding, amount);
         const netProfit = profit - gasCost;
+        const nativeProfit = valueNative?.(profit, path[0]);
+        if (valueNative && (nativeProfit === null || nativeProfit === undefined ||
+            (!aggregateProfit && nativeProfit <= (token.minProfitNative ?? policy.minProfitNative ?? 0n)))) return;
         const candidate: SplitCandidate = { path, quote, flashPool: funding, netProfit, gasCost };
         if (!localBest || netProfit > localBest.netProfit) localBest = candidate;
         const threshold = baselineNet.get(key) ?? 0n;
-        if (profit <= token.minProfit || netProfit <= 0n || netProfit <= threshold) return;
+        if (profit <= (valueNative ? 0n : token.minProfitNative ?? 0n) || netProfit <= 0n || netProfit <= threshold) return;
         if (!winners.has(key) || netProfit > winners.get(key)!.netProfit) winners.set(key, candidate);
       };
       // Coarse grid plus geometric small inputs; no smoothness/unimodality assumption.

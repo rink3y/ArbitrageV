@@ -1,4 +1,4 @@
-import { TOKENS } from '../src/constants';
+import { CONFIGURED_TOKENS } from '../src/constants';
 import { type PairInfo, type ReserveUpdate } from '../src/protocols/v2/types';
 import { type V3PoolConfig } from '../src/protocols/v3/types';
 import { type ArbitrageSearchPolicy } from '../src/market-graph/types';
@@ -10,7 +10,7 @@ import { type Address } from 'viem';
 import { WorkerSearch } from '../src/opportunities/worker-search';
 import { latency } from '../src/runtime/latency';
 
-const [tokenA, tokenB, tokenC] = TOKENS.map(({ address }) => address);
+const [tokenA, tokenB, tokenC] = CONFIGURED_TOKENS.map(({ address }) => address);
 
 const policy: ArbitrageSearchPolicy = {
   topTokens: 1,

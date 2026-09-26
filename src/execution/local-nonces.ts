@@ -46,6 +46,17 @@ export class LocalNonces {
     this.refreshInBackground();
   }
 
+  reserveSequence(): [number, number] | null {
+    const first = this.reserve();
+    let second: number;
+    try { second = this.reserve(); }
+    catch (error) { this.releaseUnsubmitted(first); throw error; }
+    if (second === first + 1) return [first, second];
+    this.releaseUnsubmitted(first);
+    this.releaseUnsubmitted(second);
+    return null;
+  }
+
   // Only for a local signing abort: these bytes have never reached a transport.
   releaseUnsubmitted(nonce: number): void {
     if (nonce < 0 || this.nextNonce === undefined || nonce >= this.nextNonce || this.uncertain.has(nonce)) throw new Error('Cannot release this nonce');

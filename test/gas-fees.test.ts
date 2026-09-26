@@ -3,7 +3,7 @@ import { EXECUTION_POLICY } from '../src/constants';
 import { GasFees, gasPriceCeiling } from '../src/execution/gas-fees';
 import { logger } from '../src/reporting/logger';
 
-const policy = { ...EXECUTION_POLICY, feeRefreshIntervalMs: 10, feeCeilingPerGas: 1_000n };
+const policy = { ...EXECUTION_POLICY, legacy: false, feeRefreshIntervalMs: 10, feeCeilingPerGas: 1_000n };
 
 async function until(check: () => boolean): Promise<void> {
   for (let i = 0; i < 100 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 2));

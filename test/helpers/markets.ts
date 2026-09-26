@@ -1,3 +1,4 @@
+import { TOKENS, WRAPPED_NATIVE_TOKENS } from '../../src/constants';
 import { type Address } from 'viem';
 import { type PairInfo } from '../../src/protocols/v2/types';
 import { estimateTransfer, type TokenTransferProfile } from '../../src/protocols/v2/transfer-fees';
@@ -15,3 +16,7 @@ export function v2Pair(id: number | Address, token0: Address, token1: Address,
   return { pairAddress, token0, token1, reserve0, reserve1, fee, variant: 'uniswap-v2', scale0: 1n, scale1: 1n,
     transferProfiles: { token0: profile(token0), token1: profile(token1) } };
 }
+
+
+// Circular-route fixtures need one native wrapper and ordinary tokens, not two aliases of the same coin.
+export const routeTokens = [WRAPPED_NATIVE_TOKENS[0], ...TOKENS];

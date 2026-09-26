@@ -1,5 +1,5 @@
 import { type Address } from 'viem';
-import { ARBITRAGE_SEARCH_POLICY, TOKENS } from '../constants';
+import { ARBITRAGE_SEARCH_POLICY, CONFIGURED_TOKENS } from '../constants';
 import { carbonStrategyKey, type CarbonStrategy, type CarbonStrategyId, type CarbonDelta } from '../protocols/carbon/types';
 import { graphToken } from '../tokens';
 import {
@@ -63,7 +63,7 @@ type IndexedEdgeCache = {
 const Q192 = Q96 * Q96;
 const MAX_GROUPED_CARBON_ORDERS = 8;
 const DEFAULT_TOKEN_VALUE_SCALE = 10n ** 18n;
-const TOKEN_VALUE_SCALE = new Map(TOKENS.map(token => [token.address.toLowerCase(), token.minProfit]));
+const TOKEN_VALUE_SCALE = new Map(CONFIGURED_TOKENS.map(token => [token.address.toLowerCase(), 10n ** BigInt(token.decimals)]));
 
 class AddressRegistry {
   private readonly indexes = new Map<string, number>();
@@ -610,6 +610,43 @@ export class MarketGraph {
 
   getAllPairs(): PairInfo[] {
     return this.pairs.filter((pair): pair is PairInfo => pair !== undefined);
+  }
+
+  getPair(address: Address): PairInfo | undefined {
+    const index = this.poolRegistry.get(address);
+    return index === undefined ? undefined : this.pairs[index];
+  }
+
+  getCarbonStrategy(controller: Address, id: bigint): CarbonStrategy | undefined {
+    return this.carbonStrategies.get(carbonStrategyKey({ controller, id }));
+  }
+
+  // Synchronous worker-only projection. No event callback can interleave here.
+  // Restore both state and versions even if sizing or valuation throws.
+  withProjectedChanges<T>(changes: GraphChanges, run: () => T): T {
+    const undo: GraphChanges = {
+      pairs: changes.pairs.map(pair => ({ ...this.getPair(pair.pairAddress)! })),
+      removedPairs: [], removedV3: [],
+      v3: changes.v3.map(change => ({ ...change, state: { ...this.getV3Pool(change.pool.address)!.state! } })),
+      versions: this.marketVersions([...changes.pairs.map(pair => pair.pairAddress),
+        ...changes.v3.map(change => change.pool.address)], !!changes.carbon),
+      carbon: changes.carbon?.kind === 'delta' ? { kind: 'delta', removed: [],
+        upserts: changes.carbon.upserts.map(strategy => this.getCarbonStrategy(strategy.controller, strategy.id)!) } : undefined,
+    };
+    const dirty = { pairs: [...this.dirtyPairs], profiles: [...this.dirtyTransferProfiles],
+      v3: [...this.dirtyV3] as Array<[string, Set<number> | null]>, carbon: [...this.dirtyCarbon] as Array<[string, CarbonStrategyId]>,
+      removedPairs: [...this.removedPairs], removedV3: [...this.removedV3], snapshot: this.carbonSnapshotDirty };
+    try { this.applyChanges(changes); return run(); }
+    finally {
+      this.applyChanges(undo);
+      for (const key of dirty.pairs) this.dirtyPairs.add(key);
+      for (const key of dirty.profiles) this.dirtyTransferProfiles.add(key);
+      for (const [key, value] of dirty.v3) this.dirtyV3.set(key, value);
+      for (const [key, value] of dirty.carbon) this.dirtyCarbon.set(key, value);
+      for (const key of dirty.removedPairs) this.removedPairs.add(key);
+      for (const key of dirty.removedV3) this.removedV3.add(key);
+      this.carbonSnapshotDirty = dirty.snapshot;
+    }
   }
 
   getV3PoolAddresses(): Address[] {

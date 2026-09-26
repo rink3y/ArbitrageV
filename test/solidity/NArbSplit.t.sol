@@ -28,6 +28,7 @@ contract SplitV2Pool {
     address public token1;
     uint112 private r0;
     uint112 private r1;
+    bool private locked;
     address private reentryTarget;
     bytes private reentryData;
     function startWithReentry(address target, bytes calldata payload) external {
@@ -41,6 +42,7 @@ contract SplitV2Pool {
     }
     function getReserves() external view returns (uint112, uint112, uint32) { return (r0, r1, 0); }
     function swap(uint256 x, uint256 y, address to, bytes calldata data) external {
+        require(!locked, "pool locked"); locked = true;
         if (reentryData.length > 0) {
             (bool ok, ) = reentryTarget.call(reentryData); require(!ok, "reentry accepted");
         }
@@ -54,6 +56,7 @@ contract SplitV2Pool {
         uint256 next1 = SplitToken(token1).balanceOf(address(this));
         require(next0 * next1 >= uint256(r0) * r1, "invariant");
         r0 = uint112(next0); r1 = uint112(next1);
+        locked = false;
     }
 }
 
@@ -63,12 +66,12 @@ contract SplitV3Pool {
     uint256 public mode;
     constructor(SplitToken a, SplitToken b) { token0 = address(a); token1 = address(b); a.mint(address(this), 100000); b.mint(address(this), 100000); }
     function setMode(uint256 value) external { mode = value; }
-    function swap(address to, bool zeroForOne, int256 amount, uint160, bytes calldata) external returns (int256, int256) {
+    function swap(address to, bool zeroForOne, int256 amount, uint160, bytes calldata data) external returns (int256, int256) {
         int256 input = mode == 1 ? amount / 2 : mode == 2 ? amount + 1 : amount;
         int256 output = input * 2;
         SplitToken(zeroForOne ? token1 : token0).transfer(to, uint256(output));
-        ArbitrageExecutor(payable(to)).uniswapV3SwapCallback(zeroForOne ? input : -output, zeroForOne ? -output : input, hex"");
-        if (mode == 3) ArbitrageExecutor(payable(to)).uniswapV3SwapCallback(zeroForOne ? input : -output, zeroForOne ? -output : input, hex"");
+        ArbitrageExecutor(payable(to)).uniswapV3SwapCallback(zeroForOne ? input : -output, zeroForOne ? -output : input, data);
+        if (mode == 3) ArbitrageExecutor(payable(to)).uniswapV3SwapCallback(zeroForOne ? input : -output, zeroForOne ? -output : input, data);
         return zeroForOne ? (input, -output) : (-output, input);
     }
     function flash(address to, uint256 x, uint256 y, bytes calldata data) external {

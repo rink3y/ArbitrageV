@@ -1,4 +1,4 @@
-import { RUNTIME, TOKENS, type TokenConfig } from '../constants';
+import { RUNTIME, CONFIGURED_TOKENS, type TokenConfig } from '../constants';
 import { type MarketGraph } from '../market-graph/market-graph';
 import { type ArbitrageSearchPolicy } from '../market-graph/types';
 import { latency } from '../runtime/latency';
@@ -12,7 +12,7 @@ export class WorkerSearch {
   private pending: { resolve: (result: ArbitrageSearchResult) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | undefined;
   private stopped = false;
 
-  constructor(private readonly graph: MarketGraph, private readonly policy: ArbitrageSearchPolicy, private readonly tokens: readonly TokenConfig[] = TOKENS) {}
+  constructor(private readonly graph: MarketGraph, private readonly policy: ArbitrageSearchPolicy, private readonly tokens: readonly TokenConfig[] = CONFIGURED_TOKENS) {}
 
   search(request: FindOpportunitiesRequest): Promise<ArbitrageSearchResult> {
     if (this.stopped) return Promise.reject(new Error('Search worker is stopped'));

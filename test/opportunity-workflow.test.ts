@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, spyOn, test } from 'bun:test';
-import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, RUNTIME, TOKENS } from '../src/constants';
+import { CONTRACTS, ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, RUNTIME, CONFIGURED_TOKENS } from '../src/constants';
 import { LocalNonces } from '../src/execution/local-nonces';
 import { OpportunityManager } from '../src/execute';
 import { type NetworkConfig } from '../src/network';
@@ -10,14 +10,19 @@ import { WorkerSearch } from '../src/opportunities/worker-search';
 import { logger } from '../src/reporting/logger';
 import { formatReport } from '../src/reporting/records';
 
+import { readExecutorContract } from './helpers/execution';
+
+const originalContract = CONTRACTS.arbitrage;
 const originalExecution = EXECUTION_POLICY.executeTrades;
 const originalLevel = RUNTIME.logLevel;
-const token = TOKENS[0].address;
+const token = CONFIGURED_TOKENS[0].address;
 const estimate = () => Promise.resolve({ gasPrice: 500n, maxFeePerGas: 500n, maxPriorityFeePerGas: 3n });
 function network(read = async () => 7): NetworkConfig {
-  return { account: { address: token }, client: { getTransactionCount: read, estimateFeesPerGas: estimate } } as unknown as NetworkConfig;
+  Object.assign(CONTRACTS, { arbitrage: token });
+  return { account: { address: token }, client: { readContract: readExecutorContract, getTransactionCount: read, estimateFeesPerGas: estimate } } as unknown as NetworkConfig;
 }
 afterEach(() => {
+  Object.assign(CONTRACTS, { arbitrage: originalContract });
   Object.assign(EXECUTION_POLICY, { executeTrades: originalExecution });
   RUNTIME.logLevel = originalLevel;
   mock.restore();
@@ -112,7 +117,7 @@ test('keeps a fresh quote eligible and separately reports a changed market', asy
 test('live search with executeTrades false reports both route types without starting execution or nonces', async () => {
   const f = quotedScanner();
   const split: ArbitrageOpportunity = { ...f.quote, split: { stages: [], resources: [],
-    deadline: 60n, gasLimit: EXECUTION_POLICY.gasLimit,
+    deadline: 60n, gasLimit: EXECUTION_POLICY.gasLimits.single,
     gasPriceWei: 500n, costsValidUntil: 60000 } };
   f.search.mockResolvedValue([f.quote, split]);
   const start = spyOn(OpportunityManager.prototype, 'start').mockResolvedValue();

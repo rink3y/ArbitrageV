@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { encodeAbiParameters, encodeEventTopics, type Address } from "viem";
-import { ARBITRAGE_SEARCH_POLICY, CONTRACTS, TOKENS } from "../src/constants";
+import { ARBITRAGE_SEARCH_POLICY, CONTRACTS, CONFIGURED_TOKENS } from "../src/constants";
 import { EventMonitor } from "../src/runtime/event-monitor";
 import { MarketGraph } from "../src/market-graph/market-graph";
 import { V2_SYNC_EVENT_ABI } from "../src/protocols/v2/events";
@@ -9,8 +9,10 @@ import { V3EventAdapter } from "../src/protocols/v3/runtime";
 import { V3Store } from "../src/protocols/v3/store";
 import { pool, policy, v3Fixture, liquidityLog, swapLog, factory } from "./helpers/v3-fixture";
 
-const [token0, token1] = TOKENS.map(token => token.address);
-describe("EventMonitor V3 pool events", () => {
+import { type ProtocolEventAdapter } from '../src/runtime/protocol-event-adapter';
+
+const [token0, token1] = CONFIGURED_TOKENS.map(token => token.address);
+describe("Market event ingestion", () => {
   test('V2 ingestion continues updating revisions while an earlier search is running', async () => {
     const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY);
     const pairAddress = '0x0000000000000000000000000000000000000a22' as Address;
@@ -246,3 +248,38 @@ function syncLog(
     ),
   };
 }
+
+test('feed errors pause candidate acceptance immediately and shutdown cancels delayed reconnect', async () => {
+  let error!: (error: Error) => void | Promise<void>;
+  let watches = 0;
+  const ready: boolean[] = [];
+  const adapter: ProtocolEventAdapter = { id: 'test', addresses: () => [], owns: () => false,
+    bufferKey: () => null, reconcile: async () => {}, reconcileAddresses: async () => {}, apply: async () => {},
+    watch: async (_client, _logs, onError) => { watches++; error = onError; return []; } };
+  const monitor = new EventMonitor({ client: {} }, [adapter], value => { ready.push(value); });
+  await monitor.startBuffering();
+  await monitor.activate();
+  expect(ready.at(-1)).toBe(true);
+  const recovery = error(new Error('provider rate limit'));
+  expect(ready.at(-1)).toBe(false);
+  await monitor.stop();
+  await recovery;
+  expect(watches).toBe(1);
+  expect(ready.at(-1)).toBe(false);
+}, 5_000);
+
+test('recovery during initial subscription does not activate trading before hydration', async () => {
+  let watches = 0;
+  const ready: boolean[] = [];
+  const adapter: ProtocolEventAdapter = { id: 'test', addresses: () => [], owns: () => false,
+    bufferKey: () => null, reconcile: async () => {}, reconcileAddresses: async () => {}, apply: async () => {},
+    watch: async () => { if (++watches === 1) throw new Error('websocket unavailable'); return []; } };
+  const monitor = new EventMonitor({ client: { getBlockNumber: async () => 1n }, wsClient: {} }, [adapter], value => { ready.push(value); });
+  try {
+    await monitor.startBuffering();
+    expect(watches).toBe(2);
+    expect(ready.includes(true)).toBe(false);
+    await monitor.activate(1n);
+    expect(ready.at(-1)).toBe(true);
+  } finally { await monitor.stop(); }
+}, 5_000);

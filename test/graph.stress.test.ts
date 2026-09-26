@@ -1,12 +1,12 @@
 import { expect, test } from 'bun:test';
-import { TOKENS } from '../src/constants';
+import { CONFIGURED_TOKENS } from '../src/constants';
 import { type Address } from 'viem';
 import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
 import { Q96 } from '../src/protocols/v3/quote';
 import { tokenAmount } from '../src/values';
 import { address, v2Pair } from './helpers/markets';
 
-const [a, b, c] = TOKENS.map(token => token.address);
+const [a, b, c] = CONFIGURED_TOKENS.map(token => token.address);
 const modes = [
   { name: 'V2', v2: Number(process.env.V2_STRESS_PAIRS ?? 25000), v3: 0,
     limitMs: Number(process.env.V2_STRESS_SEARCH_LIMIT_MS ?? 1000), fraction: 3n, opportunities: 10 },

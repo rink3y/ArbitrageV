@@ -1,7 +1,7 @@
-import { v2Pair } from './helpers/markets';
+import { v2Pair, routeTokens } from './helpers/markets';
 import { expect, test } from 'bun:test';
 import { MarketGraph } from '../src/market-graph/market-graph';
-import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, TOKENS } from '../src/constants';
+import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY } from '../src/constants';
 import { type ArbitrageSearchPolicy } from '../src/market-graph/types';
 import { quoteSplitStages, searchSplitRoutes } from '../src/opportunities/split-routing';
 import { OpportunityEngine } from '../src/opportunities/opportunity-engine';
@@ -14,23 +14,23 @@ import { splitCostsFromSnapshot } from '../src/opportunities/split-costs';
 import { quoteV3MultiRangeExactInput, Q96 } from '../src/protocols/v3/quote';
 import { tickWordBounds } from '../src/protocols/v3/coverage';
 
-const [a, b] = TOKENS.map(token => token.address);
+const [a, b] = routeTokens.map(token => token.address);
 const address = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const;
-const tokens = TOKENS.map(token => ({ ...token, minProfit: 1n }));
+const tokens = routeTokens.map(token => ({ ...token, minProfitNative: 1n }));
 const fees = { type: 'eip1559', maxFeePerGas: 1_000_000_000n,
   maxPriorityFeePerGas: 0n, validUntil: Number.MAX_SAFE_INTEGER } as const;
 function searchPolicy(): ArbitrageSearchPolicy {
-  return { ...ARBITRAGE_SEARCH_POLICY, allowedProtocols: ['v2', 'v3', 'carbon'], splitRouting: 'live' as const, splitSearchMs: 1000,
+  return { ...ARBITRAGE_SEARCH_POLICY, minProfitNative: undefined, allowedProtocols: ['v2', 'v3', 'carbon'], splitRouting: 'live' as const, splitSearchMs: 1000,
     maxCandidatesToSize: 24, maxSearchExpansions: 100000, maxInputReserveFraction: 5n };
 }
-export function splitMarket(policy = searchPolicy()) {
+function splitMarket(policy = searchPolicy()) {
   const graph = new MarketGraph(policy);
   for (const [id, r0, r1] of [[1, 1000n, 2000n], [2, 1000n, 2000n], [3, 2000n, 2000n], [4, 100000n, 100000n]] as const) {
     graph.addPair(v2Pair(id, a, b, r0, r1, 0));
   }
   return graph;
 }
-export function edgeIndex(graph: MarketGraph, id: number, from = a) {
+function edgeIndex(graph: MarketGraph, id: number, from = a) {
   return graph.edgeIndexesForTokenPool(graph.tokenIndexOf(from)!, graph.poolIndexOf(address(id))!)[0];
 }
 
@@ -51,7 +51,7 @@ test('bounded search improves on a single pool without claiming shared liquidity
   const policy = searchPolicy();
   const result = searchSplitRoutes(graph, [[a, b, a]], tokens, {
     validUntil: Date.now() + 10000, gasPriceWei: 1n,
-    rates: { [a.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimit } },
+    rates: { [a.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimits.single } },
   });
   expect(result.best?.quote.stages.some(stage => stage.branches.length === 2)).toBe(true);
   expect(result.best!.netProfit).toBeGreaterThan(105n);
@@ -61,10 +61,10 @@ test('bounded search improves on a single pool without claiming shared liquidity
 
 test('engine finds splits before the single-route profit filter and encodes a staged entry point', () => {
   const policy = searchPolicy();
-  const engine = new OpportunityEngine({ ...policy, maxRouteEdges: 2 }, [], tokens.map(token => ({ ...token, minProfit: 200n })));
+  const engine = new OpportunityEngine({ ...policy, maxRouteEdges: 2 }, [], tokens.map(token => ({ ...token, minProfitNative: 200n })));
   engine.graph.applyChanges(splitMarket().takeChanges(true));
   const results = engine.findOpportunities({ startTokens: [a], splitCosts: { validUntil: Date.now() + 10000,
-    gasPriceWei: 1n, rates: { [a.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimit } } } });
+    gasPriceWei: 1n, rates: { [a.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimits.single } } } });
   expect(results.filter(result => !result.split)).toHaveLength(0);
   const split = results.find(result => result.split)!;
   expect(split).toBeDefined();
@@ -78,7 +78,7 @@ test('engine finds splits before the single-route profit filter and encodes a st
 });
 
 
-function costs() { return { validUntil: Date.now() + 60000, gasPriceWei: 1n, rates: { [a.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimit } } }; }
+function costs() { return { validUntil: Date.now() + 60000, gasPriceWei: 1n, rates: { [a.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimits.single } } }; }
 
 test('direct routes account for gas even when split routing is off', () => {
   const engine = new OpportunityEngine({ ...searchPolicy(), splitRouting: 'off', maxRouteEdges: 2 }, [], tokens);
@@ -112,18 +112,15 @@ test('missing, expired and uneconomic cost data fail closed; off mode does no wo
   expect(searchSplitRoutes(graph, [[a, b, a]], tokens, { ...costs(), gasPriceWei: 10000n }).best).toBeNull();
   expect(searchSplitRoutes(splitMarket({ ...policy, splitRouting: 'off' }), [[a, b, a]], tokens, costs()).work).toBe(0);
   expect(searchSplitRoutes(graph, [[a, b, a]], tokens, costs(), new Map([[a.toLowerCase(), 1000n]])).best).toBeNull();
-  expect(splitGasCost({ ...costs(), rates: { [a.toLowerCase()]: { numerator: 3n, denominator: EXECUTION_POLICY.gasLimit * 2n } } }, a)).toBe(2n);
+  expect(splitGasCost({ ...costs(), rates: { [a.toLowerCase()]: { numerator: 3n, denominator: EXECUTION_POLICY.gasLimits.single * 2n } } }, a)).toBe(2n);
 });
 
-test('gas conversion excludes expired tokens and uses the configured wrapped-native identity rate', () => {
-  const configured = tokens.map(token => ({ ...token, gasConversion: { numerator: 1n, denominator: 3n, validUntil: 999 } }));
-  const quote = splitCostsFromSnapshot(configured, fees, 1000);
+test('cost snapshot includes only native wrapper identities and retains fee expiry', () => {
+  const quote = splitCostsFromSnapshot(fees, 1000);
   expect(quote.rates[b.toLowerCase()]).toBeUndefined();
   expect(quote.rates[a.toLowerCase()]).toEqual({ numerator: 1n, denominator: 1n });
-  const fresh = splitCostsFromSnapshot(tokens.map(token => ({ ...token,
-    gasConversion: { numerator: 3n, denominator: 2n, validUntil: 2000 },
-  })), fees, 1000);
-  expect(fresh.rates[b.toLowerCase()]).toMatchObject({ numerator: 3n, denominator: 2n });
+  const fresh = splitCostsFromSnapshot({ ...fees, validUntil: 2000 }, 1000);
+  expect(fresh.rates[b.toLowerCase()]).toBeUndefined();
   expect(fresh.rates[a.toLowerCase()]).toEqual({ numerator: 1n, denominator: 1n });
   expect(fresh.validUntil).toBe(2000);
 });
@@ -196,7 +193,7 @@ test('worker carries shared tokens, policy and costs, preserves split plans, and
   } finally { worker.stop(); }
 }, 10000);
 
-test('topTokens and the existing token minProfit govern both searches', () => {
+test('topTokens and the existing token minProfitNative govern both searches', () => {
   const snapshot = splitMarket().takeChanges(true);
   const engine = new OpportunityEngine({ ...searchPolicy(), topTokens: 1, maxRouteEdges: 2 }, [], tokens);
   engine.graph.applyChanges(snapshot);
@@ -207,9 +204,9 @@ test('topTokens and the existing token minProfit govern both searches', () => {
   expect(result.every(candidate => candidate.path[0].toLowerCase() === a.toLowerCase())).toBe(true);
   expect(engine.findOpportunities({ startTokens: [b], splitCosts: costs() })).toEqual([]);
   expect(searchSplitRoutes(engine.graph, [[b, a, b]], tokens, {
-    ...costs(), rates: { [b.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimit } },
+    ...costs(), rates: { [b.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimits.single } },
   }).best).toBeNull();
-  const expensive = new OpportunityEngine(engine.policy, [], tokens.map(token => ({ ...token, minProfit: 10000n })));
+  const expensive = new OpportunityEngine(engine.policy, [], tokens.map(token => ({ ...token, minProfitNative: 10000n })));
   expensive.graph.applyChanges(snapshot);
   expect(expensive.findOpportunities({ startTokens: [a], splitCosts: costs() })).toEqual([]);
 });
@@ -225,17 +222,17 @@ test('opening branches share the linear reserve-fraction cap and profit floor', 
       expect(branch.amountIn).toBeLessThanOrEqual(graph.maxInputForEdges([index]));
     }
     expect(candidate.netProfit).toBeGreaterThan(0n);
-    expect(candidate.quote.amountOut - candidate.quote.amountIn).toBeGreaterThan(tokens[0].minProfit);
+    expect(candidate.quote.amountOut - candidate.quote.amountIn).toBeGreaterThan(tokens[0].minProfitNative);
   }
 });
 
-test('default TOKENS work without a second allowlist', () => {
+test('default CONFIGURED_TOKENS work without a second allowlist', () => {
   const engine = new OpportunityEngine({ ...searchPolicy(), maxRouteEdges: 2 });
   const unit = 10n ** 18n;
   for (const pair of splitMarket().getAllPairs()) {
     engine.graph.addPair({ ...pair, reserve0: pair.reserve0 * unit, reserve1: pair.reserve1 * unit });
   }
-  const result = engine.findOpportunities({ startTokens: engine.startTokens, splitCosts: splitCostsFromSnapshot(TOKENS, fees) });
+  const result = engine.findOpportunities({ startTokens: engine.startTokens, splitCosts: splitCostsFromSnapshot(fees) });
   expect(result.some(candidate => candidate.split && candidate.path[0] === a)).toBe(true);
   expect(result.filter(candidate => candidate.split).every(candidate => candidate.path[0] === a)).toBe(true);
 });

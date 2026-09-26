@@ -6,6 +6,8 @@ import { type EdgeTransferFees } from '../protocols/v2/transfer-fees';
 export type MarketProtocol = 'v2' | 'v3' | 'carbon';
 
 export type ArbitrageSearchPolicy = {
+  minProfitNative?: bigint;
+  tokenSelectionRefreshMs?: number;
   splitRouting?: 'off' | 'live';
   splitSearchMs?: number;
   topTokens: number;

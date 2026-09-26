@@ -1,4 +1,4 @@
-import { NETWORK, RUNTIME, TELEGRAM, TOKENS } from '../constants';
+import { NETWORK, RUNTIME, TELEGRAM, CONFIGURED_TOKENS } from '../constants';
 import { ReportingChannel } from './channel';
 import { type RecordLevel } from './records';
 import { type MetricSamples } from './metrics';
@@ -44,7 +44,7 @@ export function startReporting(): void {
     worker.addEventListener('close', () => { if (worker) fail(); });
     worker.postMessage({ type: 'init', telegram: { ...TELEGRAM, timeoutMs: RUNTIME.notificationTimeoutMs,
       explorer: NETWORK.chain.blockExplorers?.default.url,
-      tokens: TOKENS.map(({ address, name, decimals }) => ({ address, name, decimals })),
+      tokens: CONFIGURED_TOKENS.map(({ address, name, decimals }) => ({ address, name, decimals })),
     } });
   } catch { failed = true; channel?.stop(); worker?.terminate(); worker = undefined; }
 }

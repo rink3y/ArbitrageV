@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { type Address } from "viem";
 import { OpportunityManager } from "../src/execute";
 import { type ExecutableOpportunity } from "../src/execution/execution-planner";
-import { RUNTIME, ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY } from '../src/constants';
-import { startedTestGasFees } from './helpers/gas-fees';
+import { RUNTIME, ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, CONTRACTS } from '../src/constants';
+import { startedTestGasFees } from './helpers/execution';
 
 const pair = "0x0000000000000000000000000000000000000001" as Address;
 
@@ -49,6 +49,23 @@ test('stale and expired queued opportunities are skipped before reserving or sub
   manager.stop();
 });
 
+test('disjoint routes may share a flash lender while swapped pools stay locked', async () => {
+  let submissions = 0;
+  const fees = await startedTestGasFees();
+  const manager = new OpportunityManager({} as never, async () => { submissions++; return true; }, fees);
+  const secondPair = '0x0000000000000000000000000000000000000002' as Address;
+  const lender = '0x0000000000000000000000000000000000000003' as Address;
+  try {
+    await manager.processOpportunities({} as never, [
+      { ...opportunity, flashPoolAddress: lender },
+      { ...opportunity, pairs: [secondPair], flashPoolAddress: lender },
+    ]);
+    expect(submissions).toBe(2);
+    await manager.processOpportunities({} as never, [opportunity]);
+    expect(submissions).toBe(2); // Swapped pools stay locked.
+  } finally { manager.stop(); }
+});
+
 test('off blocks an otherwise eligible split, while live permits submission', async () => {
   let submissions = 0;
   const gasFees = await startedTestGasFees();
@@ -56,7 +73,7 @@ test('off blocks an otherwise eligible split, while live permits submission', as
   const before = ARBITRAGE_SEARCH_POLICY.splitRouting;
   const split: ExecutableOpportunity = { ...opportunity, observedAt: Date.now(), marketVersions: { [pair]: 1 },
     split: { stages: [], resources: [],
-      deadline: BigInt(Math.floor(Date.now() / 1000) + 60), gasLimit: EXECUTION_POLICY.gasLimit,
+      deadline: BigInt(Math.floor(Date.now() / 1000) + 60), gasLimit: EXECUTION_POLICY.gasLimits.single,
       gasPriceWei: 500n, costsValidUntil: Date.now() + 60000 } };
   const graph = { matchesVersions: () => true } as never;
   try {
@@ -67,4 +84,23 @@ test('off blocks an otherwise eligible split, while live permits submission', as
     await manager.processOpportunities(graph, [split]);
     expect(submissions).toBe(1);
   } finally { ARBITRAGE_SEARCH_POLICY.splitRouting = before; manager.stop(); }
+});
+
+test('route flash checks the deployed executor once before starting', async () => {
+  const oldAddress = CONTRACTS.arbitrage;
+  const oldEnabled = EXECUTION_POLICY.routeSwapFunding;
+  Object.assign(CONTRACTS, { arbitrage: pair });
+  Object.assign(EXECUTION_POLICY, { routeSwapFunding: true });
+  let reads = 0;
+  const manager = new OpportunityManager({ client: {
+    readContract: async () => { reads++; return '0x0000000000000000000000000000000000000000'; },
+  } } as never);
+  try {
+    await expect(manager.start()).rejects.toThrow('does not expose the protocol modules');
+    expect(reads).toBe(1);
+  } finally {
+    manager.stop();
+    Object.assign(CONTRACTS, { arbitrage: oldAddress });
+    Object.assign(EXECUTION_POLICY, { routeSwapFunding: oldEnabled });
+  }
 });

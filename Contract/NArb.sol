@@ -3,87 +3,35 @@
 pragma solidity ^0.8.0;
 
 import "./interfaces/Withdrawable.sol";
-import "./interfaces/IBaseV1Pair.sol";
 import "./interfaces/IUniswapV2Pair.sol";
 import "./TransferProbe.sol";
 
-interface IUniswapV3Pool {
-    function token0() external view returns (address);
-    function token1() external view returns (address);
-    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;
-    function swap(
-        address recipient,
-        bool zeroForOne,
-        int256 amountSpecified,
-        uint160 sqrtPriceLimitX96,
-        bytes calldata data
-    ) external returns (int256 amount0, int256 amount1);
-}
-
-interface ICarbonController {
-    struct TradeAction {
-        uint256 strategyId;
-        uint128 amount;
-    }
-
-    function tradeBySourceAmount(
-        address sourceToken,
-        address targetToken,
-        TradeAction[] calldata tradeActions,
-        uint256 deadline,
-        uint128 minReturn
-    ) external payable returns (uint128);
-}
-
-interface IWrappedNative {
-    function deposit() external payable;
-    function withdraw(uint256 wad) external;
-}
-
-error ArrayLengthMismatch();
-error StartTokenNotInFlashLoanPair();
-error ArbitrageMustReturnToStart();
-error RepaymentTransferFailed();
-error InsufficientFlashLoanRepayment();
-error NoProfit();
-error InsufficientProfitAfterGas(uint256 profit, uint256 gasCost);
-error SwapPathError();
-error InvalidReserves();
-error OutputExceedsReserve();
-error TokenTransferFailed();
-error UnsupportedProtocol();
-error InvalidV3SwapCallback();
-error InvalidV3SwapDelta();
-error InvalidFlashLoanCallback();
-error InvalidCarbonAmount();
-error CarbonApprovalFailed();
-error UnsupportedV2QuoteMode();
-error InvalidStablePair();
-error StableSolverDidNotConverge();
-error InvalidSplitPlan();
-error SplitMinimumNotMet();
-error ExecutionInProgress();
-error InvalidWrappedNativeToken();
+import "./ExecutionTypes.sol";
+import "./modules/V2Logic.sol";
+import "./modules/V3Logic.sol";
+import "./modules/CarbonLogic.sol";
 
 contract ArbitrageExecutor is Withdrawable, TransferProbe {
     uint8 private constant V2 = 0;
     uint8 private constant V3 = 1;
     uint8 private constant CARBON = 2;
+    uint8 private constant V2_ROUTE_FLASH = 3;
+    uint8 private constant V3_ROUTE_FLASH = 4;
+    mapping(address => bool) public approvedWrapper;
     address private constant NATIVE_TOKEN = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
     address public immutable wrappedNativeToken;
+    V2Logic public immutable v2Logic;
+    V3Logic public immutable v3Logic;
+    CarbonLogic public immutable carbonLogic;
     uint256 private constant FEE_DENOMINATOR = 10000;
     // Entry dispatch/owner check before gasleft(), plus the final check and lock cleanup.
     uint256 private constant GAS_ACCOUNTING_OVERHEAD = 10_000;
-    uint256 private constant ONE = 1e18;
     uint160 private constant MIN_SQRT_RATIO_PLUS_ONE = 4295128740;
     uint160 private constant MAX_SQRT_RATIO_MINUS_ONE =
         1461446703485210103287273052203988822378723970341;
 
     uint8 private pendingFlashProtocol;
     address private pendingFlashPool;
-    address private pendingV3Pool;
-    address private pendingV3Token;
-    uint256 private pendingV3Amount;
     bytes32 private pendingFlashHash;
     bool private executing;
 
@@ -137,19 +85,13 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         bytes[] data;
     }
 
-    struct StablePairState {
-        uint256 scale0;
-        uint256 scale1;
-        uint256 reserve0;
-        uint256 reserve1;
-        bool stable;
-        address token0;
-        address token1;
-    }
-
     constructor(address owner_, address wrappedNativeToken_) Withdrawable(owner_) {
         if (wrappedNativeToken_ == NATIVE_TOKEN || wrappedNativeToken_.code.length == 0) revert InvalidWrappedNativeToken();
         wrappedNativeToken = wrappedNativeToken_;
+        approvedWrapper[wrappedNativeToken_] = true;
+        v2Logic = new V2Logic();
+        v3Logic = new V3Logic();
+        carbonLogic = new CarbonLogic();
     }
 
     modifier executionLock(address borrowToken) {
@@ -166,7 +108,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         // The lender has returned: repayment and its final checks are already included.
         uint256 balanceAfter = IERC20(token).balanceOf(address(this));
         if (balanceAfter <= balanceBefore) revert NoProfit();
-        if (token != wrappedNativeToken) return;
+        if (!approvedWrapper[token]) return;
 
         uint256 profit = balanceAfter - balanceBefore;
         // Direct transactions from the bot have no access list. Charge all calldata bytes
@@ -187,6 +129,10 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     }
 
     function executeArbitrage(ArbParams calldata params) external onlyOwner executionLock(params.borrowToken) {
+        _executeLoan(params);
+    }
+
+    function _executeLoan(ArbParams memory params) private {
         if (
             params.pools.length != params.protocols.length ||
             params.pools.length != params.fees.length ||
@@ -196,7 +142,26 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         _startFlashLoan(params, borrowToken0, _flashData(params, borrowToken0));
     }
 
+    // Compact volatile-V2 entrypoint, sharing executePlan's swap implementation.
+    function executeV2RouteFlash(
+        address startToken, uint256 amountIn, address[] calldata pools, uint256[] calldata fees
+    ) external onlyOwner executionLock(startToken) {
+        ArbParams memory route;
+        route.borrowToken = startToken;
+        route.borrowAmount = amountIn;
+        route.pools = pools;
+        route.fees = fees;
+        route.protocols = new uint8[](pools.length);
+        route.data = new bytes[](pools.length);
+        for (uint256 i; i < pools.length; ++i) route.data[i] = hex"02";
+        _startRouteSwap(route);
+    }
+
     function executeSplitArbitrage(SplitParams calldata params) external onlyOwner executionLock(params.borrowToken) {
+        _executeSplitLoan(params);
+    }
+
+    function _executeSplitLoan(SplitParams memory params) private {
         _validateSplit(params);
         bool token0 = _isToken0(params.flashPool, params.borrowToken);
         FlashData memory loan;
@@ -213,7 +178,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         _startFlashLoan(funding, token0, abi.encode(loan));
     }
 
-    function _validateSplit(SplitParams calldata params) private view {
+    function _validateSplit(SplitParams memory params) private view {
         if (params.deadline < block.timestamp || params.borrowAmount == 0 || params.stages.length < 2 || params.stages.length > 3 ||
             params.flashPool.code.length == 0 || params.flashProtocol > V3 || params.v2RepayFee >= FEE_DENOMINATOR) revert InvalidSplitPlan();
         address token = params.borrowToken;
@@ -222,14 +187,14 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         bytes32[] memory used = new bytes32[](48);
         uint256 usedCount;
         for (uint256 i; i < params.stages.length; ++i) {
-            SplitStage calldata stage = params.stages[i];
+            SplitStage memory stage = params.stages[i];
             if (stage.tokenIn != token || stage.tokenIn == stage.tokenOut || stage.branches.length == 0 || stage.branches.length > 2 ||
                 (i + 1 < params.stages.length && stage.tokenOut == params.borrowToken)) revert InvalidSplitPlan();
             for (uint256 prior; prior < i; ++prior) if (params.stages[prior].tokenIn == stage.tokenIn) revert InvalidSplitPlan();
             uint256 spent;
             uint256 proceeds;
             for (uint256 j; j < stage.branches.length; ++j) {
-                SplitBranch calldata branch = stage.branches[j];
+                SplitBranch memory branch = stage.branches[j];
                 if (branch.amountIn == 0 || branch.minAmountOut == 0 || branch.pool == params.flashPool || branch.pool.code.length == 0 ||
                     branch.protocol > CARBON || (branch.protocol == V2 && branch.fee >= FEE_DENOMINATOR)) revert InvalidSplitPlan();
                 bytes32[] memory resources = _splitResources(branch);
@@ -245,10 +210,10 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
             available = proceeds;
             token = stage.tokenOut;
         }
-        if (swaps > 6 || token != params.borrowToken) revert InvalidSplitPlan();
+        if (swaps > 6 || !_canSettle(token, params.borrowToken)) revert InvalidSplitPlan();
     }
 
-    function _splitResources(SplitBranch calldata branch) private pure returns (bytes32[] memory resources) {
+    function _splitResources(SplitBranch memory branch) private pure returns (bytes32[] memory resources) {
         if (branch.protocol != CARBON) {
             resources = new bytes32[](1);
             resources[0] = keccak256(abi.encode(branch.pool));
@@ -305,7 +270,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     // ponytail: one generic fallback handles callback name variants instead of dozens of wrappers.
     fallback() external payable {
         if (_isTransferProbe()) _transferProbeCallback();
-        if (msg.sender == pendingV3Pool && pendingV3Pool != address(0)) {
+        if (msg.sender == ExecutionState.v3().pool && ExecutionState.v3().pool != address(0)) {
             (int256 amount0Delta, int256 amount1Delta, ) =
                 abi.decode(msg.data[4:], (int256, int256, bytes));
             _finishV3SwapCallback(amount0Delta, amount1Delta);
@@ -314,6 +279,12 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
 
         if (msg.sender != pendingFlashPool || msg.data.length < 132) {
             revert InvalidFlashLoanCallback();
+        }
+
+        if (pendingFlashProtocol == V3_ROUTE_FLASH) {
+            (int256 delta0, int256 delta1, bytes memory payload) = abi.decode(msg.data[4:], (int256, int256, bytes));
+            _finishV3RouteSwap(delta0, delta1, payload);
+            return;
         }
 
         if (pendingFlashProtocol == V3) {
@@ -325,13 +296,21 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
             return;
         }
 
-        if (pendingFlashProtocol != V2) revert InvalidFlashLoanCallback();
+        if (pendingFlashProtocol != V2 && pendingFlashProtocol != V2_ROUTE_FLASH) revert InvalidFlashLoanCallback();
 
         (address sender, uint256 amount0, uint256 amount1, bytes memory data) =
             abi.decode(msg.data[4:], (address, uint256, uint256, bytes));
         if (sender != address(this)) revert InvalidFlashLoanCallback();
 
         _consumeFlashPayload(data);
+
+        if (pendingFlashProtocol == V2_ROUTE_FLASH) {
+            RouteFunding memory funding = abi.decode(data, (RouteFunding));
+            if ((funding.outputToken0 ? amount0 : amount1) != funding.output ||
+                (funding.outputToken0 ? amount1 : amount0) != 0) revert InvalidFlashLoanCallback();
+            _finishRouteSwap(funding);
+            return;
+        }
 
         FlashData memory loan = abi.decode(data, (FlashData));
         uint256 borrowedAmount = amount0 > 0 ? amount0 : amount1;
@@ -353,12 +332,14 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         _finishFlashLoan(loan, loan.borrowedAmount + (loan.borrowedToken0 ? fee0 : fee1));
     }
 
-    function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata) external {
-        _finishV3SwapCallback(amount0Delta, amount1Delta);
+    function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
+        if (msg.sender == pendingFlashPool && pendingFlashProtocol == V3_ROUTE_FLASH) {
+            _finishV3RouteSwap(amount0Delta, amount1Delta, data);
+        } else _finishV3SwapCallback(amount0Delta, amount1Delta);
     }
 
     function _finishV3SwapCallback(int256 amount0Delta, int256 amount1Delta) internal {
-        if (msg.sender != pendingV3Pool || pendingV3Pool == address(0)) revert InvalidV3SwapCallback();
+        if (msg.sender != ExecutionState.v3().pool || ExecutionState.v3().pool == address(0)) revert InvalidV3SwapCallback();
 
         address owedToken;
         uint256 owedAmount;
@@ -369,9 +350,9 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         } else {
             revert InvalidV3SwapDelta();
         }
-        if (owedToken != pendingV3Token || owedAmount != pendingV3Amount) revert InvalidV3SwapDelta();
-        pendingV3Pool = address(0);
-        pendingV3Amount = 0;
+        if (owedToken != ExecutionState.v3().token || owedAmount != ExecutionState.v3().amount) revert InvalidV3SwapDelta();
+        ExecutionState.v3().pool = address(0);
+        ExecutionState.v3().amount = 0;
         _safeTransfer(owedToken, msg.sender, owedAmount);
     }
 
@@ -403,6 +384,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
             }
             available = received;
         }
+        _settle(loan.stages[loan.stages.length - 1].tokenOut, loan.borrowedToken, available);
     }
 
     function _executeSplitBranch(address tokenIn, address tokenOut, SplitBranch memory branch) private returns (uint256 received) {
@@ -419,10 +401,11 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     }
 
     function _executeCircularRoute(FlashData memory loan) internal returns (uint256) {
-        address token = loan.borrowedToken;
-        uint256 amount = loan.borrowedAmount;
+        return _executeRoute(loan, loan.borrowedToken, loan.borrowedAmount, 0);
+    }
 
-        for (uint256 i; i < loan.pools.length; ) {
+    function _executeRoute(FlashData memory loan, address token, uint256 amount, uint256 first) private returns (uint256) {
+        for (uint256 i = first; i < loan.pools.length; ) {
             if (loan.protocols[i] == V2) {
                 bool forwardToNextV2 =
                     i + 1 < loan.pools.length &&
@@ -436,7 +419,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
                     loan.fees[i],
                     loan.data[i],
                     forwardToNextV2 ? loan.pools[i + 1] : address(this),
-                    i > 0 && loan.protocols[i - 1] == V2 && loan.pools[i - 1] != loan.pools[i] &&
+                    i > first && loan.protocols[i - 1] == V2 && loan.pools[i - 1] != loan.pools[i] &&
                     !_custodyV2(loan.data[i - 1]) && !_custodyV2(loan.data[i])
                 );
             } else if (loan.protocols[i] == V3) {
@@ -450,213 +433,31 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
             unchecked { ++i; }
         }
 
-        if (token != loan.borrowedToken) revert ArbitrageMustReturnToStart();
+        _settle(token, loan.borrowedToken, amount);
         return amount;
     }
 
-    function _swapV2(
-        address tokenIn,
-        uint256 amountIn,
-        address pairAddr,
-        uint256 fee,
-        bytes memory quoteData,
-        address recipient,
-        bool inputAlreadySent
-    ) internal returns (address tokenOut, uint256 amountOut) {
-        IUniswapV2Pair pair = IUniswapV2Pair(pairAddr);
-        (uint112 reserve0, uint112 reserve1, ) = pair.getReserves();
-        uint256 reserveIn = tokenIn == pair.token0() ? reserve0 : reserve1;
-        if (!inputAlreadySent) {
-            uint256 beforeInput = IERC20(tokenIn).balanceOf(address(this));
-            _safeTransfer(tokenIn, pairAddr, amountIn);
-            if (IERC20(tokenIn).balanceOf(address(this)) + amountIn != beforeInput) revert TokenTransferFailed();
-        }
-        // A forwarded or taxed transfer may deliver less than the previous nominal output.
-        amountIn = IERC20(tokenIn).balanceOf(pairAddr) - reserveIn;
-        bool zeroForOne;
-        (tokenOut, amountOut, zeroForOne) = _quoteV2(pair, tokenIn, amountIn, fee, quoteData);
-        uint256 beforeOutput = IERC20(tokenOut).balanceOf(recipient);
-        pair.swap(
-            zeroForOne ? 0 : amountOut,
-            zeroForOne ? amountOut : 0,
-            recipient,
-            hex""
-        );
-        amountOut = IERC20(tokenOut).balanceOf(recipient) - beforeOutput;
+    function _swapV2(address token, uint256 amount, address pool, uint256 fee, bytes memory data, address recipient, bool sent)
+        internal returns (address, uint256) {
+        return abi.decode(_runLogic(address(v2Logic), abi.encodeCall(V2Logic.swap, (token, amount, pool, fee, data, recipient, sent))), (address, uint256));
     }
 
     function _custodyV2(bytes memory data) private pure returns (bool) {
         return data.length == 1 && (data[0] == 0x02 || data[0] == 0x03);
     }
 
-    function _quoteV2(
-        IUniswapV2Pair pair,
-        address tokenIn,
-        uint256 amountIn,
-        uint256 fee,
-        bytes memory quoteData
-    ) internal view returns (address tokenOut, uint256 amountOut, bool zeroForOne) {
-        if (quoteData.length != 0) {
-            if (quoteData.length != 1 || uint8(quoteData[0]) > 3 || quoteData[0] == 0x00) revert UnsupportedV2QuoteMode();
-            if (quoteData[0] == 0x01 || quoteData[0] == 0x03) return _quoteStableV2(address(pair), tokenIn, amountIn, fee);
-        }
-
-        address token0 = pair.token0();
-        address token1 = pair.token1();
-        zeroForOne = tokenIn == token0;
-        if (!zeroForOne && tokenIn != token1) revert SwapPathError();
-
-        (uint112 reserve0, uint112 reserve1, ) = pair.getReserves();
-        uint256 reserveIn = zeroForOne ? reserve0 : reserve1;
-        uint256 reserveOut = zeroForOne ? reserve1 : reserve0;
-        if (reserveIn == 0 || reserveOut == 0) revert InvalidReserves();
-
-        amountOut = _v2AmountOut(amountIn, reserveIn, reserveOut, fee);
-        if (amountOut >= reserveOut) revert OutputExceedsReserve();
-        tokenOut = zeroForOne ? token1 : token0;
+    function _swapV3(address token, uint256 amount, address pool) internal returns (address, uint256) {
+        return abi.decode(_runLogic(address(v3Logic), abi.encodeCall(V3Logic.swap, (token, amount, pool))), (address, uint256));
     }
 
-    function _quoteStableV2(
-        address pair,
-        address tokenIn,
-        uint256 amountIn,
-        uint256 fee
-    ) internal view returns (address tokenOut, uint256 amountOut, bool zeroForOne) {
-        StablePairState memory state = _stablePairState(pair);
-        if (!state.stable) revert InvalidStablePair();
-
-        zeroForOne = tokenIn == state.token0;
-        if (!zeroForOne && tokenIn != state.token1) revert SwapPathError();
-        if (state.reserve0 == 0 || state.reserve1 == 0 || state.scale0 == 0 || state.scale1 == 0) revert InvalidReserves();
-
-        amountOut = zeroForOne
-            ? _stableAmountOut(amountIn, state.reserve0, state.reserve1, state.scale0, state.scale1, fee)
-            : _stableAmountOut(amountIn, state.reserve1, state.reserve0, state.scale1, state.scale0, fee);
-        if (amountOut >= (zeroForOne ? state.reserve1 : state.reserve0)) revert OutputExceedsReserve();
-        tokenOut = zeroForOne ? state.token1 : state.token0;
+    function _swapCarbon(address token, uint256 amount, address controller, bytes memory data) internal returns (address, uint256) {
+        return abi.decode(_runLogic(address(carbonLogic), abi.encodeCall(CarbonLogic.swap, (token, amount, controller, data, wrappedNativeToken))), (address, uint256));
     }
 
-    function _stablePairState(address pair) private view returns (StablePairState memory state) {
-        (
-            state.scale0,
-            state.scale1,
-            state.reserve0,
-            state.reserve1,
-            state.stable,
-            state.token0,
-            state.token1
-        ) = IBaseV1Pair(pair).metadata();
-    }
-
-    function _swapV3(
-        address tokenIn,
-        uint256 amountIn,
-        address poolAddr
-    ) internal returns (address tokenOut, uint256 amountOut) {
-        IUniswapV3Pool pool = IUniswapV3Pool(poolAddr);
-        address token0 = pool.token0();
-        address token1 = pool.token1();
-        bool zeroForOne = tokenIn == token0;
-        if (!zeroForOne && tokenIn != token1) revert SwapPathError();
-
-        tokenOut = zeroForOne ? token1 : token0;
-
-        pendingV3Pool = poolAddr;
-        if (amountIn > uint256(type(int256).max)) revert InvalidV3SwapDelta();
-        pendingV3Token = tokenIn;
-        pendingV3Amount = amountIn;
-        (int256 amount0, int256 amount1) = pool.swap(
-            address(this),
-            zeroForOne,
-            int256(amountIn),
-            zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
-            hex""
-        );
-        if (pendingV3Pool != address(0) || (zeroForOne ? amount0 : amount1) != int256(amountIn)) revert InvalidV3SwapDelta();
-        pendingV3Token = address(0);
-
-        int256 outputDelta = zeroForOne ? amount1 : amount0;
-        if (outputDelta >= 0) revert InvalidV3SwapDelta();
-        amountOut = uint256(-outputDelta);
-    }
-
-    function _swapCarbon(
-        address tokenIn,
-        uint256 amountIn,
-        address controller,
-        bytes memory data
-    ) internal returns (address tokenOut, uint256 amountOut) {
-        if (amountIn > type(uint128).max) revert InvalidCarbonAmount();
-
-        address rawSourceToken;
-        address rawTargetToken;
-        ICarbonController.TradeAction[] memory actions;
-        if (data.length == 96) {
-            uint256 strategyId;
-            (strategyId, rawSourceToken, rawTargetToken) = abi.decode(data, (uint256, address, address));
-            actions = new ICarbonController.TradeAction[](1);
-            actions[0] = ICarbonController.TradeAction({strategyId: strategyId, amount: uint128(amountIn)});
-        } else {
-            uint256[] memory strategyIds;
-            uint128[] memory amounts;
-            (rawSourceToken, rawTargetToken, strategyIds, amounts) =
-                abi.decode(data, (address, address, uint256[], uint128[]));
-            if (strategyIds.length == 0 || strategyIds.length != amounts.length) revert SwapPathError();
-
-            actions = new ICarbonController.TradeAction[](strategyIds.length);
-            uint256 totalActionAmount;
-            for (uint256 i; i < strategyIds.length; ) {
-                totalActionAmount += amounts[i];
-                actions[i] = ICarbonController.TradeAction({
-                    strategyId: strategyIds[i],
-                    amount: amounts[i]
-                });
-                unchecked { ++i; }
-            }
-            if (totalActionAmount != amountIn) revert InvalidCarbonAmount();
-        }
-        bool sourceIsNative = rawSourceToken == NATIVE_TOKEN;
-        bool targetIsNative = rawTargetToken == NATIVE_TOKEN;
-        tokenOut = targetIsNative ? wrappedNativeToken : rawTargetToken;
-        if (sourceIsNative && tokenIn != wrappedNativeToken) revert SwapPathError();
-        if (!sourceIsNative && tokenIn != rawSourceToken) revert SwapPathError();
-
-        if (sourceIsNative) {
-            IWrappedNative(wrappedNativeToken).withdraw(amountIn);
-        } else {
-            _approveCarbonIfNeeded(tokenIn, controller, amountIn);
-        }
-
-        uint256 balanceBefore = targetIsNative
-            ? address(this).balance
-            : IERC20(rawTargetToken).balanceOf(address(this));
-
-        ICarbonController(controller).tradeBySourceAmount{value: sourceIsNative ? amountIn : 0}(
-            rawSourceToken,
-            rawTargetToken,
-            actions,
-            block.timestamp,
-            1
-        );
-        if (!sourceIsNative && IERC20(tokenIn).allowance(address(this), controller) != 0 &&
-            !IERC20(tokenIn).approve(controller, 0)) revert CarbonApprovalFailed();
-
-        if (targetIsNative) {
-            amountOut = address(this).balance - balanceBefore;
-            IWrappedNative(wrappedNativeToken).deposit{value: amountOut}();
-        } else {
-            amountOut = IERC20(rawTargetToken).balanceOf(address(this)) - balanceBefore;
-        }
-
-        if (amountOut == 0) revert SwapPathError();
-    }
-
-    function _approveCarbonIfNeeded(address token, address controller, uint256 amount) internal {
-        uint256 allowance = IERC20(token).allowance(address(this), controller);
-        if (allowance == amount) return;
-
-        if (allowance != 0 && !IERC20(token).approve(controller, 0)) revert CarbonApprovalFailed();
-        if (!IERC20(token).approve(controller, amount)) revert CarbonApprovalFailed();
+    function _runLogic(address logic, bytes memory data) private returns (bytes memory result) {
+        bool ok;
+        (ok, result) = logic.delegatecall(data);
+        if (!ok) assembly ("memory-safe") { revert(add(result, 32), mload(result)) }
     }
 
     function _isToken0(address pool, address token) internal view returns (bool) {
@@ -666,7 +467,7 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         return false;
     }
 
-    function _flashData(ArbParams calldata params, bool borrowedToken0) internal view returns (bytes memory) {
+    function _flashData(ArbParams memory params, bool borrowedToken0) internal view returns (bytes memory) {
         FlashData memory loan;
         loan.borrowedToken = params.borrowToken;
         loan.borrowedAmount = params.borrowAmount;
@@ -680,85 +481,132 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
         return abi.encode(loan);
     }
 
-    function _v2AmountOut(
-        uint256 amountIn,
-        uint256 reserveIn,
-        uint256 reserveOut,
-        uint256 fee
-    ) internal pure returns (uint256) {
-        uint256 amountInWithFee = amountIn * (FEE_DENOMINATOR - fee);
-        return (amountInWithFee * reserveOut) / ((reserveIn * FEE_DENOMINATOR) + amountInWithFee);
-    }
-
     function _v2RepayAmount(uint256 borrowedAmount, uint256 fee) internal pure returns (uint256) {
         uint256 denominator = FEE_DENOMINATOR - fee;
         return borrowedAmount + ((borrowedAmount * fee + denominator - 1) / denominator);
     }
 
-    function _stableAmountOut(
-        uint256 amountIn,
-        uint256 reserveIn,
-        uint256 reserveOut,
-        uint256 scaleIn,
-        uint256 scaleOut,
-        uint256 fee
-    ) internal pure returns (uint256) {
-        amountIn -= (amountIn * fee) / FEE_DENOMINATOR;
-        uint256 normalizedIn = (reserveIn * ONE) / scaleIn;
-        uint256 normalizedOut = (reserveOut * ONE) / scaleOut;
-        uint256 invariant = _stableK(normalizedIn, normalizedOut);
-        uint256 nextOut = _stableY(
-            normalizedIn + (amountIn * ONE) / scaleIn,
-            invariant,
-            normalizedOut
-        );
-        return ((normalizedOut - nextOut) * scaleOut) / ONE;
-    }
-
-    function _stableK(uint256 x, uint256 y) private pure returns (uint256) {
-        uint256 a = (x * y) / ONE;
-        uint256 b = ((x * x) / ONE) + ((y * y) / ONE);
-        return (a * b) / ONE;
-    }
-
-    function _stableF(uint256 x, uint256 x3, uint256 y) private pure returns (uint256) {
-        return _stableF(x, x3, y, (y * y) / ONE);
-    }
-
-    function _stableF(uint256 x, uint256 x3, uint256 y, uint256 y2) private pure returns (uint256) {
-        return (x * ((y2 * y) / ONE)) / ONE + (x3 * y) / ONE;
-    }
-
-    function _stableY(uint256 x, uint256 invariant, uint256 y) private pure returns (uint256) {
-        uint256 x3 = ((((x * x) / ONE) * x) / ONE);
-        for (uint256 i; i < 255; ) {
-            uint256 y2 = (y * y) / ONE;
-            uint256 k = _stableF(x, x3, y, y2);
-            uint256 d = (3 * x * y2) / ONE + x3;
-            if (d == 0) revert InvalidReserves();
-
-            if (k < invariant) {
-                uint256 dy = ((invariant - k) * ONE) / d;
-                if (dy == 0) {
-                    if (k == invariant) return y;
-                    if (_stableF(x, x3, y + 1) > invariant) return y + 1;
-                    dy = 1;
-                }
-                y += dy;
-            } else {
-                uint256 dy = ((k - invariant) * ONE) / d;
-                if (dy == 0) {
-                    if (k == invariant || _stableF(x, x3, y - 1) < invariant) return y;
-                    dy = 1;
-                }
-                y -= dy;
-            }
-            unchecked { ++i; }
-        }
-        revert StableSolverDidNotConverge();
-    }
-
     function _safeTransfer(address token, address to, uint256 amount) internal {
         if (!IERC20(token).transfer(to, amount)) revert TokenTransferFailed();
+    }
+
+    struct Plan {
+        ArbParams route;
+        SplitStage[] stages;
+        uint256 deadline;
+        bool routeSwap;
+    }
+
+    struct RouteFunding {
+        FlashData loan;
+        address outputToken;
+        uint256 output;
+        uint256 outputBefore;
+        bool outputToken0;
+    }
+
+    // Only approve audited WETH9-style wrappers of this chain's native coin.
+    function setWrapper(address wrapper, bool approved) external onlyOwner {
+        if (executing) revert ExecutionInProgress();
+        if (wrapper == wrappedNativeToken && !approved) revert InvalidWrappedNativeToken();
+        if (wrapper == NATIVE_TOKEN || wrapper.code.length == 0) revert InvalidWrappedNativeToken();
+        approvedWrapper[wrapper] = approved;
+    }
+
+    function executePlan(Plan calldata plan) external onlyOwner executionLock(plan.route.borrowToken) {
+        _executePlan(plan);
+    }
+
+    function executeBatch(Plan[] calldata plans) external onlyOwner executionLock(plans[0].route.borrowToken) {
+        if (plans.length != 2) revert InvalidSplitPlan();
+        if (plans[0].route.borrowToken != plans[1].route.borrowToken) revert ArbitrageMustReturnToStart();
+        // Return from A's funding call before B, releasing the pool's swap lock.
+        // Each repayment also protects the inventory present before that plan.
+        _executePlan(plans[0]);
+        _executePlan(plans[1]);
+    }
+
+    function _executePlan(Plan memory plan) private {
+        if (plan.deadline < block.timestamp) revert InvalidSplitPlan();
+        if (plan.routeSwap) {
+            if (plan.stages.length != 0) revert InvalidSplitPlan();
+            _startRouteSwap(plan.route);
+        } else if (plan.stages.length != 0) {
+            _executeSplitLoan(SplitParams(plan.route.flashProtocol, plan.route.flashPool,
+                plan.route.borrowToken, plan.route.borrowAmount, plan.route.v2RepayFee, plan.stages, plan.deadline));
+        } else _executeLoan(plan.route);
+    }
+
+    function _canSettle(address token, address target) private view returns (bool) {
+        return token == target || (approvedWrapper[token] && approvedWrapper[target]);
+    }
+
+    function _settle(address token, address target, uint256 amount) private {
+        if (token == target) return;
+        if (!_canSettle(token, target)) revert ArbitrageMustReturnToStart();
+        uint256 nativeBefore = address(this).balance;
+        uint256 sourceBefore = IERC20(token).balanceOf(address(this));
+        uint256 targetBefore = IERC20(target).balanceOf(address(this));
+        IWrappedNative(token).withdraw(amount);
+        if (address(this).balance != nativeBefore + amount ||
+            IERC20(token).balanceOf(address(this)) + amount != sourceBefore) revert InvalidWrappedNativeToken();
+        IWrappedNative(target).deposit{value: amount}();
+        if (address(this).balance != nativeBefore ||
+            IERC20(target).balanceOf(address(this)) != targetBefore + amount) revert InvalidWrappedNativeToken();
+    }
+
+    function _startRouteSwap(ArbParams memory params) private {
+        uint256 length = params.pools.length;
+        if (length == 0 || length != params.protocols.length || length != params.fees.length || length != params.data.length)
+            revert ArrayLengthMismatch();
+        if (params.borrowAmount == 0 || params.borrowAmount > uint256(type(int256).max)) revert InvalidV3SwapDelta();
+        for (uint256 i = 1; i < length; ++i) if (params.pools[i] == params.pools[0]) revert InvalidSplitPlan();
+        uint8 protocol = params.protocols[0];
+        if (protocol > V3) revert UnsupportedProtocol();
+        bool input0 = _isToken0(params.pools[0], params.borrowToken);
+        RouteFunding memory funding;
+        funding.loan = abi.decode(_flashData(params, input0), (FlashData));
+        funding.outputToken = input0 ? IUniswapV2Pair(params.pools[0]).token1() : IUniswapV2Pair(params.pools[0]).token0();
+        funding.outputToken0 = !input0;
+        funding.outputBefore = IERC20(funding.outputToken).balanceOf(address(this));
+        if (protocol == V2) {
+            (, funding.output,) = v2Logic.quote(params.pools[0], params.borrowToken, params.borrowAmount, params.fees[0], params.data[0]);
+        }
+        bytes memory data = abi.encode(funding);
+        pendingFlashPool = params.pools[0];
+        pendingFlashProtocol = protocol == V2 ? V2_ROUTE_FLASH : V3_ROUTE_FLASH;
+        pendingFlashHash = keccak256(data);
+        if (protocol == V2) {
+            IUniswapV2Pair(params.pools[0]).swap(input0 ? 0 : funding.output, input0 ? funding.output : 0, address(this), data);
+        } else {
+            (int256 delta0, int256 delta1) = IUniswapV3Pool(params.pools[0]).swap(address(this), input0,
+                int256(params.borrowAmount), input0 ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE, data);
+            if ((input0 ? delta0 : delta1) != int256(params.borrowAmount)) revert InvalidV3SwapDelta();
+        }
+        if (pendingFlashHash != bytes32(0)) revert InvalidFlashLoanCallback();
+        pendingFlashPool = address(0);
+        pendingFlashProtocol = 0;
+    }
+
+    function _finishV3RouteSwap(int256 delta0, int256 delta1, bytes memory data) private {
+        if (msg.sender != pendingFlashPool || pendingFlashProtocol != V3_ROUTE_FLASH) revert InvalidFlashLoanCallback();
+        _consumeFlashPayload(data);
+        RouteFunding memory funding = abi.decode(data, (RouteFunding));
+        int256 owed = funding.outputToken0 ? delta1 : delta0;
+        int256 output = funding.outputToken0 ? delta0 : delta1;
+        if (owed != int256(funding.loan.borrowedAmount) || output >= 0) revert InvalidV3SwapDelta();
+        _finishRouteSwap(funding);
+    }
+
+    function _finishRouteSwap(RouteFunding memory funding) private {
+        uint256 received = IERC20(funding.outputToken).balanceOf(address(this)) - funding.outputBefore;
+        if (received == 0) revert InvalidFlashLoanCallback();
+        _executeRoute(funding.loan, funding.outputToken, received, 1);
+        uint256 repay = funding.loan.borrowedAmount;
+        address token = funding.loan.borrowedToken;
+        if (IERC20(token).balanceOf(address(this)) < funding.loan.startBalance + repay) revert InsufficientFlashLoanRepayment();
+        uint256 beforePayment = IERC20(token).balanceOf(address(this));
+        _safeTransfer(token, msg.sender, repay);
+        if (IERC20(token).balanceOf(address(this)) + repay != beforePayment) revert TokenTransferFailed();
     }
 }

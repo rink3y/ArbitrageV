@@ -186,4 +186,48 @@ test('worker formatting distinguishes expired quotes from executable opportuniti
     ageMs: 600, ageLimitMs: 500 }] });
   expect(output).toContain('Quoted profit:');
   expect(output).toContain('expired; not executable');
+  const valued = formatReport({ at: 0, level: 'debug', args: ['Opportunity', { index: 1, status: null,
+    path: ['A', 'B'], pairs: ['pool'], fees: [30n], protocols: ['v2'], profit: 1000000n, netProfit: 1000000n,
+    netProfitNative: 2n * 10n ** 18n, nativeToken: { name: 'NATIVE', decimals: 18 },
+    optimalInput: 1000000n, ageLimitMs: 500, routeSwap: true, followUpMode: 'batch' }] });
+  expect(valued).toContain('Estimated native net after gas: 2 NATIVE');
+  expect(valued).not.toContain('Conservative net after gas');
+  expect(valued).toContain('Prepared follow-up: batch');
 });
+
+test('shutdown has a deadline when the output pipe is not being drained', async () => {
+  const child = Bun.spawn([process.execPath, 'run', './test/fixtures/reporting-lifecycle.ts', 'debug', 'flood'],
+    { stdout: 'pipe', stderr: 'pipe' });
+  const started = Date.now();
+  const timer = setTimeout(() => child.kill(), 4000);
+  try {
+    // Deliberately do not read stdout until after exit.
+    expect(await child.exited).toBe(0);
+    expect(Date.now() - started).toBeLessThan(3500);
+    await new Response(child.stdout).text();
+    expect(await new Response(child.stderr).text()).toBe('');
+  } finally { clearTimeout(timer); child.kill(); }
+});
+
+for (const level of ['off', 'debug']) for (const fatal of [false, true]) {
+  test(`reporting lifecycle ${level}, fatal=${fatal}: bounded exit and sanitized output`, async () => {
+    const child = Bun.spawn([process.execPath, 'run', './test/fixtures/reporting-lifecycle.ts', level, fatal ? 'fatal' : 'normal'],
+      { cwd: process.cwd(), stdout: 'pipe', stderr: 'pipe' });
+    const timer = setTimeout(() => child.kill(), 4000);
+    try {
+      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(code).toBe(fatal ? 1 : 0);
+      expect(err).toBe('');
+      if (level === 'off') expect(out).toBe('');
+      else {
+        expect(out).toContain('SUBMISSIONS_STOPPED');
+        if (fatal) {
+          expect(out).toContain('fixture fatal');
+          expect(out.indexOf('SUBMISSIONS_STOPPED')).toBeLessThan(out.indexOf('Bot stopped after a fatal error'));
+          expect(out).not.toContain('private.rpc');
+          expect(out).not.toContain('1'.repeat(64));
+        }
+      }
+    } finally { clearTimeout(timer); child.kill(); }
+  });
+}

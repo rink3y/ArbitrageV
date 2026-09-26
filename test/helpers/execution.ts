@@ -9,3 +9,11 @@ export async function startedTestGasFees(): Promise<GasFees> {
   await fees.start();
   return fees;
 }
+
+
+// The executor's startup capability checks are separate from nonce and fee reads.
+export async function readExecutorContract({ functionName }: { functionName: string }) {
+  if (functionName === 'approvedWrapper') return true;
+  if (functionName === 'v2Logic') return '0x0000000000000000000000000000000000000320';
+  throw new Error('Unexpected executor read: ' + functionName);
+}

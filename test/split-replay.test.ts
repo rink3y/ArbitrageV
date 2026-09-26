@@ -1,7 +1,7 @@
-import { v2Pair } from './helpers/markets';
+import { v2Pair, routeTokens } from './helpers/markets';
 import { expect, test } from 'bun:test';
 import { MarketGraph } from '../src/market-graph/market-graph';
-import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY, TOKENS } from '../src/constants';
+import { ARBITRAGE_SEARCH_POLICY, EXECUTION_POLICY } from '../src/constants';
 import { applyV2SplitFill, replayJSON, type V2ReplayPlan } from '../src/opportunities/split-replay';
 import { mkdtemp, unlink, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 test('offline V2 fills consume reserves instead of counting an unchanged quote as new revenue', () => {
   const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY);
-  const [a, b] = TOKENS.map(token => token.address);
+  const [a, b] = routeTokens.map(token => token.address);
   const addr = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const;
   for (const [id, x, y] of [[1, 1000n, 2000n], [2, 1000n, 2000n], [3, 2000n, 2000n], [4, 100000n, 100000n]] as const)
     graph.addPair(v2Pair(id, a, b, x, y, 0));
@@ -26,7 +26,7 @@ test('offline V2 fills consume reserves instead of counting an unchanged quote a
 });
 
 test('fill model requires a positive token surplus without a quoted-profit floor', () => {
-  const [a, b] = TOKENS.map(token => token.address);
+  const [a, b] = routeTokens.map(token => token.address);
   const addr = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const;
   for (const [sellReserve, profit] of [[1305n, 0n], [1312n, 1n]]) {
     const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY);
@@ -46,10 +46,10 @@ test('recorded NDJSON replays through the offline CLI without credentials or a r
   const directory = await mkdtemp(join(tmpdir(), 'arb-split-replay-'));
   const file = join(directory, 'recording.ndjson');
   const graph = new MarketGraph(ARBITRAGE_SEARCH_POLICY);
-  const [a, b] = TOKENS.map(token => token.address);
+  const [a, b] = routeTokens.map(token => token.address);
   for (const [id, x, y] of [[1, 1000n, 2000n], [2, 1000n, 2000n], [3, 2000n, 2000n], [4, 100000n, 100000n]] as const)
     graph.addPair(v2Pair(id, a, b, x, y, 0));
-  const costs = { validUntil: 11000, gasPriceWei: 1n, rates: { [a.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimit } } };
+  const costs = { validUntil: 11000, gasPriceWei: 1n, rates: { [a.toLowerCase()]: { numerator: 1n, denominator: EXECUTION_POLICY.gasLimits.single } } };
   const frames = [
     { at: 1000, changes: graph.takeChanges(true), startTokens: [a], costs },
     { at: 1001, changes: graph.takeChanges(), startTokens: [a], costs },
@@ -57,11 +57,12 @@ test('recorded NDJSON replays through the offline CLI without credentials or a r
   try {
     await Bun.write(file, frames.map(frame => replayJSON.stringify(frame)).join('\n') + '\n');
     const script = `
-      const { ARBITRAGE_SEARCH_POLICY, TOKENS } = await import(${JSON.stringify(new URL('../src/constants.ts', import.meta.url).href)});
+      const { ARBITRAGE_SEARCH_POLICY, CONFIGURED_TOKENS } = await import(${JSON.stringify(new URL('../src/constants.ts', import.meta.url).href)});
       ARBITRAGE_SEARCH_POLICY.splitSearchMs = 1000;
+      ARBITRAGE_SEARCH_POLICY.minProfitNative = undefined;
       ARBITRAGE_SEARCH_POLICY.maxSearchExpansions = 100000;
       ARBITRAGE_SEARCH_POLICY.maxInputReserveFraction = 5n;
-      TOKENS[0].minProfit = 1n;
+      CONFIGURED_TOKENS[0].minProfitNative = 1n;
       process.argv[2] = ${JSON.stringify(file)};
       await import(${JSON.stringify(new URL('../scripts/replay-split.ts', import.meta.url).href)});
     `;

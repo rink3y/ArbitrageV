@@ -1,5 +1,5 @@
 import { type Address } from 'viem';
-import { EXECUTION_POLICY, RUNTIME, TOKENS } from '../constants';
+import { EXECUTION_POLICY, NETWORK, RUNTIME, CONFIGURED_TOKENS } from '../constants';
 import { OpportunityManager } from '../execute';
 import { type ExecutableOpportunity } from '../execution/execution-planner';
 import { type NetworkConfig } from '../network';
@@ -41,7 +41,9 @@ export async function createOpportunityScanner(
   const search = new WorkerSearch(engine.graph, engine.policy, engine.tokens);
   let stopped = false;
   return {
-    warm: async () => { await search.search({ startTokens: [] }); },
+    // Rank automatic start tokens during buffered startup, before the first
+    // live quote's freshness clock. These warm-up results are never submitted.
+    warm: async () => { await search.search({ startTokens: [], autoSelect: true }); },
     scan: request => stopped ? Promise.resolve([]) : scanAndExecuteOpportunities(engine, search, manager, gasFees, request),
     stop: () => { stopped = true; search.stop(); manager?.stop(); gasFees.stop(); },
   };
@@ -62,7 +64,7 @@ async function scanAndExecuteOpportunities(
   if (latency.enabled) latency.observe('scan.inputAge', Math.max(0, Date.now() - searchRequest.observedAt!));
   const results = await search.search({
     ...searchRequest,
-    splitCosts: splitCostsFromSnapshot(engine.tokens, feeSnapshot),
+    splitCosts: splitCostsFromSnapshot(feeSnapshot),
   });
   const checkedAt = Date.now();
   const opportunities: ArbitrageSearchResult = [];
@@ -106,6 +108,7 @@ function createSearchRequest(engine: OpportunityEngine, request: OpportunityWork
 
   return {
     startTokens,
+    autoSelect: true,
     changedPairs: request.changedPairs,
     observedAt: request.observedAt ?? Date.now(),
   };
@@ -131,20 +134,24 @@ function logOpportunities(
   results.forEach((opportunity, index) => {
     const { path, profit, pairs, fees, optimalInput } = opportunity;
     const startToken = path[0];
-    const startTokenInfo = TOKENS.find(addr => addr.address === startToken);
+    const startTokenInfo = CONFIGURED_TOKENS.find(addr => addr.address === startToken);
 
-    const lastToken = path[path.length - 1];
-    const lastTokenInfo = TOKENS.find(addr => addr.address === lastToken);
 
     const status = invalidatedSet.has(opportunity) ? 'market changed or feed unavailable; not executable'
       : expiredSet.has(opportunity) ? 'expired; not executable' : null;
     logger.debug('Opportunity', { index: index + 1, status, path, profit, netProfit: opportunity.netProfit,
+      netProfitNative: opportunity.netProfitNative, routeSwap: opportunity.routeSwap, followUpMode: opportunity.followUp ? EXECUTION_POLICY.followUpMode : 'off',
+      nativeToken: { name: NETWORK.chain.nativeCurrency.symbol, decimals: NETWORK.chain.nativeCurrency.decimals },
       optimalInput, pairs, fees, protocols: opportunity.protocols,
       inputToken: startTokenInfo && { name: startTokenInfo.name, decimals: startTokenInfo.decimals },
-      profitToken: lastTokenInfo && { name: lastTokenInfo.name, decimals: lastTokenInfo.decimals },
+      profitToken: startTokenInfo && { name: startTokenInfo.name, decimals: startTokenInfo.decimals },
       ageMs: opportunity.observedAt === undefined ? undefined : checkedAt - opportunity.observedAt,
       ageLimitMs: RUNTIME.candidateMaxAgeMs,
     });
     if (opportunity.split) logger.debug('Split allocation', opportunity.split);
+    if (opportunity.followUp) logger.debug('Predicted follow-up', {
+      mode: EXECUTION_POLICY.followUpMode, path: opportunity.followUp.path, pairs: opportunity.followUp.pairs,
+      profit: opportunity.followUp.profit, netProfitNative: opportunity.followUp.netProfitNative,
+    });
   });
 }

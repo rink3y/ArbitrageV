@@ -1,6 +1,6 @@
 import { logger } from '../../reporting/logger';
 import { parseAbi, type Address } from 'viem';
-import { TOKENS } from '../../constants';
+import { CONFIGURED_TOKENS } from '../../constants';
 import { graphToken } from '../../tokens';
 import { CARBON_CONTROLLERS } from './config';
 import { type CarbonPairMetadata } from './types';
@@ -22,7 +22,7 @@ export async function discoverCarbonPairs(
   options: DiscoverCarbonPairsOptions = {}
 ): Promise<CarbonPairMetadata[]> {
   const allowed = new Set([
-    ...TOKENS.map(token => graphToken(token.address).toLowerCase()),
+    ...CONFIGURED_TOKENS.map(token => graphToken(token.address).toLowerCase()),
     ...(options.allowedTokens ?? []).map(token => graphToken(token).toLowerCase()),
   ]);
   const pairs: CarbonPairMetadata[] = [];

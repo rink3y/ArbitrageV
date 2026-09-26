@@ -6,7 +6,7 @@ import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter'
 import { decodeV2SyncEvent, V2_SYNC_EVENT_ABI } from './events';
 import { type ReserveUpdate } from './types';
 
-import { CONTRACTS, TOKENS } from '../../constants';
+import { CONTRACTS, CONFIGURED_TOKENS } from '../../constants';
 import { V2_DISCOVERY_POLICY as PAIR_DISCOVERY_POLICY, V2_FACTORIES as DEX_FACTORIES, V2_LIVE_POLICY } from './config';
 import UniswapFlashQueryABI from '../../ABI/UniswapFlashQuery.json';
 import { type PairInfo as MarketPairInfo } from './types';
@@ -31,41 +31,21 @@ function isPairActive(lastTimestamp: number): boolean {
 }
 
 function hasEnoughLiquidity(pair: DiscoveredPairInfo): boolean {
+    if (pair.reserve0 <= 0n || pair.reserve1 <= 0n) return false;
     let hasMonitoredToken = false;
-    
-    for (const { address, liquidityAmount } of TOKENS) {
-        if (pair.token0 === address) {
+    for (const { address, liquidityAmount } of CONFIGURED_TOKENS) {
+        if (pair.token0.toLowerCase() === address.toLowerCase()) {
             hasMonitoredToken = true;
-            if (logger.debugEnabled) logger.debug(`Checking liquidity for monitored token ${address} in pair ${pair.pairAddress} (token0)`);
-            if (pair.reserve0 < liquidityAmount) {
-                if (logger.debugEnabled) logger.debug(`Insufficient liquidity for monitored token ${address}: ${pair.reserve0} < ${liquidityAmount}`);
-                return false;
-            }
+            if (pair.reserve0 < liquidityAmount) return false;
         }
-        if (pair.token1 === address) {
+        if (pair.token1.toLowerCase() === address.toLowerCase()) {
             hasMonitoredToken = true;
-            if (logger.debugEnabled) logger.debug(`Checking liquidity for monitored token ${address} in pair ${pair.pairAddress} (token1)`);
-            if (pair.reserve1 < liquidityAmount) {
-                if (logger.debugEnabled) logger.debug(`Insufficient liquidity for monitored token ${address}: ${pair.reserve1} < ${liquidityAmount}`);
-                return false;
-            }
+            if (pair.reserve1 < liquidityAmount) return false;
         }
     }
-    
-    if (hasMonitoredToken) {
-        return true;
-    }
-    
-    const hasEnoughLiquidity = pair.reserve0 >= PAIR_DISCOVERY_POLICY.minOtherTokenLiquidity ||
-                              pair.reserve1 >= PAIR_DISCOVERY_POLICY.minOtherTokenLiquidity;
-                              
-    if (logger.debugEnabled && !hasEnoughLiquidity) {
-        logger.debug(`Insufficient liquidity for non-monitored pair ${pair.pairAddress}: ` +
-                   `reserve0=${pair.reserve0}, reserve1=${pair.reserve1}, ` +
-                   `required=${PAIR_DISCOVERY_POLICY.minOtherTokenLiquidity}`);
-    }
-    
-    return hasEnoughLiquidity;
+    if (hasMonitoredToken) return true;
+    return pair.reserve0 >= PAIR_DISCOVERY_POLICY.minOtherTokenLiquidity ||
+           pair.reserve1 >= PAIR_DISCOVERY_POLICY.minOtherTokenLiquidity;
 }
 
 async function getReservesForPairs(

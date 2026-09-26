@@ -1,7 +1,7 @@
 import { logger } from '../../reporting/logger';
 import { type Address, type PublicClient } from 'viem';
 import UniswapFlashQueryABI from '../../ABI/UniswapFlashQuery.json';
-import { CONTRACTS, TOKENS } from '../../constants';
+import { CONTRACTS, CONFIGURED_TOKENS } from '../../constants';
 import { CARBON_CONTROLLERS, CARBON_STARTUP_POLICY } from './config';
 import { graphToken } from '../../tokens';
 import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter';
@@ -305,7 +305,7 @@ export class CarbonStrategyStore {
 
   private orderHasEnoughLiquidity(order: CarbonOrder, targetToken: Address): boolean {
     if (order.y <= 0n) return false;
-    const token = TOKENS.find(config => config.address.toLowerCase() === graphToken(targetToken).toLowerCase());
+    const token = CONFIGURED_TOKENS.find(config => config.address.toLowerCase() === graphToken(targetToken).toLowerCase());
     return !token || order.y >= token.liquidityAmount;
   }
 

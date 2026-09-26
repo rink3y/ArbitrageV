@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, spyOn, test } from 'bun:test';
-import { ARBITRAGE_SEARCH_POLICY, CONTRACTS, NETWORK } from '../src/constants';
+import { ARBITRAGE_SEARCH_POLICY, CONTRACTS, NETWORK, WRAPPED_NATIVE_TOKENS, TOKENS } from '../src/constants';
 import * as marketDb from '../src/market-db';
 import * as network from '../src/network';
 import * as workflow from '../src/opportunities/opportunity-workflow';
@@ -107,6 +107,7 @@ test('empty protocol configuration fails before network initialization', async (
 
 test('read clients require an RPC URL but no private key', async () => {
   const previousNetwork = { ...NETWORK };
+  const previousWrapper = WRAPPED_NATIVE_TOKENS[0].address;
   try {
     Object.assign(NETWORK, { rpcUrl: undefined, privateKey: undefined });
     expect(() => network.createReadClient()).toThrow('RPC_URL is required');
@@ -121,10 +122,23 @@ test('read clients require an RPC URL but no private key', async () => {
     expect(client.transport.url).toBe('http://127.0.0.1:1');
     expect(client.account).toBeUndefined();
     await expect(network.initializeNetwork()).rejects.toThrow('PRIVATE_KEY is required');
-    Object.assign(NETWORK, { wrappedNativeToken: '0x0000000000000000000000000000000000000000' });
+    WRAPPED_NATIVE_TOKENS[0].address = '0x0000000000000000000000000000000000000000';
     expect(() => network.createReadClient()).toThrow('nonzero token address');
   } finally {
+    WRAPPED_NATIVE_TOKENS[0].address = previousWrapper;
     Object.assign(NETWORK, previousNetwork);
+  }
+});
+
+test('duplicate token entries fail locally before creating a client', () => {
+  const previousRpc = NETWORK.rpcUrl;
+  Object.assign(NETWORK, { rpcUrl: 'http://127.0.0.1:1' });
+  TOKENS.push({ ...WRAPPED_NATIVE_TOKENS[0], address: WRAPPED_NATIVE_TOKENS[0].address.toLowerCase() as `0x${string}` });
+  try {
+    expect(() => network.createReadClient()).toThrow('Token configured more than once');
+  } finally {
+    TOKENS.pop();
+    Object.assign(NETWORK, { rpcUrl: previousRpc });
   }
 });
 
