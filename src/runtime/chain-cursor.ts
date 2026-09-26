@@ -1,5 +1,3 @@
-import { type Address } from 'viem';
-
 export type ChainCursor = {
   blockNumber: bigint;
   transactionIndex: number;
@@ -38,10 +36,6 @@ export function advanceCursor(cursor: ChainCursor | undefined, log: any): ChainC
   cursor.transactionIndex = logFieldToNumber(log.transactionIndex);
   cursor.logIndex = logFieldToNumber(log.logIndex);
   return cursor;
-}
-
-export function addressMap(addresses: readonly Address[]): Map<string, Address> {
-  return new Map(addresses.map(address => [address.toLowerCase(), address]));
 }
 
 function compareLogField(left: unknown, right: unknown): number {

@@ -1,305 +1,293 @@
-import { type Address, parseAbi, type PublicClient } from 'viem';
-import { CONTRACTS, RUNTIME } from '../../constants';
-import { V3_POOLS, V3_STARTUP_POLICY } from './config';
-import { type OpportunityEngine } from '../../opportunities/opportunity-engine';
+import { type Address, type PublicClient } from 'viem';
+import { type MarketGraph } from '../../market-graph/market-graph';
 import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter';
+import { advanceCursor, compareChainLogs, isLogAfterCursor, type ChainCursor } from '../../runtime/chain-cursor';
+import { logger } from '../../reporting/logger';
+import { latency } from '../../runtime/latency';
+import { V3_LIVE_POLICY, V3_STARTUP_POLICY } from './config';
 import { decodeV3PoolEvent, V3_POOL_EVENT_ABI } from './events';
-import {
-  type V3BitmapWord,
-  type V3BitmapWordUpdate,
-  type V3PoolConfig,
-  type V3PoolStartupState,
-  type V3PoolUpdate,
-  type V3StartupPolicy,
-  type V3Tick,
-  type V3TickUpdate,
-} from './types';
+import { applyV3Event } from './live-state';
+import { type V3Client } from './query';
+import { V3Snapshots, type SnapshotPolicy } from './snapshots';
+import { V3Store } from './store';
+import { type V3PoolConfig } from './types';
 
-const V3_STARTUP_ABI = parseAbi([
-  'function getV3StartupStatesAroundCurrentTick(address[] pools, int24[] tickSpacings) view returns (((address pool, uint160 sqrtPriceX96, int24 tick, uint128 liquidity) live, (int16 wordPosition, uint256 bitmap)[] bitmaps, (int24 tick, uint128 liquidityGross, int128 liquidityNet, bool initialized)[] ticks)[])',
-]);
-
-type RawV3StartupState = any;
-type RawV3BitmapWord = any;
-type RawV3Tick = any;
-type V3StartupClient = {
-  readContract(parameters: any): Promise<unknown>;
-};
-
-export type V3StartupLoadResult = {
-  configuredPools: number;
-  loadedPools: number;
-  loadedBitmapWords: number;
-  loadedTicks: number;
-};
-
-export type V3StartupRequest = {
-  poolAddresses: Address[];
-  tickSpacings: number[];
-};
-
-export async function loadConfiguredV3StartupState(
-  client: V3StartupClient,
-  engine: OpportunityEngine,
-  pools: readonly V3PoolConfig[] = V3_POOLS,
-  policy: V3StartupPolicy = V3_STARTUP_POLICY
-): Promise<V3StartupLoadResult> {
-  const enabledPools = pools.filter(pool => pool.enabled);
-  for (const pool of enabledPools) {
-    engine.addV3Pool(pool);
-  }
-
-  if (enabledPools.length === 0) {
-    return {
-      configuredPools: 0,
-      loadedPools: 0,
-      loadedBitmapWords: 0,
-      loadedTicks: 0,
-    };
-  }
-
-  if (!CONTRACTS.flashQuery) {
-    throw new Error('CONTRACTS.flashQuery is required to load configured V3 startup state.');
-  }
-
-  if (RUNTIME.debug) {
-    console.log(`Loading V3 startup state for ${enabledPools.length} configured pools`);
-  }
-
-  const rawStates: RawV3StartupState[] = [];
-  for (const request of buildV3StartupRequests(enabledPools, policy)) {
-    const batchStates = await client.readContract({
-      address: CONTRACTS.flashQuery as Address,
-      abi: V3_STARTUP_ABI,
-      functionName: 'getV3StartupStatesAroundCurrentTick',
-      args: [
-        request.poolAddresses,
-        request.tickSpacings,
-      ],
-    }) as RawV3StartupState[];
-
-    rawStates.push(...batchStates);
-  }
-
-  const states = normalizeV3StartupStates(rawStates);
-  applyV3StartupStates(engine, states);
-
-  const loadedBitmapWords = states.reduce((total, state) => total + state.bitmapWords.length, 0);
-  const loadedTicks = states.reduce((total, state) => total + state.ticks.filter(tick => tick.initialized).length, 0);
-
-  if (RUNTIME.debug) {
-    console.log(`Loaded V3 startup state for ${states.length}/${enabledPools.length} pools`);
-  }
-
-  return {
-    configuredPools: enabledPools.length,
-    loadedPools: states.length,
-    loadedBitmapWords,
-    loadedTicks,
-  };
-}
-
-export function buildV3StartupRequests(
-  pools: readonly V3PoolConfig[],
-  policy: V3StartupPolicy
-): V3StartupRequest[] {
-  if (policy.batchSize <= 0) {
-    throw new Error('V3 startup batchSize must be greater than zero.');
-  }
-
-  const enabledPools = pools.filter(pool => pool.enabled);
-  const requests: V3StartupRequest[] = [];
-
-  for (let start = 0; start < enabledPools.length; start += policy.batchSize) {
-    const batch = enabledPools.slice(start, start + policy.batchSize);
-    requests.push({
-      poolAddresses: batch.map(pool => pool.address),
-      tickSpacings: batch.map(pool => pool.tickSpacing),
-    });
-  }
-
-  return requests;
-}
-
-export function applyV3StartupStates(
-  engine: Pick<OpportunityEngine, 'updateV3PoolStates' | 'updateV3BitmapWords' | 'updateV3Ticks'>,
-  states: V3PoolStartupState[]
-): void {
-  engine.updateV3PoolStates(toV3PoolUpdates(states));
-  engine.updateV3BitmapWords(toV3BitmapWordUpdates(states));
-  engine.updateV3Ticks(toV3TickUpdates(states));
-}
-
-export function toV3PoolUpdates(states: V3PoolStartupState[]): V3PoolUpdate[] {
-  return states.map(state => ({
-    poolAddress: state.poolAddress,
-    sqrtPriceX96: state.sqrtPriceX96,
-    liquidity: state.liquidity,
-    tick: state.tick,
-  }));
-}
-
-export function toV3BitmapWordUpdates(states: V3PoolStartupState[]): V3BitmapWordUpdate[] {
-  return states.map(state => ({
-    poolAddress: state.poolAddress,
-    words: state.bitmapWords,
-  }));
-}
-
-export function toV3TickUpdates(states: V3PoolStartupState[]): V3TickUpdate[] {
-  return states.map(state => ({
-    poolAddress: state.poolAddress,
-    ticks: state.ticks
-      .filter(tick => tick.initialized)
-      .map(({ initialized, ...tick }) => tick),
-  }));
-}
-
-export function normalizeV3StartupStates(rawStates: RawV3StartupState[]): V3PoolStartupState[] {
-  return rawStates.map(rawState => {
-    const live = field<any>(rawState, 'live', 0);
-    const bitmapWords = field<RawV3BitmapWord[]>(rawState, 'bitmaps', 1) || [];
-    const ticks = field<RawV3Tick[]>(rawState, 'ticks', 2) || [];
-
-    return {
-      poolAddress: field<Address>(live, 'pool', 0),
-      sqrtPriceX96: BigInt(field<bigint>(live, 'sqrtPriceX96', 1)),
-      tick: Number(field<number | bigint>(live, 'tick', 2)),
-      liquidity: BigInt(field<bigint>(live, 'liquidity', 3)),
-      bitmapWords: bitmapWords.map(normalizeBitmapWord),
-      ticks: ticks.map(normalizeTick),
-    };
-  });
-}
-
-function normalizeBitmapWord(rawWord: RawV3BitmapWord): V3BitmapWord {
-  return {
-    wordPosition: Number(field<number | bigint>(rawWord, 'wordPosition', 0)),
-    bitmap: BigInt(field<bigint>(rawWord, 'bitmap', 1)),
-  };
-}
-
-function normalizeTick(rawTick: RawV3Tick): V3Tick & { initialized: boolean } {
-  return {
-    index: Number(field<number | bigint>(rawTick, 'tick', 0)),
-    liquidityGross: BigInt(field<bigint>(rawTick, 'liquidityGross', 1)),
-    liquidityNet: BigInt(field<bigint>(rawTick, 'liquidityNet', 2)),
-    initialized: Boolean(field<boolean>(rawTick, 'initialized', 3)),
-  };
-}
-
-function field<TValue>(value: any, name: string, index: number): TValue {
-  if (value && typeof value === 'object' && name in value) return value[name] as TValue;
-  return value[index] as TValue;
-}
+type PoolCursor = { floor: bigint; last: ChainCursor; hash: string; recent: Map<string, string> };
 
 export class V3EventAdapter implements ProtocolEventAdapter {
   readonly id = 'v3';
-  private readonly pools = new Map<string, V3PoolConfig>();
+  readonly managesOwnCursors = true;
+  private readonly pools: Map<string, V3PoolConfig>;
+  private readonly snapshots: V3Snapshots;
+  private readonly cursors = new Map<string, PoolCursor>();
+  private readonly pending = new Set<string>();
+  private readonly observed = new Map<string, bigint>();
+  private work: Promise<void> | undefined;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private stopped = false;
+  private epoch = 0;
+  private checkpointOffset = 0;
+  private recoveryScanPending = false;
+  private readonly recoveredForScan = new Set<Address>();
+  private readonly replay = new Map<string, { floor: bigint; logs: any[] | null }>();
+  private readonly subscribed = new Set<string>();
+  private readonly unwatch = new Set<() => void | Promise<void>>();
+  private watchClient: PublicClient | undefined;
+  private onLogs: ((logs: any[]) => void | Promise<void>) | undefined;
+  private onError: ((error: any) => void | Promise<void>) | undefined;
 
   constructor(
     private readonly client: PublicClient<any, any, any>,
-    private readonly engine: OpportunityEngine,
+    private readonly graph: MarketGraph,
     pools: readonly V3PoolConfig[],
-    private readonly scan: (changedPairs: readonly string[], releasedPairs?: readonly Address[]) => Promise<void>
+    private readonly scan: (changedPairs: readonly string[], releasedPairs?: readonly Address[]) => Promise<void>,
+    store = new V3Store(),
+    private readonly policy: SnapshotPolicy = V3_STARTUP_POLICY
   ) {
-    for (const pool of pools) this.pools.set(pool.address.toLowerCase(), pool);
+    this.pools = new Map(pools.filter(pool => pool.enabled).map(pool => [pool.address.toLowerCase(), pool]));
+    this.snapshots = new V3Snapshots(client as unknown as V3Client, store, policy);
   }
 
+  addresses(): readonly Address[] { return [...this.pools.values()].map(pool => pool.address); }
+  owns(address: Address): boolean { return this.pools.has(address.toLowerCase()); }
+
   async watch(client: PublicClient, onLogs: (logs: any[]) => void | Promise<void>, onError: (error: any) => void | Promise<void>) {
-    if (this.pools.size === 0) return [];
-    const unwatch = await client.watchContractEvent({
-      address: [...this.pools.values()].map(pool => pool.address),
-      abi: V3_POOL_EVENT_ABI,
-      strict: true,
-      onLogs,
-      onError,
-    });
-    return [unwatch];
+    this.stopped = false;
+    this.watchClient = client;
+    this.onLogs = onLogs;
+    this.onError = onError;
+    try {
+      await this.subscribe(this.addresses());
+      this.scheduleCheckpoint();
+      return [async () => {
+        for (const stop of this.unwatch) await stop();
+        this.unwatch.clear();
+        this.subscribed.clear();
+        this.watchClient = undefined;
+        this.onLogs = undefined;
+        this.onError = undefined;
+      }];
+    } catch (error) {
+      for (const stop of this.unwatch) await stop();
+      this.unwatch.clear();
+      this.subscribed.clear();
+      this.watchClient = undefined;
+      this.onLogs = undefined;
+      this.onError = undefined;
+      throw error;
+    }
+  }
+
+  async replacePools(pools: readonly V3PoolConfig[]): Promise<void> {
+    const next = new Map(pools.filter(pool => pool.enabled).map(pool => [pool.address.toLowerCase(), pool]));
+    const removed: Address[] = [];
+    for (const [key, pool] of this.pools) {
+      if (next.has(key)) continue;
+      this.pools.delete(key);
+      this.pending.delete(key);
+      this.replay.delete(key);
+      this.cursors.delete(key);
+      this.observed.delete(key);
+      this.graph.removeV3Pool(pool.address);
+      removed.push(pool.address);
+    }
+    if (removed.length > 0) await this.scan(removed, removed);
+    const added: Address[] = [];
+    for (const [key, pool] of next) {
+      const previous = this.pools.get(key);
+      this.pools.set(key, pool);
+      if (previous && samePool(previous, pool)) continue;
+      added.push(pool.address);
+    }
+    await this.subscribe(added);
+    if (added.length > 0) await this.synchronize(added);
+    if (added.length > 0) await this.scan(added, added);
+    this.scheduleCheckpoint();
   }
 
   bufferKey(log: any): string | null {
-    const key = log.address?.toLowerCase();
-    if (!key || !this.pools.has(key)) return null;
-    const decoded = decodeV3PoolEvent(log);
-    return decoded && decoded.kind !== 'collect' ? key : null;
+    // Startup/reconnect buffers request a block-pinned reload, not delta replay.
+    return log.address && this.owns(log.address) ? log.address.toLowerCase() : null;
   }
 
-  async reconcile(logs: readonly any[]): Promise<void> {
-    const touched = new Map<string, V3PoolConfig>();
-    for (const log of logs) {
-      const key = log.address?.toLowerCase();
-      const pool = key ? this.pools.get(key) : undefined;
-      if (pool) touched.set(key, pool);
-    }
-    if (touched.size > 0) await loadConfiguredV3StartupState(this.client, this.engine, [...touched.values()]);
-  }
+  hydrate(blockNumber?: bigint): Promise<void> { return this.synchronize(this.addresses(), blockNumber); }
+  reconcile(logs: readonly any[]): Promise<void> { return this.reconcileAddresses(logs.map(log => log.address).filter(Boolean)); }
+  reconcileAddresses(addresses: readonly Address[]): Promise<void> { return this.synchronize(addresses); }
 
   async apply(logs: any[]): Promise<void> {
-    const affected = new Map<string, Address>();
-    for (const log of logs) {
-      const key = log.address?.toLowerCase();
-      const pool = key ? this.pools.get(key) : undefined;
-      const decoded = pool ? decodeV3PoolEvent(log) : null;
-      if (!pool || !decoded || decoded.kind === 'collect') continue;
-
-      affected.set(key, pool.address);
-      if (decoded.kind === 'swap') {
-        this.engine.updateV3PoolStates([{ poolAddress: pool.address, ...decoded.update }]);
+    if (this.stopped) return;
+    const started = latency.now();
+    const changed = new Set<Address>();
+    const recover = new Set<Address>();
+    for (const log of [...logs].sort(compareChainLogs)) {
+      if (!log.address || !this.owns(log.address)) continue;
+      const address = this.pools.get(log.address.toLowerCase())!.address;
+      const key = address.toLowerCase();
+      if (typeof log.blockNumber === 'bigint') this.observed.set(key, max(this.observed.get(key) ?? 0n, log.blockNumber));
+      const replay = this.replay.get(key);
+      if (replay) {
+        if (replay.logs && replay.logs.length < V3_LIVE_POLICY.recoveryLogsPerPool) replay.logs.push(log);
+        else replay.logs = null;
         continue;
       }
-
-      this.applyLiquidityUpdate(pool.address, decoded.update);
-      const live = this.findPool(pool.address)?.state;
-      if (!live || live.tick < decoded.update.tickLower || live.tick >= decoded.update.tickUpper) continue;
-      const liquidity = decoded.update.kind === 'mint'
-        ? live.liquidity + decoded.update.amount
-        : live.liquidity > decoded.update.amount ? live.liquidity - decoded.update.amount : 0n;
-      this.engine.updateV3PoolStates([{
-        poolAddress: pool.address,
-        sqrtPriceX96: live.sqrtPriceX96,
-        liquidity,
-        tick: live.tick,
-      }]);
+      try {
+        const cursor = this.cursors.get(key);
+        if (!cursor || recover.has(address)) throw new Error('V3 pool needs recovery');
+        if (this.applyOrderedLog(log, cursor)) changed.add(address);
+      } catch {
+        this.graph.invalidateV3Pool(address);
+        recover.add(address);
+        changed.delete(address);
+      }
     }
-
-    if (affected.size === 0) return;
-    await this.refreshWindows([...affected.values()]);
-    await this.scan([...affected.keys()], [...affected.values()]);
+    latency.elapsed('v3.apply', started);
+    if (recover.size) {
+      latency.increment('v3.recovery', recover.size);
+      // Healthy pools and log ingestion do not wait for failed-pool RPC recovery.
+      const recovery = this.synchronize([...recover]);
+      for (const address of recover) this.recoveredForScan.add(address);
+      if (!this.recoveryScanPending) {
+        this.recoveryScanPending = true;
+        void recovery.then(() => {
+          this.recoveryScanPending = false;
+          const addresses = [...this.recoveredForScan];
+          this.recoveredForScan.clear();
+          return this.stopped ? undefined : this.scan(addresses, addresses);
+        }, error => {
+          this.recoveryScanPending = false;
+          this.recoveredForScan.clear();
+          this.report(error);
+        }).catch(error => this.report(error));
+      }
+    }
+    if (changed.size) await this.scan([...changed], [...changed]);
   }
 
-  private applyLiquidityUpdate(
-    poolAddress: Address,
-    update: { kind: 'mint' | 'burn'; tickLower: number; tickUpper: number; amount: bigint }
-  ): void {
-    const ticks = this.engine.getV3InitializedTicks(poolAddress);
-    const grossDelta = update.kind === 'mint' ? update.amount : -update.amount;
-    const lower = this.nextTick(ticks, update.tickLower, grossDelta, update.kind === 'mint' ? update.amount : -update.amount);
-    const upper = this.nextTick(ticks, update.tickUpper, grossDelta, update.kind === 'mint' ? -update.amount : update.amount);
-    const nextTicks = [lower, upper].filter((tick): tick is V3Tick => tick !== null);
-    if (nextTicks.length > 0) this.engine.updateV3Ticks([{ poolAddress, ticks: nextTicks }]);
+  suspend(): void {
+    this.epoch++;
+    for (const address of this.addresses()) this.graph.invalidateV3Pool(address);
   }
 
-  private nextTick(ticks: V3Tick[], index: number, grossDelta: bigint, netDelta: bigint): V3Tick | null {
-    const current = ticks.find(tick => tick.index === index);
-    if (!current && grossDelta < 0n) return null;
-    return {
-      index,
-      liquidityGross: grossDelta < 0n && (current?.liquidityGross ?? 0n) < -grossDelta
-        ? 0n
-        : (current?.liquidityGross ?? 0n) + grossDelta,
-      liquidityNet: (current?.liquidityNet ?? 0n) + netDelta,
-    };
+  async clear(): Promise<void> {
+    this.stopped = true;
+    this.suspend();
+    this.pending.clear();
+    this.replay.clear();
+    this.recoveredForScan.clear();
+    if (this.timer) clearTimeout(this.timer);
+    await this.work?.catch(error => this.report(error));
   }
 
-  private findPool(address: Address) {
-    return this.engine.getV3Pool(address) ?? undefined;
+  private async subscribe(addresses: readonly Address[]): Promise<void> {
+    if (!this.watchClient || !this.onLogs || !this.onError) return;
+    const fresh = addresses.filter(address => !this.subscribed.has(address.toLowerCase()));
+    for (let start = 0; start < fresh.length; start += this.policy.eventAddressBatchSize) {
+      const batch = fresh.slice(start, start + this.policy.eventAddressBatchSize);
+      const stop = await this.watchClient.watchContractEvent({
+        address: batch,
+        abi: V3_POOL_EVENT_ABI,
+        strict: true,
+        onLogs: this.onLogs,
+        onError: this.onError,
+      });
+      this.unwatch.add(stop);
+      for (const address of batch) this.subscribed.add(address.toLowerCase());
+    }
   }
 
-  private async refreshWindows(addresses: readonly Address[]): Promise<void> {
-    const refresh = addresses
-      .map(address => this.pools.get(address.toLowerCase()))
-      .filter((pool): pool is V3PoolConfig => Boolean(pool && this.engine.v3PoolNeedsRefresh(pool.address)));
-    if (refresh.length > 0) await loadConfiguredV3StartupState(this.client, this.engine, refresh);
+  private synchronize(addresses: readonly Address[], blockNumber?: bigint): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    for (const address of addresses) {
+      if (!this.owns(address)) continue;
+      const key = address.toLowerCase();
+      if (this.replay.has(key)) continue;
+      this.pending.add(key);
+      this.replay.set(key, { floor: this.observed.get(key) ?? 0n, logs: [] });
+      this.graph.invalidateV3Pool(address);
+    }
+    if (this.work) return this.work;
+    this.work = Promise.resolve().then(async () => {
+      while (this.pending.size && !this.stopped) {
+        const keys = [...this.pending].slice(0, this.policy.eventAddressBatchSize);
+        for (const key of keys) this.pending.delete(key);
+        const epoch = this.epoch;
+        try {
+          const target = blockNumber ?? await this.client.getBlockNumber({ cacheTime: 0 });
+          const result = await this.snapshots.load(keys.map(key => this.pools.get(key)!), target);
+          if (this.stopped || epoch !== this.epoch) continue;
+          for (const snapshot of result.snapshots) {
+            const key = snapshot.poolAddress.toLowerCase();
+            const replay = this.replay.get(key);
+            // Overflow or an RPC head behind the triggering event requires a
+            // newer snapshot. Never throw away deltas and call a pool ready.
+            if (!replay?.logs || replay.floor > target) continue;
+            const logs = replay.logs;
+            this.graph.replaceV3Snapshot(this.pools.get(key)!, snapshot);
+            const cursor: PoolCursor = { floor: target, last: { blockNumber: target, transactionIndex: Number.MAX_SAFE_INTEGER, logIndex: Number.MAX_SAFE_INTEGER }, hash: snapshot.blockHash, recent: new Map() };
+            this.cursors.set(key, cursor);
+            try {
+              for (const log of logs.sort(compareChainLogs)) {
+                if (log.removed || typeof log.blockNumber !== 'bigint') throw new Error('Untrusted recovery log');
+                if (log.blockNumber <= target) {
+                  if (log.blockNumber === target && log.blockHash !== snapshot.blockHash) throw new Error('Recovery block changed');
+                  continue;
+                }
+                this.applyOrderedLog(log, cursor);
+              }
+            } catch {
+              this.graph.invalidateV3Pool(snapshot.poolAddress);
+            }
+          }
+          if (result.failed.length) this.report(new Error(result.failed.length + ' V3 pools unavailable; retrying'));
+        } finally { for (const key of keys) this.replay.delete(key); }
+      }
+    }).finally(() => { this.work = undefined; });
+    return this.work;
   }
+
+  private applyOrderedLog(log: any, cursor: PoolCursor): boolean {
+    if (log.removed || typeof log.blockNumber !== 'bigint' || !/^0x[0-9a-fA-F]{64}$/.test(log.blockHash ?? '') ||
+      !Number.isSafeInteger(log.transactionIndex) || !Number.isSafeInteger(log.logIndex) || log.transactionIndex < 0 || log.logIndex < 0) throw new Error('Untrusted V3 cursor');
+    if (log.blockNumber < cursor.floor) return false;
+    if (log.blockNumber === cursor.last.blockNumber && log.blockHash !== cursor.hash) throw new Error('V3 block changed');
+    if (log.blockNumber === cursor.floor) return false;
+    const identity = log.blockNumber + ':' + log.transactionIndex + ':' + log.logIndex;
+    const fingerprint = log.blockHash + ':' + log.topics.join(',') + ':' + log.data;
+    if (cursor.recent.get(identity) === fingerprint) return false;
+    if (!isLogAfterCursor(log, cursor.last) || (log.blockNumber === cursor.last.blockNumber && log.blockHash !== cursor.hash)) throw new Error('Recovery ordering mismatch');
+    const event = decodeV3PoolEvent(log);
+    if (!event) throw new Error('Unknown recovery event');
+    applyV3Event(this.graph, this.graph.getV3Pool(log.address)!, event);
+    cursor.last = advanceCursor(undefined, log);
+    cursor.hash = log.blockHash;
+    cursor.recent.set(identity, fingerprint);
+    if (cursor.recent.size > V3_LIVE_POLICY.recentLogsPerPool) cursor.recent.delete(cursor.recent.keys().next().value!);
+    return event.kind !== 'collect';
+  }
+
+  private scheduleCheckpoint(): void {
+    if (this.timer) clearTimeout(this.timer);
+    if (this.stopped || this.pools.size === 0) return;
+    const invalid = this.addresses().some(address => !this.graph.getV3Pool(address)?.fullRange);
+    this.timer = setTimeout(() => {
+      const addresses = this.addresses();
+      const selected = Array.from({ length: Math.min(addresses.length, V3_LIVE_POLICY.checkpointPoolsPerBatch) }, (_, i) => addresses[(this.checkpointOffset + i) % addresses.length]);
+      this.checkpointOffset = (this.checkpointOffset + selected.length) % addresses.length;
+      void this.synchronize(selected).then(() => this.scan(selected, selected)).catch(error => this.report(error)).finally(() => this.scheduleCheckpoint());
+    }, invalid ? V3_LIVE_POLICY.retryIntervalMs : V3_LIVE_POLICY.checkpointIntervalMs);
+    this.timer.unref();
+  }
+
+  private report(error: unknown): void {
+    latency.increment('v3.checkpoint.failed');
+    logger.alert('v3.recovery', 'warn', 'V3 recovery failed', error);
+  }
+}
+
+function max(a: bigint, b: bigint) { return a > b ? a : b; }
+
+function samePool(a: V3PoolConfig, b: V3PoolConfig): boolean {
+  return a.address.toLowerCase() === b.address.toLowerCase() &&
+    a.token0.toLowerCase() === b.token0.toLowerCase() && a.token1.toLowerCase() === b.token1.toLowerCase() &&
+    a.fee === b.fee && a.tickSpacing === b.tickSpacing && a.enabled === b.enabled;
 }

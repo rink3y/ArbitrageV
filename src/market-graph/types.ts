@@ -1,10 +1,15 @@
 import { type Address } from 'viem';
 import { type CarbonOrder } from '../protocols/carbon/types';
-import { type SwapDirection } from '../protocols/v2/types';
+import { type SwapDirection, type V2Variant } from '../protocols/v2/types';
+import { type EdgeTransferFees } from '../protocols/v2/transfer-fees';
 
 export type MarketProtocol = 'v2' | 'v3' | 'carbon';
 
 export type ArbitrageSearchPolicy = {
+  minProfitNative?: bigint;
+  tokenSelectionRefreshMs?: number;
+  splitRouting?: 'off' | 'live';
+  splitSearchMs?: number;
   topTokens: number;
   allowedProtocols: readonly MarketProtocol[];
   allowProtocolMixing: boolean;
@@ -13,6 +18,8 @@ export type ArbitrageSearchPolicy = {
   optimizationIterations: number;
   maxInputReserveFraction: bigint;
   maxOpportunities: number;
+  maxCandidatesToSize?: number;
+  maxSearchExpansions?: number;
 };
 
 export type MarketEdgeId = string;
@@ -31,23 +38,24 @@ export type MarketEdge = {
 };
 
 export type V2MarketEdge = MarketEdge & {
+  transferFees?: EdgeTransferFees;
   protocol: 'v2';
   reserveIn: bigint;
   reserveOut: bigint;
+  variant: V2Variant;
+  scaleIn: bigint;
+  scaleOut: bigint;
 };
 
 export type V3MarketEdge = MarketEdge & {
   protocol: 'v3';
   sqrtPriceX96: bigint;
-  tickSpacing: number;
-  tick: number;
 };
 
 export type CarbonSingleMarketEdge = MarketEdge & {
   protocol: 'carbon';
   carbonKind: 'single';
   strategyId: bigint;
-  orderIndex: 0 | 1;
   rawFrom: Address;
   rawTo: Address;
   order: CarbonOrder;
@@ -56,8 +64,6 @@ export type CarbonSingleMarketEdge = MarketEdge & {
 export type CarbonGroupOrder = {
   strategyId: bigint;
   orderIndex: 0 | 1;
-  rawFrom: Address;
-  rawTo: Address;
   order: CarbonOrder;
 };
 

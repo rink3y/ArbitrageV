@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { createExecutionPlan, flashLoanFee } from "../src/execution/execution-planner";
+import { createExecutionPlan, flashLoanFee, gasLimitForTransaction } from "../src/execution/execution-planner";
+import { EXECUTION_POLICY } from '../src/constants';
+import { decodeFunctionData, encodeFunctionData } from "viem";
+import ArbABI from "../src/ABI/Arb.json";
 
 type Address = `0x${string}`;
 
@@ -19,6 +22,8 @@ describe("createExecutionPlan", () => {
   test("calculates the exact flash repayment fee", () => {
     expect(flashLoanFee({ protocol: "v2", poolAddress: address(1), fee: 30, liquidity: 10_000n }, 1_000n)).toBe(4n);
     expect(flashLoanFee({ protocol: "v3", poolAddress: address(2), fee: 500, liquidity: 10_000n }, 1_000n)).toBe(1n);
+    expect(flashLoanFee({ protocol: "v2", poolAddress: address(1), fee: 0, liquidity: 10_000n }, 200n)).toBe(0n);
+    expect(flashLoanFee({ protocol: "v2", poolAddress: address(1), fee: 30, liquidity: 10_000n }, 997n)).toBe(3n);
   });
 
   test("builds ArbParams for a mixed V2/V3 circular route", () => {
@@ -55,6 +60,8 @@ describe("createExecutionPlan", () => {
       fees: [30n, 500n, 30n],
       data: ["0x", "0x", "0x"],
     });
+    const encoded = encodeFunctionData({ abi: ArbABI, functionName: 'executeArbitrage', args: [plan!.params] });
+    expect(decodeFunctionData({ abi: ArbABI, data: encoded }).args![0]).toEqual(plan!.params);
   });
 
   test("builds ArbParams with a V3 flash pool when it is the best flash source", () => {
@@ -75,9 +82,11 @@ describe("createExecutionPlan", () => {
       profit: 100n,
     });
 
-    expect(plan?.params.flashProtocol).toBe(1);
-    expect(plan?.params.flashPool).toBe(flashPool);
-    expect(plan?.params.v2RepayFee).toBe(0n);
+    expect(plan?.kind).toBe('flash');
+    if (plan?.kind !== 'flash') throw new Error('Expected a lender-funded plan');
+    expect(plan.params.flashProtocol).toBe(1);
+    expect(plan.params.flashPool).toBe(flashPool);
+    expect(plan.params.v2RepayFee).toBe(0n);
   });
 
   test("builds ArbParams for a route with a Carbon hop", () => {
@@ -150,5 +159,40 @@ describe("createExecutionPlan", () => {
     });
 
     expect(plan).toBeNull();
+  });
+
+  test('uses the first V2 route pair without looking for a separate lender', () => {
+    const first = address(50);
+    const second = address(51);
+    const plan = createExecutionPlan({
+      findBestFlashPoolForToken() { throw new Error('Separate lender lookup must not run'); },
+    }, {
+      path: [tokenA, tokenB, tokenA], pairs: [first, second],
+      protocols: ['v2', 'v2'], fees: [30, 25], routeData: ['0x02', '0x02'],
+      optimalInput: 1_000n, profit: 100n, flashPoolAddress: first, v2RouteFlash: true,
+    });
+    expect(plan).toEqual({ kind: 'v2-route-flash', params: {
+      startToken: tokenA, amountIn: 1_000n, pools: [first, second], fees: [30n, 25n],
+    } });
+    if (plan?.kind !== 'v2-route-flash') throw new Error('Expected a route-funded plan');
+    const encoded = encodeFunctionData({ abi: ArbABI, functionName: 'executeV2RouteFlash',
+      args: [plan.params.startToken, plan.params.amountIn, plan.params.pools, plan.params.fees] });
+    expect(decodeFunctionData({ abi: ArbABI, data: encoded }).args).toEqual([
+      tokenA, 1_000n, [first, second], [30n, 25n],
+    ]);
+  });
+
+  test('gas allowances depend only on single versus batch execution', () => {
+    expect(gasLimitForTransaction()).toBe(EXECUTION_POLICY.gasLimits.single);
+    expect(gasLimitForTransaction('single')).toBe(EXECUTION_POLICY.gasLimits.single);
+    expect(gasLimitForTransaction('batch')).toBe(EXECUTION_POLICY.gasLimits.batch);
+    const previous = { ...EXECUTION_POLICY.gasLimits };
+    try {
+      Object.assign(EXECUTION_POLICY.gasLimits, { single: 0n, batch: -1n });
+      expect(() => gasLimitForTransaction()).toThrow('positive');
+      expect(() => gasLimitForTransaction('batch')).toThrow('positive');
+    } finally {
+      Object.assign(EXECUTION_POLICY.gasLimits, previous);
+    }
   });
 });

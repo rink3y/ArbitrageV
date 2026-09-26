@@ -3,6 +3,8 @@ import {
   amountAfterV3Fee,
   getAmount0Delta,
   getAmount1Delta,
+  getNextSqrtPriceFromAmount0RoundingUp,
+  getNextSqrtPriceFromAmount1RoundingDown,
   getSqrtRatioAtTick,
   grossAmountForV3Input,
   MAX_SQRT_RATIO,
@@ -13,6 +15,50 @@ import {
 } from "../src/protocols/v3/quote";
 
 describe("V3 swap math", () => {
+  test('exact-input price helpers preserve rounding and reject invalid inputs', () => {
+    expect(getNextSqrtPriceFromAmount0RoundingUp(Q96, 1000n, 1n)).toBe((1000n * Q96 + 1000n) / 1001n);
+    expect(getNextSqrtPriceFromAmount1RoundingDown(Q96, 1000n, 1n)).toBe(Q96 + Q96 / 1000n);
+    for (const nextPrice of [getNextSqrtPriceFromAmount0RoundingUp, getNextSqrtPriceFromAmount1RoundingDown]) {
+      expect(nextPrice(Q96, 1000n, 0n)).toBe(Q96);
+      expect(() => nextPrice(Q96, 1000n, -1n)).toThrow('amount must be non-negative');
+      expect(() => nextPrice(0n, 1000n, 1n)).toThrow('sqrtPriceX96 must be positive');
+      expect(() => nextPrice(Q96, 0n, 1n)).toThrow('liquidity must be positive');
+    }
+  });
+
+  for (const direction of ['token0ToToken1', 'token1ToToken0'] as const) {
+    test(`crosses an empty interval only with full coverage: ${direction}`, () => {
+      const left = direction === 'token0ToToken1';
+      const liquidity = 1_000_000n;
+      const request = {
+        amountIn: 100n, sqrtPriceX96: Q96, liquidity: 0n, tick: 0, fee: 3000, direction,
+        ticks: [
+          { index: left ? -200 : 100, liquidityGross: liquidity, liquidityNet: liquidity },
+          { index: left ? -100 : 200, liquidityGross: liquidity, liquidityNet: -liquidity },
+        ],
+      };
+      expect(quoteV3MultiRangeExactInput(request).exhaustedLiquidity).toBe(true);
+      const quote = quoteV3MultiRangeExactInput({ ...request, fullRange: true });
+      expect(quote.exhaustedLiquidity).toBe(false);
+      expect(quote.amountOut).toBeGreaterThan(0n);
+      expect(quote.initializedTicksCrossed).toBe(1);
+      expect(quote.liquidityAfter).toBe(liquidity);
+    });
+  }
+
+  test('retains initialized ticks whose net liquidity is zero', () => {
+    const quote = quoteV3MultiRangeExactInput({
+      amountIn: 1000n, sqrtPriceX96: Q96, liquidity: 1000n, tick: 0, fee: 3000,
+      direction: 'token1ToToken0', fullRange: true,
+      ticks: [
+        { index: 60, liquidityGross: 2000n, liquidityNet: 0n },
+        { index: 120, liquidityGross: 1000n, liquidityNet: -1000n },
+      ],
+    });
+    expect(quote.initializedTicksCrossed).toBe(2);
+    expect(quote.exhaustedLiquidity).toBe(true);
+  });
+
   test("applies V3 fee units with bigint precision", () => {
     expect(amountAfterV3Fee(1_000_000n, 500)).toBe(999_500n);
     expect(amountAfterV3Fee(1_000_000n, 3000)).toBe(997_000n);
