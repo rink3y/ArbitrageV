@@ -92,6 +92,7 @@ export type MarketRouteQuote = {
   amountOut: bigint;
   profit: bigint;
   complete: boolean;
+  belowMinimum?: boolean;
 };
 
 export type MarketSizedRoute = {

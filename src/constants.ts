@@ -65,9 +65,9 @@ export const ARBITRAGE_SEARCH_POLICY: ArbitrageSearchPolicy = {
 export const EXECUTION_POLICY = {
     executeTrades: true,
     // First V2/V3 swap supplies the output before callback repayment. Requires the modular NArb.
-    routeSwapFunding: false,
+    routeSwapFunding: true,
     // Batch combines independent quotes; separate sends a predicted follow-up.
-    submissionMode: 'single' as 'single' | 'separate' | 'batch',
+    submissionMode: 'batch' as 'single' | 'separate' | 'batch',
     followUpSearchMs: 10,
     nonceRefreshIntervalMs: 12 * 60 * 60 * 1000,
     nonceRetryIntervalMs: 5_000,
@@ -80,7 +80,7 @@ export const EXECUTION_POLICY = {
     // Fees refresh away from the submission path. The last valid quote keeps its original expiry.
     feeRefreshIntervalMs: 5 * 60 * 1000,
     // Applies to legacy gasPrice or EIP-1559 maxFeePerGas; never clamps estimates.
-    feeCeilingPerGas: gasPrice('1000'),
+    feeCeilingPerGas: gasPrice('1500'),
     legacy: true,
 } as const;
 
@@ -94,7 +94,7 @@ export const RUNTIME: {
     reportingShutdownMs: number;
     marketDiscoveryIntervalMs: number;
 } = {
-    logLevel: 'off', // 'off' | 'info' | 'debug'
+    logLevel: 'debug', // 'off' | 'info' | 'debug'
     websocketEnabled: true,
     searchTimeoutMs: 10_000,
     candidateMaxAgeMs: 500,

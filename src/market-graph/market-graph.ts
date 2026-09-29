@@ -17,7 +17,7 @@ import {
 } from '../protocols/v3/types';
 import { compareFractions } from '../fractions';
 import { quoteV2ExactInput, v2MarginalRate } from '../protocols/v2/quote';
-import { compactTransferProfiles, profilesCurrent, receivedAfterTransfer } from '../protocols/v2/transfer-fees';
+import { compactTransferProfiles, profilesCurrent, receivedAfterTransfer, withinTransferRange } from '../protocols/v2/transfer-fees';
 import { V2_LIVE_POLICY } from '../protocols/v2/config';
 import {
   carbonMarginalRate,
@@ -565,7 +565,7 @@ export class MarketGraph {
 
   quote(route: MarketRoute, amountIn: bigint): MarketRouteQuote {
     if (amountIn <= 0n) {
-      return { amountIn, amountOut: 0n, profit: 0n, complete: false };
+      return { amountIn, amountOut: 0n, profit: 0n, complete: false, belowMinimum: true };
     }
 
     let amount = amountIn;
@@ -579,7 +579,7 @@ export class MarketGraph {
       const quote = this.quoteEdge(edge, amount);
 
       if (!quote.complete || quote.amountOut <= 0n) {
-        return { amountIn, amountOut: quote.amountOut, profit: -1n, complete: false };
+        return { amountIn, amountOut: quote.amountOut, profit: -1n, complete: false, belowMinimum: quote.belowMinimum };
       }
 
       amount = quote.amountOut;
@@ -740,7 +740,19 @@ export class MarketGraph {
       amountOut,
       profit: amountOut - amountIn,
       complete: amountOut > 0n,
+      belowMinimum: amountOut <= 0n && this.v2InputBelowMinimum(edge, amountIn),
     };
+  }
+
+  private v2InputBelowMinimum(edge: Extract<AnyMarketEdge, { protocol: 'v2' }>, amountIn: bigint): boolean {
+    if (!edge.transferFees) return true;
+    const { input, output } = edge.transferFees;
+    if (amountIn < input.sell.minAmount) return true;
+    const credit = receivedAfterTransfer(amountIn, input.sell, input.validUntil);
+    if (credit <= 0n) return withinTransferRange(amountIn, input.sell, input.validUntil);
+    const nominal = quoteV2ExactInput(credit, { variant: edge.variant, fee: edge.fee, reserveIn: edge.reserveIn,
+      reserveOut: edge.reserveOut, scaleIn: edge.scaleIn, scaleOut: edge.scaleOut });
+    return nominal <= 0n || nominal < output.buy.minAmount || withinTransferRange(nominal, output.buy, output.validUntil);
   }
 
   private quoteEdge(edge: AnyMarketEdge, amountIn: bigint, spendWork?: () => boolean): MarketRouteQuote {
@@ -788,6 +800,7 @@ export class MarketGraph {
       amountOut: quote.amountOut,
       profit: quote.amountOut - amountIn,
       complete: quote.amountOut > 0n,
+      belowMinimum: quote.amountOut <= 0n,
     };
   }
 

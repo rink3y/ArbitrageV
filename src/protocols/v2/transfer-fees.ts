@@ -38,8 +38,12 @@ export function estimateTransfer(samples: TransferSample[]): TransferEstimate {
   return { status: 'measured', minAmount, maxAmount, feeBps: Math.max(...fees), samples };
 }
 
+export function withinTransferRange(amount: bigint, estimate: TransferEstimate, validUntil: number, now = Date.now()): boolean {
+  return estimate.status === 'measured' && now < validUntil && amount >= estimate.minAmount && amount <= estimate.maxAmount;
+}
+
 export function receivedAfterTransfer(amount: bigint, estimate: TransferEstimate, validUntil: number, now = Date.now()): bigint {
-  if (estimate.status !== 'measured' || now >= validUntil || amount < estimate.minAmount || amount > estimate.maxAmount) return 0n;
+  if (!withinTransferRange(amount, estimate, validUntil, now)) return 0n;
   return amount * BigInt(10000 - estimate.feeBps) / 10000n;
 }
 
