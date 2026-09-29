@@ -58,10 +58,12 @@ type EdgeSlot = {
 type IndexedEdgeCache = {
   limit: number;
   edgeIndexes: number[];
+  exhaustive: boolean;
 };
 
 const Q192 = Q96 * Q96;
 const MAX_GROUPED_CARBON_ORDERS = 8;
+const RANKED_EDGE_SLACK = 16;
 const DEFAULT_TOKEN_VALUE_SCALE = 10n ** 18n;
 const TOKEN_VALUE_SCALE = new Map(CONFIGURED_TOKENS.map(token => [token.address.toLowerCase(), 10n ** BigInt(token.decimals)]));
 
@@ -432,7 +434,7 @@ export class MarketGraph {
     edge.rateNumerator = 0n;
     edge.rateDenominator = 0n;
     if (edge.carbonKind === 'group') edge.orders = [];
-    this.rankedEdgesCache.delete(tokenIndex);
+    this.rerankEdge(tokenIndex, index);
   }
 
   edgesForTokenPool(token: Address, poolAddress: Address): AnyMarketEdge[] {
@@ -448,13 +450,16 @@ export class MarketGraph {
     if (tokenIndex < 0 || tokenIndex >= this.tokens.length) return [];
 
     const cached = this.rankedEdgesCache.get(tokenIndex);
-    if (cached && cached.limit >= limit) return cached.limit === limit
-      ? cached.edgeIndexes
-      : cached.edgeIndexes.slice(0, limit);
+    if (cached && (cached.exhaustive || cached.edgeIndexes.length >= limit)) {
+      if (limit > cached.limit) cached.limit = limit;
+      return cached.edgeIndexes.length > limit ? cached.edgeIndexes.slice(0, limit) : cached.edgeIndexes;
+    }
 
-    const ranked = this.selectTopEdgeIndexes(this.tokens[tokenIndex].edgeIndexes, limit);
-    this.rankedEdgesCache.set(tokenIndex, { limit, edgeIndexes: ranked });
-    return ranked;
+    const target = Math.max(limit, cached?.limit ?? 0);
+    const capacity = target + RANKED_EDGE_SLACK;
+    const ranked = this.selectTopEdgeIndexes(this.tokens[tokenIndex].edgeIndexes, capacity);
+    this.rankedEdgesCache.set(tokenIndex, { limit: target, edgeIndexes: ranked, exhaustive: ranked.length < capacity });
+    return ranked.length > limit ? ranked.slice(0, limit) : ranked;
   }
 
   edgeIndexesForTokenPool(tokenIndex: number, poolIndex: number): number[] {
@@ -1089,8 +1094,12 @@ export class MarketGraph {
       this.edges[existingIndex].tokenIndex = tokenIndex;
       this.edges[existingIndex].toTokenIndex = toTokenIndex;
       this.edges[existingIndex].poolIndex = poolIndex;
-      this.rankedEdgesCache.delete(previousTokenIndex);
-      this.rankedEdgesCache.delete(tokenIndex);
+      if (previousTokenIndex !== tokenIndex) {
+        this.rankedEdgesCache.delete(previousTokenIndex);
+        this.rankedEdgesCache.delete(tokenIndex);
+      } else {
+        this.rerankEdge(tokenIndex, existingIndex);
+      }
       if (previousToTokenIndex !== toTokenIndex) {
         const incoming = this.tokens[previousToTokenIndex].incomingEdgeIndexes;
         const position = incoming.indexOf(existingIndex);
@@ -1109,7 +1118,7 @@ export class MarketGraph {
     poolEdges.push(edgeIndex);
     this.tokens[tokenIndex].pools.set(poolIndex, poolEdges);
     this.tokens[toTokenIndex].incomingEdgeIndexes.push(edgeIndex);
-    this.rankedEdgesCache.delete(tokenIndex);
+    this.rerankEdge(tokenIndex, edgeIndex);
     this.flashEdgesCache.delete(tokenIndex);
     this.hopDistancesCache.clear();
   }
@@ -1127,9 +1136,31 @@ export class MarketGraph {
     } else if (edge.protocol === 'v3') {
       edge.sqrtPriceX96 = 0n;
     }
-    this.rankedEdgesCache.delete(tokenIndex);
+    this.rerankEdge(tokenIndex, edgeIndex);
     this.flashEdgesCache.delete(tokenIndex);
     this.hopDistancesCache.clear();
+  }
+
+  private rerankEdge(tokenIndex: number, edgeIndex: number): void {
+    const cached = this.rankedEdgesCache.get(tokenIndex);
+    if (!cached) return;
+    const ranked = cached.edgeIndexes.includes(edgeIndex)
+      ? cached.edgeIndexes.filter(index => index !== edgeIndex)
+      : cached.edgeIndexes;
+    const last = ranked[ranked.length - 1];
+    const promote = this.rankable(this.edges[edgeIndex].edge) &&
+      (cached.exhaustive || (last !== undefined && this.compareRankedEdges(edgeIndex, last) > 0));
+    if (!promote) {
+      cached.edgeIndexes = ranked;
+      return;
+    }
+    const next = ranked === cached.edgeIndexes ? [...ranked] : ranked;
+    this.insertRankedEdge(next, edgeIndex);
+    if (next.length > cached.limit + RANKED_EDGE_SLACK) {
+      next.pop();
+      cached.exhaustive = false;
+    }
+    cached.edgeIndexes = next;
   }
 
   private selectTopEdgeIndexes(edgeIndexes: number[], limit: number): number[] {
@@ -1137,33 +1168,39 @@ export class MarketGraph {
 
     const top: number[] = [];
     for (const edgeIndex of edgeIndexes) {
-      const edge = this.edges[edgeIndex].edge;
-      if (edge.liquidity <= 0n || edge.rateDenominator <= 0n) continue;
-
-      if (top.length < limit) {
-        top.push(edgeIndex);
-        this.moveEdgeIndexIntoRank(top, top.length - 1);
-        continue;
-      }
-
-      if (this.compareEdgeRank(edge, this.edges[top[top.length - 1]].edge) < 0) continue;
-      top[top.length - 1] = edgeIndex;
-      this.moveEdgeIndexIntoRank(top, top.length - 1);
+      if (!this.rankable(this.edges[edgeIndex].edge)) continue;
+      if (top.length >= limit && this.compareRankedEdges(edgeIndex, top[top.length - 1]) < 0) continue;
+      this.insertRankedEdge(top, edgeIndex);
+      if (top.length > limit) top.pop();
     }
 
     return top;
   }
 
-  private moveEdgeIndexIntoRank(edgeIndexes: number[], index: number): void {
-    while (
-      index > 0 &&
-      this.compareEdgeRank(this.edges[edgeIndexes[index]].edge, this.edges[edgeIndexes[index - 1]].edge) > 0
-    ) {
-      const previous = edgeIndexes[index - 1];
-      edgeIndexes[index - 1] = edgeIndexes[index];
-      edgeIndexes[index] = previous;
+  private insertRankedEdge(ranked: number[], edgeIndex: number): void {
+    let index = ranked.length;
+    ranked.push(edgeIndex);
+    while (index > 0 && this.compareRankedEdges(edgeIndex, ranked[index - 1]) > 0) {
+      ranked[index] = ranked[index - 1];
       index--;
     }
+    ranked[index] = edgeIndex;
+  }
+
+  private rankable(edge: AnyMarketEdge): boolean {
+    return edge.liquidity > 0n && edge.rateDenominator > 0n;
+  }
+
+  private compareRankedEdges(a: number, b: number): number {
+    const left = this.edges[a].edge;
+    const right = this.edges[b].edge;
+    const rank = this.compareEdgeRank(left, right);
+    if (rank !== 0) return rank;
+    if (left.protocol !== right.protocol) return left.protocol < right.protocol ? 1 : -1;
+    // Carbon patches and recovery snapshots may insert equal-rate edges in a
+    // different order. Keep the search beam independent of that history.
+    if (left.protocol === 'carbon') return left.id < right.id ? 1 : left.id > right.id ? -1 : 0;
+    return a < b ? 1 : a > b ? -1 : 0;
   }
 
   private compareEdgeRank(a: AnyMarketEdge, b: AnyMarketEdge): number {
@@ -1181,9 +1218,6 @@ export class MarketGraph {
     if (a.liquidity < b.liquidity) return -1;
     if (a.fee < b.fee) return 1;
     if (a.fee > b.fee) return -1;
-    // Carbon patches and recovery snapshots may insert equal-rate edges in a
-    // different order. Keep the search beam independent of that history.
-    if (a.protocol === 'carbon' && b.protocol === 'carbon') return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
     return 0;
   }
 
