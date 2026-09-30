@@ -888,22 +888,6 @@
   },
   {
     "type": "error",
-    "name": "InsufficientProfitAfterGas",
-    "inputs": [
-      {
-        "name": "profit",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "gasCost",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "InvalidCarbonAmount",
     "inputs": []
   },

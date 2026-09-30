@@ -136,16 +136,16 @@ contract NArbPlanTest {
         require(a.balanceOf(address(executor)) == 992 && b.balanceOf(address(executor)) == 992, "wrong profits");
     }
 
-    function testSuccessfulPlanCannotSubsidizeAnotherPlansGasCheck() public {
+    function testBatchPlanWithPositiveSurplusSucceedsRegardlessOfGas() public {
         SplitV2Pool rich = new SplitV2Pool(a, b, 1000000 ether, 2000000 ether);
         vm.deal(address(b), 3000000 ether);
         vm.txGasPrice(1 gwei);
         ArbitrageExecutor.Plan[] memory plans = new ArbitrageExecutor.Plan[](2);
         plans[0] = plan(address(rich), 0); plans[0].route.borrowAmount = 1000 ether;
         plans[1] = plan(address(pool), 0); // Positive raw surplus, but not enough for its gas.
-        require(executor.executeBatch(plans, 500000) == 1, "batch subsidized uneconomic plan");
+        require(executor.executeBatch(plans, 500000) == 3, "positive surplus plan rejected");
         require(a.balanceOf(address(executor)) > 900 ether, "A profit lost");
-        require(a.balanceOf(address(pool)) == 1000000, "B changes survived");
+        require(a.balanceOf(address(pool)) != 1000000, "B changes rolled back");
     }
 
     function testBatchRejectsUnauthenticatedEntryAndInsufficientOuterGasBeforeTrading() public {

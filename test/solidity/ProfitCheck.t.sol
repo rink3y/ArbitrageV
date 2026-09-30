@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
-import {ArbitrageExecutor, ICarbonController, NoProfit, InsufficientProfitAfterGas, InsufficientFlashLoanRepayment} from "../../Contract/NArb.sol";
+import {ArbitrageExecutor, ICarbonController, NoProfit, InsufficientFlashLoanRepayment} from "../../Contract/NArb.sol";
 import {SplitToken, SplitV3Pool} from "./NArbSplit.t.sol";
 
 interface ProfitVm {
@@ -106,19 +106,16 @@ contract ProfitCheckTest {
         require(token.balanceOf(address(lender)) == 100 ether + 3497953333007064, "flash fee");
     }
 
-    function testTraceTwoLinearRejectsProfitBelowGas() public { traceTwo(false); }
-    function testTraceTwoSplitRejectsProfitBelowGas() public { traceTwo(true); }
+    function testTraceTwoLinearAcceptsProfitBelowGas() public { traceTwo(false); }
+    function testTraceTwoSplitAcceptsProfitBelowGas() public { traceTwo(true); }
     function traceTwo(bool split) private {
         uint256 borrowed = 2159585574104778025;
         sell.setOutput(2358147382005785166);
         vm.txGasPrice(1000 gwei); lender.setGasAfterRepayment(300000);
         token.mint(address(executor), 1 ether);
-        (bool ok, bytes memory reason) = address(executor).call(payload(split, borrowed));
-        require(!ok, "gas loss accepted");
-        (uint256 profit, uint256 gasCost) = gasFailure(reason);
-        require(profit == 195317563172757599 && gasCost > profit, "wrong gas error");
-        require(token.balanceOf(address(executor)) == 1 ether, "old balance spent");
-        require(token.balanceOf(address(lender)) == 100 ether && token.balanceOf(address(buy)) == 0, "not rolled back");
+        (bool ok,) = address(executor).call(payload(split, borrowed));
+        require(ok, "positive surplus rejected");
+        require(token.balanceOf(address(executor)) == 1 ether + 195317563172757599, "profit or old balance");
     }
 
     function testOtherTokenLinearAcceptsOneUnitDespiteNativeGasCost() public { otherToken(true, false); }
@@ -155,28 +152,6 @@ contract ProfitCheckTest {
         require(token.balanceOf(address(executor)) == 2 ether, "old inventory spent");
     }
 
-    function testGasCheckIncludesPostCallbackLenderWorkAndIntrinsicGas() public {
-        sell.setOutput(repayment(1 ether) + 1);
-        lender.setGasAfterRepayment(300000);
-        bytes memory data = payload(false, 1 ether);
-        uint256 beforeCall = gasleft();
-        (bool ok, bytes memory reason) = address(executor).call(data);
-        uint256 callGas = beforeCall - gasleft();
-        require(!ok, "gas loss accepted");
-        (, uint256 gasCost) = gasFailure(reason);
-        require(gasCost / tx.gasprice >= callGas + 21000, "undercharged execution or intrinsic gas");
-        require(gasCost / tx.gasprice > 300000 + 21000, "lender tail missed");
-    }
-
-    function testGasCheckCoversCalldataFloor() public {
-        sell.setOutput(repayment(1 ether) + 1);
-        bytes memory data = bytes.concat(payload(false, 1 ether), new bytes(20000));
-        (bool ok, bytes memory reason) = address(executor).call(data);
-        require(!ok, "gas loss accepted");
-        (, uint256 gasCost) = gasFailure(reason);
-        require(gasCost >= (21000 + data.length * 40) * tx.gasprice, "calldata floor missed");
-    }
-
     function testV3FlashAlsoUsesFinalProfitCheck() public {
         SplitV3Pool v3 = new SplitV3Pool(token, intermediate);
         token.mint(address(v3), 100 ether);
@@ -186,13 +161,5 @@ contract ProfitCheckTest {
         executor.executeArbitrage(p);
         require(token.balanceOf(address(executor)) == 0.1 ether, "V3 net token surplus");
         require(token.balanceOf(address(v3)) == 100 ether + 100001, "V3 repayment");
-    }
-
-    function gasFailure(bytes memory reason) private pure returns (uint256 profit, uint256 gasCost) {
-        require(reason.length == 68 && bytes4(reason) == InsufficientProfitAfterGas.selector, "wrong gas error selector");
-        assembly {
-            profit := mload(add(reason, 36))
-            gasCost := mload(add(reason, 68))
-        }
     }
 }

@@ -184,11 +184,11 @@ Fees are estimated at startup and every `feeRefreshIntervalMs`, currently five m
 
 This valuation uses current graph state, fees, deductions and price impact, not an external oracle or a frozen daily price. It does not sell the profit token for you. Shallow or manipulated markets and unsupported token behavior can make it unreliable.
 
-NArb protects pre-existing start-token inventory and requires positive surplus after repayment. For approved wrappers it also checks gas using `tx.gasprice`, measured execution, 21,000 intrinsic gas, 16 gas per calldata byte and 10,000 overhead. It takes the larger result versus `21,000 + 40 * calldataBytes` for the calldata floor. It treats bytes as nonzero and ignores refunds, so this is conservative rather than an exact receipt cost. Separate rollup fees and caller-contract overhead are not covered.
+NArb protects pre-existing start-token inventory and requires positive surplus after repayment. It does not compare that surplus with gas; profit after gas is checked only by the bot before signing.
 
-In a batch, this check applies to each attempt, not the transaction as a whole. Failed attempts still consume gas, which successful attempts' checks do not include. Keeping A's profit after B fails does not guarantee a positive net after the entire transaction's gas bill.
+In a batch, each attempt must leave positive surplus on its own. Failed attempts still consume gas, and no on-chain check covers the transaction's gas bill.
 
-`NoProfit()` means no surplus; `InsufficientProfitAfterGas` means wrapper surplus failed that gas check; `InsufficientFlashLoanRepayment()` means repayment would consume old inventory. Non-wrapper on-chain checks do not establish profit after gas. No entry point enforces the quoted minimum profit. Plans have no on-chain expiry; a delayed transaction can still execute against changed markets. Split branches retain minimum outputs. Pools are supplied in signed plans, not checked against an on-chain factory allowlist.
+`NoProfit()` means no surplus; `InsufficientFlashLoanRepayment()` means repayment would consume old inventory. On-chain checks do not establish profit after gas. No entry point enforces the quoted minimum profit. Plans have no on-chain expiry; a delayed transaction can still execute against changed markets. Split branches retain minimum outputs. Pools are supplied in signed plans, not checked against an on-chain factory allowlist.
 
 ## Freshness and submission
 

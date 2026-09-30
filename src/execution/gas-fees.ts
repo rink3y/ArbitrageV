@@ -18,6 +18,19 @@ export function gasPriceCeiling(fees: GasFeeSnapshot): bigint {
   return fees.type === 'legacy' ? fees.gasPrice : fees.maxFeePerGas;
 }
 
+export function withCompetitionBid(
+  fees: GasFeeSnapshot,
+  surplus: bigint,
+  gasLimit: bigint,
+  sharePercent: number = EXECUTION_POLICY.competitionProfitSharePercent,
+): GasFeeSnapshot {
+  const extra = surplus > 0n && gasLimit > 0n ? surplus * BigInt(sharePercent) / 100n / gasLimit : 0n;
+  if (extra <= 0n) return fees;
+  return fees.type === 'legacy'
+    ? { ...fees, gasPrice: fees.gasPrice + extra }
+    : { ...fees, maxFeePerGas: fees.maxFeePerGas + extra, maxPriorityFeePerGas: fees.maxPriorityFeePerGas + extra };
+}
+
 // One fee source for search and signing. Refreshes never run on the trade path.
 export class GasFees {
   private value: GasFeeSnapshot | null = null;

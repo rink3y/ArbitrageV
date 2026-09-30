@@ -6,6 +6,7 @@ import {
     NETWORK,
     ARBITRAGE_SEARCH_POLICY,
     WRAPPED_NATIVE_TOKENS,
+    CONFIGURED_TOKENS,
 } from './constants';
 import ArbABI from './ABI/Arb.json';
 import {
@@ -18,7 +19,7 @@ import {
 } from './execution/execution-planner';
 import { type NetworkConfig } from './network';
 import { LocalNonces } from './execution/local-nonces';
-import { GasFees, gasPriceCeiling, type GasFeeSnapshot } from './execution/gas-fees';
+import { GasFees, gasPriceCeiling, withCompetitionBid, type GasFeeSnapshot } from './execution/gas-fees';
 import { logger } from './reporting/logger';
 import { latency } from './runtime/latency';
 
@@ -51,6 +52,9 @@ export class OpportunityManager {
     }
 
     async start(): Promise<void> {
+        const share = EXECUTION_POLICY.competitionProfitSharePercent;
+        if (!Number.isInteger(share) || share < 0 || share > 100)
+            throw new Error('competitionProfitSharePercent must be a whole number from 0 to 100');
         if (EXECUTION_POLICY.routeSwapFunding || EXECUTION_POLICY.submissionMode !== 'single' || WRAPPED_NATIVE_TOKENS.length > 1) {
             if (!CONTRACTS.arbitrage?.match(/^0x[a-fA-F0-9]{40}$/)) throw new Error('Invalid CONTRACTS.arbitrage address');
             const helper = await this.networkConfig.client.readContract({
@@ -254,6 +258,8 @@ export class OpportunityManager {
             let serializedTransaction: Hex;
             try {
                 const signingStarted = latency.now();
+                const gas = gasLimitForTransaction(batch ? 'batch' : 'single');
+                const bid = withCompetitionBid(feeSnapshot, this.competitionSurplus(batch?.opportunities ?? [opportunity]), gas);
                 // All transaction fields are known locally. No fill, estimation,
                 // chain-ID, or nonce RPC belongs between detection and submission.
                 serializedTransaction = await account.signTransaction({
@@ -261,15 +267,15 @@ export class OpportunityManager {
                     data,
                     chainId: this.networkConfig.walletClient.chain?.id ?? NETWORK.chain.id,
                     nonce,
-                    gas: gasLimitForTransaction(batch ? 'batch' : 'single'),
-                    ...(feeSnapshot.type === 'legacy'
+                    gas,
+                    ...(bid.type === 'legacy'
                         ? {
-                            gasPrice: feeSnapshot.gasPrice,
+                            gasPrice: bid.gasPrice,
                             type: 'legacy' as const,
                         }
                         : {
-                            maxFeePerGas: feeSnapshot.maxFeePerGas,
-                            maxPriorityFeePerGas: feeSnapshot.maxPriorityFeePerGas,
+                            maxFeePerGas: bid.maxFeePerGas,
+                            maxPriorityFeePerGas: bid.maxPriorityFeePerGas,
                             type: 'eip1559' as const,
                         }),
                 }, { serializer: this.networkConfig.walletClient.chain?.serializers?.transaction });
@@ -307,6 +313,15 @@ export class OpportunityManager {
             // even when validation throws, but never after bytes reach transport.
             if (reservedNonce !== undefined && !transportAttempted) this.nonces.releaseUnsubmitted(reservedNonce);
         }
+    }
+
+    private competitionSurplus(opportunities: readonly ExecutableOpportunity[]): bigint {
+        return opportunities.reduce((total, opp) => {
+            if (opp.netProfitNative === undefined) return total;
+            const floor = CONFIGURED_TOKENS.find(token => token.address.toLowerCase() === opp.path[0].toLowerCase())?.minProfitNative
+                ?? ARBITRAGE_SEARCH_POLICY.minProfitNative ?? 0n;
+            return opp.netProfitNative > floor ? total + opp.netProfitNative - floor : total;
+        }, 0n);
     }
 
     private encodeBatch(plans: ExecutionPlan[]): Hex {

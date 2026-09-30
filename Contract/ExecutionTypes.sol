@@ -40,7 +40,6 @@ error ArbitrageMustReturnToStart();
 error RepaymentTransferFailed();
 error InsufficientFlashLoanRepayment();
 error NoProfit();
-error InsufficientProfitAfterGas(uint256 profit, uint256 gasCost);
 error SwapPathError();
 error InvalidReserves();
 error OutputExceedsReserve();

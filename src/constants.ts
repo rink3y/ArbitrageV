@@ -82,6 +82,9 @@ export const EXECUTION_POLICY = {
     // Applies to legacy gasPrice or EIP-1559 maxFeePerGas; never clamps estimates.
     feeCeilingPerGas: gasPrice('1500'),
     legacy: true,
+    // Maximum share of surplus available for extra gas.
+    // Surplus = profit − normal gas cost − minimum retained profit.
+    competitionProfitSharePercent: 25,
 } as const;
 
 export const RUNTIME: {

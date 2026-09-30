@@ -24,8 +24,6 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     V3Logic public immutable v3Logic;
     CarbonLogic public immutable carbonLogic;
     uint256 private constant FEE_DENOMINATOR = 10000;
-    // Entry dispatch/owner check before gasleft(), plus the final check and lock cleanup.
-    uint256 private constant GAS_ACCOUNTING_OVERHEAD = 10_000;
     uint160 private constant MIN_SQRT_RATIO_PLUS_ONE = 4295128740;
     uint160 private constant MAX_SQRT_RATIO_MINUS_ONE =
         1461446703485210103287273052203988822378723970341;
@@ -103,30 +101,17 @@ contract ArbitrageExecutor is Withdrawable, TransferProbe {
     }
 
     modifier executionLock(address borrowToken) {
-        uint256 gasStart = gasleft();
         if (executing || (batching && msg.sender != address(this))) revert ExecutionInProgress();
         executing = true;
         uint256 balanceBefore = IERC20(borrowToken).balanceOf(address(this));
         _;
-        _checkProfit(borrowToken, balanceBefore, gasStart);
+        _checkProfit(borrowToken, balanceBefore);
         executing = false;
     }
 
-    function _checkProfit(address token, uint256 balanceBefore, uint256 gasStart) private view {
+    function _checkProfit(address token, uint256 balanceBefore) private view {
         // The lender has returned: repayment and its final checks are already included.
-        uint256 balanceAfter = IERC20(token).balanceOf(address(this));
-        if (balanceAfter <= balanceBefore) revert NoProfit();
-        if (!approvedWrapper[token]) return;
-
-        uint256 profit = balanceAfter - balanceBefore;
-        // Direct transactions from the bot have no access list. Charge all calldata bytes
-        // as nonzero, and do not subtract refunds: both conservatively overestimate cost.
-        uint256 gasUsed = gasStart - gasleft() + 21_000 + msg.data.length * 16 + GAS_ACCOUNTING_OVERHEAD;
-        // Also cover the calldata floor on chains that have adopted EIP-7623.
-        uint256 calldataFloor = 21_000 + msg.data.length * 40;
-        if (gasUsed < calldataFloor) gasUsed = calldataFloor;
-        uint256 gasCost = gasUsed * tx.gasprice;
-        if (profit <= gasCost) revert InsufficientProfitAfterGas(profit, gasCost);
+        if (IERC20(token).balanceOf(address(this)) <= balanceBefore) revert NoProfit();
     }
 
     // Permissionless but always reverts. FlashQuery catches the measured result in eth_call.
