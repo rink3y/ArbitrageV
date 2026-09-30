@@ -10,8 +10,31 @@ export type V3PoolConfig = {
   enabled: boolean;
 };
 
-export type V3StartupPolicy = {
-  batchSize: number;
+export type V3FactoryConfig = {
+  name: string;
+  address: Address;
+  fromBlock: bigint;
+  enabled: boolean;
+};
+
+export type V3PoolMetadata = V3PoolConfig & {
+  factory: Address;
+  creationBlock: bigint;
+  minWord: number;
+  maxWord: number;
+};
+
+export type V3Snapshot = V3PoolState & {
+  poolAddress: Address;
+  blockNumber: bigint;
+  blockHash: `0x${string}`;
+  minWord: number;
+  maxWord: number;
+  // Every bitmap word in [minWord, maxWord] was read at blockNumber.
+  // Empty words are implicit only after complete becomes true.
+  complete: boolean;
+  bitmapWords: V3BitmapWord[];
+  ticks: V3Tick[];
 };
 
 export type V3PoolState = {
@@ -33,6 +56,7 @@ export type V3BitmapWord = {
 
 export type V3PoolInfo = V3PoolConfig & {
   state: V3PoolState | null;
+  fullRange?: boolean;
   ticks: Map<number, V3Tick>;
   bitmapWords: Map<number, bigint>;
 };
@@ -47,20 +71,6 @@ export type V3PoolUpdate = {
 export type V3TickUpdate = {
   poolAddress: Address;
   ticks: V3Tick[];
-};
-
-export type V3BitmapWordUpdate = {
-  poolAddress: Address;
-  words: V3BitmapWord[];
-};
-
-export type V3PoolStartupState = {
-  poolAddress: Address;
-  sqrtPriceX96: bigint;
-  liquidity: bigint;
-  tick: number;
-  bitmapWords: V3BitmapWord[];
-  ticks: Array<V3Tick & { initialized: boolean }>;
 };
 
 export type V3SwapDirection = 'token0ToToken1' | 'token1ToToken0';

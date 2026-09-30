@@ -22,8 +22,9 @@ export function createCarbonPlugin(): ProtocolPlugin {
       store ??= new CarbonStrategyStore(
         context.client,
         context.catalog.carbonPairs,
-        async (strategies, changedPoolKeys, changedController) => {
-          context.engine.setCarbonStrategies(strategies);
+        async (update, changedPoolKeys, changedController) => {
+          if (update.kind === 'snapshot') context.graph.setCarbonStrategies(update.strategies);
+          else context.graph.updateCarbonStrategies(update);
           if (changedPoolKeys.length > 0) {
             await context.scan(changedPoolKeys, changedController ? [changedController] : []);
           }

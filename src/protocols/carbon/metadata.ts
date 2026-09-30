@@ -1,5 +1,6 @@
+import { logger } from '../../reporting/logger';
 import { parseAbi, type Address } from 'viem';
-import { RUNTIME, TOKENS } from '../../constants';
+import { CONFIGURED_TOKENS } from '../../constants';
 import { graphToken } from '../../tokens';
 import { CARBON_CONTROLLERS } from './config';
 import { type CarbonPairMetadata } from './types';
@@ -21,7 +22,7 @@ export async function discoverCarbonPairs(
   options: DiscoverCarbonPairsOptions = {}
 ): Promise<CarbonPairMetadata[]> {
   const allowed = new Set([
-    ...TOKENS.map(token => graphToken(token.address).toLowerCase()),
+    ...CONFIGURED_TOKENS.map(token => graphToken(token.address).toLowerCase()),
     ...(options.allowedTokens ?? []).map(token => graphToken(token).toLowerCase()),
   ]);
   const pairs: CarbonPairMetadata[] = [];
@@ -49,7 +50,7 @@ export async function discoverCarbonPairs(
       }) as number;
       pairs.push({ controller: controller.address, token0, token1, strategyCount: Number(strategyCount), feePpm: Number(feePpm) });
     }
-    if (RUNTIME.debug) console.log(`Carbon ${controller.name}: kept ${pairs.length} discovered pairs`);
+    if (logger.debugEnabled) logger.debug(`Carbon ${controller.name}: kept ${pairs.length} discovered pairs`);
   }
   return pairs;
 }

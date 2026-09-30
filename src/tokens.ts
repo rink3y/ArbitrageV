@@ -1,8 +1,17 @@
 import { type Address } from 'viem';
+import { WRAPPED_NATIVE_TOKENS } from './constants';
 
-export const NATIVE_SEI = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' as Address;
-export const WSEI = '0xE30feDd158A2e3b13e9badaeABaFc5516e95e8C7' as Address;
+export function isNativeWrapper(token: string): boolean {
+  return WRAPPED_NATIVE_TOKENS.some(wrapper => wrapper.address.toLowerCase() === token.toLowerCase());
+}
+
+export function canSettle(from: string, to: string): boolean {
+  return from.toLowerCase() === to.toLowerCase() || (isNativeWrapper(from) && isNativeWrapper(to));
+}
+
+// Carbon's native-token sentinel, independent of the selected chain.
+export const NATIVE_TOKEN = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' as Address;
 
 export function graphToken(token: Address): Address {
-  return token.toLowerCase() === NATIVE_SEI.toLowerCase() ? WSEI : token;
+  return token.toLowerCase() === NATIVE_TOKEN.toLowerCase() ? WRAPPED_NATIVE_TOKENS[0].address : token;
 }

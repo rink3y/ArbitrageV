@@ -1,7 +1,9 @@
-import { type PublicClient } from 'viem';
+import { logger } from '../reporting/logger';
+import { type Address, type PublicClient } from 'viem';
 import { RUNTIME } from '../constants';
 import { advanceCursor, chainLogBlockNumber, type ChainCursor, compareChainLogs, isLogAfterCursor } from './chain-cursor';
 import { type ProtocolEventAdapter } from './protocol-event-adapter';
+import { latency, recordMarketReceipt } from './latency';
 
 const MAX_WEBSOCKET_RECONNECT_ATTEMPTS = 9;
 
@@ -24,10 +26,16 @@ export class EventMonitor {
   private firstBufferedBlock: bigint | null = null;
   private lastBufferedBlock: bigint | null = null;
   private bufferedLogCount = 0;
+  private hydrationFloor = 0n;
+  private shutdown = false;
+  private activated = false;
+  private recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  private reportingRecovery = false;
 
   constructor(
     network: any,
-    private readonly adapters: readonly ProtocolEventAdapter[]
+    private readonly adapters: readonly ProtocolEventAdapter[],
+    private readonly feedReady: (ready: boolean) => void = () => {}
   ) {
     this.client = network.client;
     if (RUNTIME.websocketEnabled && network.wsClient) {
@@ -37,11 +45,13 @@ export class EventMonitor {
   }
 
   async startBuffering(): Promise<void> {
+    this.feedReady(false);
     this.buffering = true;
     await this.start();
   }
 
   async start(): Promise<void> {
+    this.shutdown = false;
     if (this.running) return;
     this.running = true;
     const client = this.usingWebSocket && this.wsClient ? this.wsClient : this.client;
@@ -54,22 +64,29 @@ export class EventMonitor {
         ));
       }
       this.reconnectAttempts = 0;
-      console.log(`Market event feed started for ${this.adapters.map(adapter => adapter.id).join(', ')}`);
+      if (!this.buffering) this.activated = true;
+      logger.info(`Market event feed started for ${this.adapters.map(adapter => adapter.id).join(', ')}`);
     } catch (error) {
       this.running = false;
-      if (!this.usingWebSocket) throw error;
+      if (!this.usingWebSocket || this.reconnecting) throw error;
       await this.recover('WebSocket connection failed');
     }
   }
 
-  async activate(): Promise<void> {
+  async activate(hydrationFloor = 0n): Promise<void> {
     if (!this.running || !this.buffering) return;
+    this.activated = true;
+    if (hydrationFloor > this.hydrationFloor) this.hydrationFloor = hydrationFloor;
     while (this.buffered.size > 0) {
       const entries = [...this.buffered.values()].sort((a, b) => compareChainLogs(a.log, b.log));
       this.buffered.clear();
       const byAdapter = new Map<ProtocolEventAdapter, any[]>();
       for (const entry of entries) {
-        this.markApplied(entry.adapter, entry.log);
+        if (!entry.adapter.managesOwnCursors && this.isAtOrBelowHydrationFloor(entry.log)) continue;
+        const address = entry.log.address as Address | undefined;
+        if (address) {
+          this.updateCursorForAddress(entry.adapter, address, advanceCursor(undefined, entry.log));
+        }
         const logs = byAdapter.get(entry.adapter);
         if (logs) logs.push(entry.log);
         else byAdapter.set(entry.adapter, [entry.log]);
@@ -77,17 +94,44 @@ export class EventMonitor {
       await Promise.all([...byAdapter].map(([adapter, logs]) => adapter.reconcile(logs)));
     }
     this.buffering = false;
+    this.feedReady(true);
+    if (this.reportingRecovery) logger.alert('feed.recovered', 'info', 'Market feed recovered; feed gate reopened');
+    this.reportingRecovery = false;
     const range = this.firstBufferedBlock === null
       ? 'no market events arrived during hydration'
       : `${this.bufferedLogCount} events observed across blocks ${this.firstBufferedBlock}-${this.lastBufferedBlock}`;
-    console.log(`Market event feed caught up and is now live (${range})`);
+    logger.info(`Market event feed caught up and is now live (${range})`);
+  }
+
+  async reconcileMarkets(addresses: readonly Address[]): Promise<bigint> {
+    const blockNumber = await this.client.getBlockNumber();
+    await Promise.all(this.adapters.map(async adapter => {
+      const owned = addresses.filter(address => adapter.owns(address));
+      if (owned.length === 0) return;
+      await adapter.reconcileAddresses(owned);
+      const reconciled = {
+        blockNumber,
+        transactionIndex: Number.MAX_SAFE_INTEGER,
+        logIndex: Number.MAX_SAFE_INTEGER,
+      };
+      for (const address of owned) this.updateCursorForAddress(adapter, address, reconciled);
+    }));
+    return blockNumber;
   }
 
   async stop(): Promise<void> {
+    this.shutdown = true;
+    if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
+    this.feedReady(false);
     await this.stopInternal(false);
   }
 
   private async route(adapter: ProtocolEventAdapter, logs: any[]): Promise<void> {
+    if (!this.running) return;
+    const receivedAt = latency.now();
+    latency.increment('events.received', logs.length);
+    const receiptTime = Date.now();
+    for (const log of logs) if (log.address && adapter.owns(log.address)) recordMarketReceipt(log.address, receiptTime);
     logs.sort(compareChainLogs);
     if (this.buffering) {
       for (const log of logs) {
@@ -96,8 +140,16 @@ export class EventMonitor {
       }
       return;
     }
-    const fresh = this.freshLogs(adapter, logs);
-    if (fresh.length > 0) await adapter.apply(fresh);
+    if (!adapter.managesOwnCursors && logs.some(log => log.removed)) {
+      await this.recover('Removed market event');
+      return;
+    }
+    const fresh = adapter.managesOwnCursors ? logs : this.freshLogs(adapter, logs);
+    if (fresh.length > 0) {
+      const applied = adapter.apply(fresh);
+      latency.elapsed(`${adapter.id}.dispatch`, receivedAt);
+      await applied;
+    }
   }
 
   private keepLatest(adapter: ProtocolEventAdapter, key: string, log: any): void {
@@ -113,47 +165,57 @@ export class EventMonitor {
   private freshLogs(adapter: ProtocolEventAdapter, logs: any[]): any[] {
     let count = 0;
     for (const log of logs) {
-      const key = this.cursorKey(adapter, log);
-      if (!key) continue;
-      const cursor = this.cursors.get(key);
-      if (cursor && !isLogAfterCursor(log, cursor)) continue;
-      this.cursors.set(key, advanceCursor(cursor, log));
+      if (this.isAtOrBelowHydrationFloor(log)) continue;
+      const address = log.address as Address | undefined;
+      if (!address || !this.updateCursorForAddress(adapter, address, advanceCursor(undefined, log))) continue;
       logs[count++] = log;
     }
     logs.length = count;
     return logs;
   }
 
-  private markApplied(adapter: ProtocolEventAdapter, log: any): void {
-    const key = this.cursorKey(adapter, log);
-    if (!key) return;
-    const cursor = this.cursors.get(key);
-    if (!cursor || isLogAfterCursor(log, cursor)) this.cursors.set(key, advanceCursor(cursor, log));
+  private isAtOrBelowHydrationFloor(log: any): boolean {
+    return chainLogBlockNumber(log) <= this.hydrationFloor;
   }
 
-  private cursorKey(adapter: ProtocolEventAdapter, log: any): string | null {
-    const address = log.address?.toLowerCase();
-    return address ? `${adapter.id}:${address}` : null;
+  private updateCursorForAddress(
+    adapter: ProtocolEventAdapter,
+    address: Address,
+    next: ChainCursor
+  ): boolean {
+    const key = `${adapter.id}:${address.toLowerCase()}`;
+    const cursor = this.cursors.get(key);
+    if (cursor && !isLogAfterCursor(next, cursor)) return false;
+    this.cursors.set(key, next);
+    return true;
   }
 
   private async stopInternal(preserveCursors: boolean): Promise<void> {
-    if (!this.running) return;
     this.running = false;
     for (const unwatch of this.unwatchFns) {
-      try { await unwatch(); } catch (error) { console.error('Error unsubscribing from market events:', error); }
+      try { await unwatch(); } catch (error) { logger.error('Error unsubscribing from market events:', error); }
     }
     this.unwatchFns.length = 0;
     this.buffered.clear();
     this.firstBufferedBlock = null;
     this.lastBufferedBlock = null;
     this.bufferedLogCount = 0;
-    for (const adapter of this.adapters) adapter.clear?.();
-    if (!preserveCursors) this.cursors.clear();
+    for (const adapter of this.adapters) await adapter.clear?.();
+    if (!preserveCursors) {
+      this.activated = false;
+      this.cursors.clear();
+      this.hydrationFloor = 0n;
+    }
   }
 
   private async recover(reason: string): Promise<void> {
-    if (this.reconnecting) return;
+    if (this.reconnecting || this.shutdown) return;
     this.reconnecting = true;
+    this.reportingRecovery = true;
+    logger.alert('feed.paused', 'warn', 'Market feed interrupted; trading paused', reason);
+    this.feedReady(false);
+    this.buffering = true;
+    for (const adapter of this.adapters) adapter.suspend?.();
     try {
       this.reconnectAttempts++;
       if (this.reconnectAttempts > MAX_WEBSOCKET_RECONNECT_ATTEMPTS) {
@@ -163,9 +225,19 @@ export class EventMonitor {
       } else {
         await new Promise(resolve => setTimeout(resolve, this.reconnectAttempts * 2_000));
       }
-      console.log(`${reason}; restarting market event feed`);
+      if (this.shutdown) return;
+      logger.info(`${reason}; restarting market event feed`);
       await this.stopInternal(true);
+      if (this.shutdown) return;
       await this.start();
+      await this.reconcileMarkets(this.adapters.flatMap(adapter => adapter.addresses()));
+      if (this.activated) await this.activate();
+    } catch (error) {
+      logger.alert('feed.recoveryFailed', 'error', 'Market feed recovery failed; trading remains paused', error);
+      if (!this.shutdown) {
+        this.recoveryTimer = setTimeout(() => void this.recover(reason), 2_000);
+        this.recoveryTimer.unref();
+      }
     } finally {
       this.reconnecting = false;
     }
@@ -179,6 +251,8 @@ export class EventMonitor {
     }
     if (/(filter not found|invalid parameters|rpc request failed)/.test(message)) {
       await this.recover('RPC event filter error');
+      return;
     }
+    await this.recover('Market event feed error');
   }
 }

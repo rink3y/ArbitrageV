@@ -1,6 +1,5 @@
 import { runArbitrageBot } from './src/runtime/arbitrage-bot';
+import { installLifecycle } from './src/reporting/lifecycle';
 
-runArbitrageBot().catch(error => {
-  console.error('Error:', error);
-  process.exit(1);
-});
+const lifecycle = installLifecycle();
+runArbitrageBot(lifecycle.registerStop).catch(lifecycle.finish);

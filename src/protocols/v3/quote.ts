@@ -29,7 +29,9 @@ export type V3MultiRangeQuoteRequest = V3SingleRangeQuoteRequest & {
   tick: number;
   ticks: readonly V3Tick[] | Map<number, V3Tick>;
   normalizedTicks?: boolean;
+  fullRange?: boolean;
   sqrtPriceLimitX96?: bigint;
+  spendWork?: () => boolean;
 };
 
 export type V3MultiRangeQuote = V3SingleRangeQuote & {
@@ -140,8 +142,7 @@ export function getAmount1Delta(
 export function getNextSqrtPriceFromAmount0RoundingUp(
   sqrtPriceX96: bigint,
   liquidity: bigint,
-  amount: bigint,
-  add: boolean
+  amount: bigint
 ): bigint {
   assertPriceAndLiquidity(sqrtPriceX96, liquidity);
   if (amount < 0n) throw new Error('amount must be non-negative');
@@ -150,32 +151,19 @@ export function getNextSqrtPriceFromAmount0RoundingUp(
   const numerator1 = liquidity * Q96;
   const product = amount * sqrtPriceX96;
 
-  if (add) {
-    const denominator = numerator1 + product;
-    return mulDivRoundingUp(numerator1, sqrtPriceX96, denominator);
-  }
-
-  if (product >= numerator1) throw new Error('amount removes too much token0');
-  return mulDivRoundingUp(numerator1, sqrtPriceX96, numerator1 - product);
+  return mulDivRoundingUp(numerator1, sqrtPriceX96, numerator1 + product);
 }
 
 export function getNextSqrtPriceFromAmount1RoundingDown(
   sqrtPriceX96: bigint,
   liquidity: bigint,
-  amount: bigint,
-  add: boolean
+  amount: bigint
 ): bigint {
   assertPriceAndLiquidity(sqrtPriceX96, liquidity);
   if (amount < 0n) throw new Error('amount must be non-negative');
   if (amount === 0n) return sqrtPriceX96;
 
-  if (add) {
-    return sqrtPriceX96 + mulDiv(amount, Q96, liquidity);
-  }
-
-  const quotient = mulDivRoundingUp(amount, Q96, liquidity);
-  if (sqrtPriceX96 <= quotient) throw new Error('amount removes too much token1');
-  return sqrtPriceX96 - quotient;
+  return sqrtPriceX96 + mulDiv(amount, Q96, liquidity);
 }
 
 export function quoteV3SingleRangeExactInput(request: V3SingleRangeQuoteRequest): V3SingleRangeQuote {
@@ -202,8 +190,7 @@ export function quoteV3SingleRangeExactInput(request: V3SingleRangeQuoteRequest)
     const sqrtPriceX96After = getNextSqrtPriceFromAmount0RoundingUp(
       request.sqrtPriceX96,
       request.liquidity,
-      amountInAfterFee,
-      true
+      amountInAfterFee
     );
     const amountOut = getAmount1Delta(
       sqrtPriceX96After,
@@ -223,8 +210,7 @@ export function quoteV3SingleRangeExactInput(request: V3SingleRangeQuoteRequest)
   const sqrtPriceX96After = getNextSqrtPriceFromAmount1RoundingDown(
     request.sqrtPriceX96,
     request.liquidity,
-    amountInAfterFee,
-    true
+    amountInAfterFee
   );
   const amountOut = getAmount0Delta(
     request.sqrtPriceX96,
@@ -268,11 +254,25 @@ export function quoteV3MultiRangeExactInput(request: V3MultiRangeQuoteRequest): 
   let initializedTicksCrossed = 0;
 
   while (amountRemaining > 0n) {
+    if (request.spendWork && !request.spendWork()) {
+      return finishMultiRangeQuote(request.amountIn, amountInAfterFee, amountOut, sqrtPriceX96, liquidity, tick, initializedTicksCrossed, true);
+    }
+    const nextTick = nextInitializedTick(initializedTicks, tick, zeroForOne);
     if (liquidity <= 0n) {
+      // A complete bitmap distinguishes an empty interval from missing data.
+      // Crossing that interval consumes no tokens; liquidity resumes at its end.
+      if (liquidity === 0n && request.fullRange && nextTick) {
+        sqrtPriceX96 = boundedTargetSqrtPrice(getSqrtRatioAtTick(nextTick.index), request.sqrtPriceLimitX96, zeroForOne);
+        if (sqrtPriceX96 !== request.sqrtPriceLimitX96) {
+          liquidity = applyLiquidityNet(0n, zeroForOne ? -nextTick.liquidityNet : nextTick.liquidityNet);
+          tick = zeroForOne ? nextTick.index - 1 : nextTick.index;
+          initializedTicksCrossed++;
+          continue;
+        }
+      }
       return finishMultiRangeQuote(request.amountIn, amountInAfterFee, amountOut, sqrtPriceX96, liquidity, tick, initializedTicksCrossed, true);
     }
 
-    const nextTick = nextInitializedTick(initializedTicks, tick, zeroForOne);
     const boundarySqrtPriceX96 = boundedTargetSqrtPrice(
       nextTick ? getSqrtRatioAtTick(nextTick.index) : null,
       request.sqrtPriceLimitX96,
@@ -337,7 +337,7 @@ function assertPriceAndLiquidity(sqrtPriceX96: bigint, liquidity: bigint): void 
 function normalizeTicks(ticks: readonly V3Tick[] | Map<number, V3Tick>): V3Tick[] {
   const list = ticks instanceof Map ? Array.from(ticks.values()) : [...ticks];
   return list
-    .filter(tick => tick.liquidityNet !== 0n)
+    .filter(tick => tick.liquidityGross > 0n)
     .sort((a, b) => a.index - b.index);
 }
 

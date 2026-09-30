@@ -5,7 +5,7 @@ const ONE = 1n << 48n;
 
 describe('Carbon swap math', () => {
   test('quotes exact input with the implemented Carbon formula', () => {
-    const order = { y: 100n, z: 10n, A: 0n, B: encodeExpandedRate(2n * ONE) };
+    const order = { y: 100n, z: 100n, A: 0n, B: encodeExpandedRate(2n * ONE) };
 
     expect(quoteCarbonExactInput(5n, order)).toEqual({
       amountIn: 5n,
@@ -13,8 +13,8 @@ describe('Carbon swap math', () => {
       complete: true,
     });
     expect(carbonMarginalRate(order)).toEqual({
-      numerator: 400n * ONE * ONE,
-      denominator: 100n * ONE * ONE,
+      numerator: 40000n * ONE * ONE,
+      denominator: 10000n * ONE * ONE,
     });
   });
 
@@ -23,7 +23,7 @@ describe('Carbon swap math', () => {
   });
 
   test('subtracts Carbon fee in ppm from target output', () => {
-    const order = { y: 100n, z: 10n, A: 0n, B: encodeExpandedRate(2n * ONE) };
+    const order = { y: 100n, z: 100n, A: 0n, B: encodeExpandedRate(2n * ONE) };
 
     expect(quoteCarbonExactInput(5n, order, 4000)).toEqual({
       amountIn: 5n,
@@ -31,8 +31,8 @@ describe('Carbon swap math', () => {
       complete: true,
     });
     expect(carbonMarginalRate(order, 4000)).toEqual({
-      numerator: 400n * ONE * ONE * 996000n,
-      denominator: 100n * ONE * ONE * 1000000n,
+      numerator: 40000n * ONE * ONE * 996000n,
+      denominator: 10000n * ONE * ONE * 1000000n,
     });
   });
 

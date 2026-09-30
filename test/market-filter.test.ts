@@ -1,6 +1,9 @@
+import { WRAPPED_NATIVE_TOKENS } from '../src/constants';
 import { describe, expect, test } from "bun:test";
 import { filterDiscoveredMarkets, marketTokens } from "../src/market-filter";
-import { NATIVE_SEI, WSEI } from "../src/tokens";
+import { NATIVE_TOKEN } from "../src/tokens";
+
+const WRAPPED_NATIVE = WRAPPED_NATIVE_TOKENS[0].address;
 
 type Address = `0x${string}`;
 
@@ -14,15 +17,18 @@ describe("filterDiscoveredMarkets", () => {
     const tokens = marketTokens(
       [{
         pairAddress: "0x0000000000000000000000000000000000001001" as Address,
-        token0: WSEI,
+        token0: WRAPPED_NATIVE,
         token1: tokenA,
         fee: 30,
         factory: "v2",
+        variant: 'uniswap-v2',
+        scale0: 1n,
+        scale1: 1n,
       }],
       [{
         name: "v3",
         address: "0x0000000000000000000000000000000000001002" as Address,
-        token0: NATIVE_SEI,
+        token0: NATIVE_TOKEN,
         token1: tokenB,
         fee: 500,
         tickSpacing: 10,
@@ -30,20 +36,23 @@ describe("filterDiscoveredMarkets", () => {
       }]
     ).map(token => token.toLowerCase());
 
-    expect(tokens).toContain(WSEI.toLowerCase());
+    expect(tokens).toContain(WRAPPED_NATIVE.toLowerCase());
     expect(tokens).toContain(tokenA.toLowerCase());
     expect(tokens).toContain(tokenB.toLowerCase());
-    expect(tokens).not.toContain(NATIVE_SEI.toLowerCase());
+    expect(tokens).not.toContain(NATIVE_TOKEN.toLowerCase());
   });
 
-  test("counts native SEI and WSEI as the same token across protocols", () => {
+  test("counts native currency and its wrapped token as the same token across protocols", () => {
     const filtered = filterDiscoveredMarkets(
       [{
         pairAddress: "0x0000000000000000000000000000000000001001" as Address,
-        token0: WSEI,
+        token0: WRAPPED_NATIVE,
         token1: tokenA,
         fee: 30,
         factory: "v2",
+        variant: 'uniswap-v2',
+        scale0: 1n,
+        scale1: 1n,
       }],
       [{
         name: "v3",
@@ -57,7 +66,7 @@ describe("filterDiscoveredMarkets", () => {
       [
         {
           controller: "0x0000000000000000000000000000000000001003" as Address,
-          token0: NATIVE_SEI,
+          token0: NATIVE_TOKEN,
           token1: tokenB,
           strategyCount: 1,
           feePpm: 4000,
@@ -75,6 +84,6 @@ describe("filterDiscoveredMarkets", () => {
     expect(filtered.v2Pools).toHaveLength(1);
     expect(filtered.v3Pools).toHaveLength(1);
     expect(filtered.carbonPairs).toHaveLength(1);
-    expect(filtered.carbonPairs[0].token0).toBe(NATIVE_SEI);
+    expect(filtered.carbonPairs[0].token0).toBe(NATIVE_TOKEN);
   });
 });

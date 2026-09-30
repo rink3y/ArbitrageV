@@ -71,3 +71,29 @@ describe("LatestUpdateScheduler", () => {
     ]]);
   });
 });
+
+test("scheduler collapses a large update burst to latest reserve per pair", async () => {
+    const pairCount = 100;
+    const processed: ReserveUpdate[][] = [];
+    const scheduler = new LatestUpdateScheduler<ReserveUpdate>(async updates => {
+      processed.push(updates);
+    }, update => update.pairAddress.toLowerCase());
+
+    const burst: ReserveUpdate[] = [];
+    for (let i = 0; i < Number(process.env.V2_STRESS_UPDATES ?? 50_000); i++) {
+      const pairId = i % pairCount;
+      burst.push({
+        pairAddress: pairAddress(pairId),
+        reserve0: BigInt(i),
+        reserve1: BigInt(i + 1),
+      });
+    }
+
+    await scheduler.submit(burst);
+
+    expect(processed).toHaveLength(1);
+    expect(processed[0]).toHaveLength(pairCount);
+    for (const update of processed[0]) {
+      expect(update.reserve1).toBe(update.reserve0 + 1n);
+    }
+  });

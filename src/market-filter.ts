@@ -2,7 +2,7 @@ import bannedTokens from './bannedtax.json';
 import { type V2PoolMetadata } from './protocols/v2/metadata';
 import { type CarbonPairMetadata } from './protocols/carbon/types';
 import { type V3PoolConfig } from './protocols/v3/types';
-import { graphToken } from './tokens';
+import { graphToken, isNativeWrapper } from './tokens';
 
 type Address = `0x${string}`;
 
@@ -74,6 +74,7 @@ function isBannedToken(token: Address): boolean {
 }
 
 function hasReusableTokens(market: MarketTokens, tokenUseCount: ReadonlyMap<string, number>): boolean {
+  if (isNativeWrapper(market.token0) && isNativeWrapper(market.token1)) return true;
   return (tokenUseCount.get(canonicalToken(market.token0)) ?? 0) > 1 &&
     (tokenUseCount.get(canonicalToken(market.token1)) ?? 0) > 1;
 }

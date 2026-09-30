@@ -1,11 +1,16 @@
 import { type Address, type PublicClient } from 'viem';
 import { type MarketSnapshot } from '../market-db';
 import { type MarketProtocol } from '../market-graph/types';
-import { type OpportunityEngine } from '../opportunities/opportunity-engine';
+import { type MarketGraph } from '../market-graph/market-graph';
 import { type ProtocolEventAdapter } from '../runtime/protocol-event-adapter';
+import { type LiveMarketRegistry } from '../runtime/live-market-registry';
 
 export type MarketReadClient = {
+  simulateContract?(parameters: any): Promise<{ result: unknown }>;
   readContract(parameters: any): Promise<unknown>;
+  getBlockNumber(): Promise<bigint>;
+  getBlock(parameters: any): Promise<{ number: bigint | null; hash: `0x${string}` | null }>;
+  getLogs(parameters: any): Promise<any[]>;
 };
 
 export type MarketDiscoveryContext = {
@@ -14,14 +19,16 @@ export type MarketDiscoveryContext = {
 };
 
 export type MarketHydrationContext = MarketDiscoveryContext & {
-  engine: OpportunityEngine;
+  graph: MarketGraph;
+  blockNumber?: bigint;
 };
 
 export type MarketEventContext = {
   client: PublicClient<any, any, any>;
   catalog: MarketSnapshot;
-  engine: OpportunityEngine;
+  graph: MarketGraph;
   scan: (changedPairs: readonly string[], releasedPairs?: readonly Address[]) => Promise<void>;
+  liveMarkets?: LiveMarketRegistry;
 };
 
 export interface ProtocolPlugin {
@@ -32,5 +39,5 @@ export interface ProtocolPlugin {
   count(catalog: MarketSnapshot): number;
   discover(context: MarketDiscoveryContext): Promise<void>;
   hydrate(context: MarketHydrationContext): Promise<void>;
-  events(context: MarketEventContext): ProtocolEventAdapter | null;
+  events(context: MarketEventContext): ProtocolEventAdapter | readonly ProtocolEventAdapter[] | null;
 }

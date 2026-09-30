@@ -1,16 +1,14 @@
-import { parseAbi, type Address, type PublicClient } from 'viem';
-import { CONTRACTS, RUNTIME, TOKENS } from '../../constants';
+import { logger } from '../../reporting/logger';
+import { type Address, type PublicClient } from 'viem';
+import UniswapFlashQueryABI from '../../ABI/UniswapFlashQuery.json';
+import { CONTRACTS, CONFIGURED_TOKENS } from '../../constants';
 import { CARBON_CONTROLLERS, CARBON_STARTUP_POLICY } from './config';
 import { graphToken } from '../../tokens';
 import { type ProtocolEventAdapter } from '../../runtime/protocol-event-adapter';
 import { CARBON_CONTROLLER_EVENT_ABI } from './events';
-import { type CarbonOrder, type CarbonPairMetadata, type CarbonStrategy } from './types';
+import { carbonStrategyKey, type CarbonOrder, type CarbonPairMetadata, type CarbonStrategy, type CarbonStrategyId, type CarbonUpdate } from './types';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address;
-
-const CARBON_BATCH_QUERY_ABI = parseAbi([
-  'function getCarbonStrategiesByPairs(address controller, (address token0, address token1, uint256 startIndex, uint256 endIndex)[] requests) view returns ((address token0, address token1, uint32 feePpm, (uint256 id, address owner, address[2] tokens, (uint128 y, uint128 z, uint64 A, uint64 B)[2] orders)[] strategies)[])',
-]);
 
 type CarbonClient = {
   readContract(parameters: any): Promise<unknown>;
@@ -55,7 +53,7 @@ export class CarbonStrategyStore {
     private readonly client: CarbonClient,
     private readonly pairs: readonly CarbonPairMetadata[],
     private readonly onChange?: (
-      strategies: readonly CarbonStrategy[],
+      update: CarbonUpdate,
       changedPoolKeys: readonly string[],
       changedController?: Address
     ) => void | Promise<void>
@@ -75,10 +73,6 @@ export class CarbonStrategyStore {
     };
   }
 
-  private strategies(): CarbonStrategy[] {
-    return Array.from(this.strategiesById.values());
-  }
-
   async loadAll(): Promise<void> {
     this.strategiesById.clear();
     this.activePairKeys.clear();
@@ -90,35 +84,44 @@ export class CarbonStrategyStore {
 
     await this.refetchPairsInBatches();
 
-    if (RUNTIME.debug) console.log(`Carbon loaded ${this.strategiesById.size} live strategies`);
-    await this.notifyChanged();
+    if (logger.debugEnabled) logger.debug(`Carbon loaded ${this.strategiesById.size} live strategies`);
+    await this.onChange?.({ kind: 'snapshot', strategies: [...this.strategiesById.values()] }, []);
   }
 
   async handleEvents(controller: Address, logs: any[]): Promise<void> {
     const changedPoolKeys = new Set<string>();
-    let changed = false;
+    const changed = new Map<string, CarbonStrategyId>();
 
     for (const log of logs) {
       const poolKeys = this.applyEvent(controller, log as any);
       if (!poolKeys) continue;
-      changed = true;
+      const ref = { controller, id: BigInt(log.args.id) };
+      changed.set(carbonStrategyKey(ref), ref);
       for (const key of poolKeys) changedPoolKeys.add(key);
     }
 
-    if (changed) await this.notifyChanged([...changedPoolKeys], controller);
+    if (changed.size === 0) return;
+    const upserts: CarbonStrategy[] = [];
+    const removed: CarbonStrategyId[] = [];
+    for (const [key, ref] of changed) {
+      const strategy = this.strategiesById.get(key);
+      if (strategy) upserts.push(strategy);
+      else removed.push(ref);
+    }
+    await this.onChange?.({ kind: 'delta', upserts, removed }, [...changedPoolKeys], controller);
   }
 
   private async refetchPairsInBatches(): Promise<void> {
     for (const [controller, pairs] of this.pairsByController()) {
-      if (RUNTIME.debug) {
+      if (logger.debugEnabled) {
         const batchCount = Math.ceil(pairs.length / CARBON_STARTUP_POLICY.batchSize);
-        console.log(`Loading ${pairs.length} Carbon pairs from ${controller} in ${batchCount} batches of up to ${CARBON_STARTUP_POLICY.batchSize}`);
+        logger.debug(`Loading ${pairs.length} Carbon pairs from ${controller} in ${batchCount} batches of up to ${CARBON_STARTUP_POLICY.batchSize}`);
       }
 
       for (let start = 0; start < pairs.length; start += CARBON_STARTUP_POLICY.batchSize) {
         const batch = pairs.slice(start, start + CARBON_STARTUP_POLICY.batchSize);
-        if (RUNTIME.debug) {
-          console.log(`Carbon strategy batch ${Math.floor(start / CARBON_STARTUP_POLICY.batchSize) + 1}: ${batch.length} pairs`);
+        if (logger.debugEnabled) {
+          logger.debug(`Carbon strategy batch ${Math.floor(start / CARBON_STARTUP_POLICY.batchSize) + 1}: ${batch.length} pairs`);
         }
         await this.refetchPairBatch(batch);
       }
@@ -131,7 +134,7 @@ export class CarbonStrategyStore {
 
     const results = await this.client.readContract({
       address: CONTRACTS.flashQuery as Address,
-      abi: CARBON_BATCH_QUERY_ABI,
+      abi: UniswapFlashQueryABI,
       functionName: 'getCarbonStrategiesByPairs',
       args: [
         controller,
@@ -176,15 +179,15 @@ export class CarbonStrategyStore {
         filtered++;
         continue;
       }
-      const id = strategy.id.toString();
+      const id = carbonStrategyKey(strategy);
       this.strategiesById.set(id, strategy);
       ids.add(id);
     }
     this.strategyIdsByPair.set(key, ids);
     this.setPairActive(key, ids.size > 0);
 
-    if (RUNTIME.debug) {
-      console.log(`Carbon pair ${pair.token0}/${pair.token1}: loaded ${rawStrategies.length}, kept ${ids.size}, filtered ${filtered}`);
+    if (logger.debugEnabled) {
+      logger.debug(`Carbon pair ${pair.token0}/${pair.token1}: loaded ${rawStrategies.length}, kept ${ids.size}, filtered ${filtered}`);
     }
   }
 
@@ -216,12 +219,13 @@ export class CarbonStrategyStore {
     ];
 
     if (log.eventName === 'StrategyDeleted') {
-      this.deleteStrategy(args.id);
+      this.deleteStrategy({ controller, id: BigInt(args.id) });
       return poolKeys;
     }
 
     if (log.eventName === 'StrategyCreated' || log.eventName === 'StrategyUpdated') {
-      const existing = this.strategiesById.get(args.id.toString());
+      const key = carbonStrategyKey({ controller, id: BigInt(args.id) });
+      const existing = this.strategiesById.get(key);
       const strategy: CarbonStrategy = {
         id: BigInt(args.id),
         owner: args.owner ?? existing?.owner ?? ZERO_ADDRESS,
@@ -234,10 +238,10 @@ export class CarbonStrategyStore {
 
       this.applyOrderFilters(strategy);
       if (this.isLiveStrategy(strategy)) {
-        this.strategiesById.set(strategy.id.toString(), strategy);
+        this.strategiesById.set(key, strategy);
         this.addStrategyToPair(strategy);
       } else {
-        this.deleteStrategy(strategy.id);
+        this.deleteStrategy(strategy);
       }
       return poolKeys;
     }
@@ -252,17 +256,19 @@ export class CarbonStrategyStore {
       ids = new Set();
       this.strategyIdsByPair.set(key, ids);
     }
-    ids.add(strategy.id.toString());
+    ids.add(carbonStrategyKey(strategy));
     this.setPairActive(key, true);
   }
 
-  private deleteStrategy(id: bigint): void {
-    const key = id.toString();
+  private deleteStrategy(ref: CarbonStrategyId): void {
+    const key = carbonStrategyKey(ref);
+    const strategy = this.strategiesById.get(key);
+    if (!strategy) return;
     this.strategiesById.delete(key);
-    for (const [pairKey, ids] of this.strategyIdsByPair.entries()) {
-      ids.delete(key);
-      if (ids.size === 0) this.setPairActive(pairKey, false);
-    }
+    const pairKey = this.canonicalPairKey(this.pairKey(strategy.controller, strategy.token0, strategy.token1));
+    const ids = this.strategyIdsByPair.get(pairKey)!;
+    ids.delete(key);
+    if (ids.size === 0) this.setPairActive(pairKey, false);
   }
 
   private normalizeStrategy(controller: Address, raw: RawCarbonStrategy): CarbonStrategy {
@@ -299,7 +305,7 @@ export class CarbonStrategyStore {
 
   private orderHasEnoughLiquidity(order: CarbonOrder, targetToken: Address): boolean {
     if (order.y <= 0n) return false;
-    const token = TOKENS.find(config => config.address.toLowerCase() === graphToken(targetToken).toLowerCase());
+    const token = CONFIGURED_TOKENS.find(config => config.address.toLowerCase() === graphToken(targetToken).toLowerCase());
     return !token || order.y >= token.liquidityAmount;
   }
 
@@ -327,10 +333,6 @@ export class CarbonStrategyStore {
   private feePpmForPair(controller: Address, token0: Address, token1: Address): number {
     return this.pairByTokenKey.get(this.pairKey(controller, token0, token1))?.feePpm ?? 0;
   }
-
-  private async notifyChanged(changedPoolKeys: readonly string[] = [], changedController?: Address): Promise<void> {
-    await this.onChange?.(this.strategies(), changedPoolKeys, changedController);
-  }
 }
 
 function field<TValue>(value: any, name: string, index: number): TValue {
@@ -340,19 +342,25 @@ function field<TValue>(value: any, name: string, index: number): TValue {
 
 export class CarbonEventAdapter implements ProtocolEventAdapter {
   readonly id = 'carbon';
-  private readonly controllers = new Set(
-    CARBON_CONTROLLERS.filter(controller => controller.enabled).map(controller => controller.address.toLowerCase())
-  );
+  private readonly controllerAddresses = CARBON_CONTROLLERS
+    .filter(controller => controller.enabled)
+    .map(controller => controller.address);
+  private readonly controllers = new Set(this.controllerAddresses.map(address => address.toLowerCase()));
 
   constructor(private readonly store: CarbonStrategyStore) {}
 
+  addresses(): readonly Address[] {
+    return this.controllerAddresses;
+  }
+
+  owns(address: Address): boolean {
+    return this.controllers.has(address.toLowerCase());
+  }
+
   async watch(client: PublicClient, onLogs: (logs: any[]) => void | Promise<void>, onError: (error: any) => void | Promise<void>) {
-    const addresses = CARBON_CONTROLLERS
-      .filter(controller => controller.enabled)
-      .map(controller => controller.address);
-    if (addresses.length === 0) return [];
+    if (this.controllerAddresses.length === 0) return [];
     const unwatch = await client.watchContractEvent({
-      address: addresses,
+      address: this.controllerAddresses,
       abi: CARBON_CONTROLLER_EVENT_ABI,
       strict: true,
       onLogs,
@@ -367,7 +375,15 @@ export class CarbonEventAdapter implements ProtocolEventAdapter {
   }
 
   async reconcile(logs: readonly any[]): Promise<void> {
-    if (logs.length > 0) await this.store.loadAll();
+    const addresses: Address[] = [];
+    for (const log of logs) {
+      if (log.address) addresses.push(log.address);
+    }
+    await this.reconcileAddresses(addresses);
+  }
+
+  async reconcileAddresses(addresses: readonly Address[]): Promise<void> {
+    if (addresses.some(address => this.owns(address))) await this.store.loadAll();
   }
 
   async apply(logs: any[]): Promise<void> {
@@ -379,8 +395,7 @@ export class CarbonEventAdapter implements ProtocolEventAdapter {
       if (group) group.push(log);
       else byController.set(key, [log]);
     }
-    for (const [controller, controllerLogs] of byController) {
-      await this.store.handleEvents(controller as Address, controllerLogs);
-    }
+    await Promise.all([...byController].map(([controller, controllerLogs]) =>
+      this.store.handleEvents(controller as Address, controllerLogs)));
   }
 }
