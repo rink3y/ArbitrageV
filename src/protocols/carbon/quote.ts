@@ -86,7 +86,9 @@ export function quoteCarbonExactInput(amountIn: bigint, order: CarbonOrder, feeP
 }
 
 export function quoteCarbonExactInputBeforeFee(amountIn: bigint, order: CarbonOrder): CarbonQuote {
-  if (amountIn <= 0n || order.y <= 0n || order.z <= 0n) {
+  if (amountIn <= 0n || amountIn >= (1n << 128n) || order.y <= 0n || order.z <= 0n ||
+      order.y >= (1n << 128n) || order.z >= (1n << 128n) || order.y > order.z ||
+      order.A < 0n || order.B < 0n || (order.A >> 48n) > 48n || (order.B >> 48n) > 48n) {
     return { amountIn, amountOut: 0n, complete: false };
   }
 
@@ -160,10 +162,21 @@ function calculateTargetAmount(amountIn: bigint, y: bigint, z: bigint, A: bigint
   if (curve <= 0n) return 0n;
 
   const scaledLiquidity = z * ONE;
-  const denominator = A * amountIn * curve + scaledLiquidity * scaledLiquidity;
-  if (denominator <= 0n) return 0n;
-
-  return amountIn * curve * curve / denominator;
+  // Match Carbon Strategies._calculateTradeTargetAmount, including its
+  // uint256 scaling/rounding branches; the unbounded rational is not exact.
+  // https://github.com/bancorprotocol/carbon-contracts/blob/dev/contracts/carbon/Strategies.sol
+  const max = (1n << 256n) - 1n;
+  const product = curve * amountIn;
+  if (product > max) return 0n;
+  const square = scaledLiquidity * scaledLiquidity;
+  const curved = product * A;
+  const scale = (value: bigint) => { const high = value >> 256n; return high + ((value & max) + high > max ? 2n : 1n); };
+  const squareScale = scale(square), curvedScale = scale(curved);
+  const factor = squareScale > curvedScale ? squareScale : curvedScale;
+  const denominator = divCeil(square, factor) + divCeil(curved, factor);
+  return denominator <= max
+    ? curve * (product / factor) / denominator
+    : curve / (A + divCeil(square, product));
 }
 
 function divCeil(numerator: bigint, denominator: bigint): bigint {
